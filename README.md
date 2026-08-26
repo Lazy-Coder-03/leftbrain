@@ -148,29 +148,23 @@ Health: `GET /healthz`. Service description: `GET /`.
 
 ### Per-user API keys (public free tier)
 
-To let other people use your deployment with their own keys, quotas and rate limits, enable the key store instead of (or alongside) the static key:
+Point `LEFTBRAIN_KEYS_URL` at SQLite or Postgres and `leftbrain-serve` grows a web site:
+
+- `/` — landing page (browsers) or the JSON service description (`Accept: application/json`)
+- `/login` — GitHub OAuth; keys belong to the account's verified primary email
+- `/dashboard` — create up to 3 keys (shown once), see today's usage, revoke
+- `/docs` — quickstart with Windows PowerShell / macOS / Linux tabs, MCP client setup
+- `POST /demo/{numbers|convert|datetime|text}` — key-less demo, 30 req/min per IP
+
+Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars),
+`LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback).
+Anonymous `POST /keys/signup {"email": …}` is off unless `LEFTBRAIN_OPEN_SIGNUP=1`.
+
+Admin CLI (any DSN):
 
 ```bash
-LEFTBRAIN_KEYS_DB=/data/keys.sqlite3 leftbrain-serve     # or --keys-db
+leftbrain-keys list | disable lblz_xxxxxxxx | enable … | revoke … | set lblz_xxxxxxxx --daily 20000 | usage --days 7 | stats
 ```
-
-- **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 5000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email.
-- **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for disabled keys.
-- **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today.
-- **Admin CLI**:
-
-```bash
-leftbrain-keys create --owner you@example.com --daily 50000 --rpm 300 --note "partner"
-leftbrain-keys list | disable lblz_xxxxxxxx | enable … | revoke … | set lblz_xxxxxxxx --daily 20000
-leftbrain-keys usage --days 7
-leftbrain-keys stats
-```
-
-Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Only a SHA-256 of each key is stored.
-
-The store speaks **SQLite** (a path, for one instance with a volume) or **Postgres** (`LEFTBRAIN_KEYS_URL=postgres://…`, `pip install "leftbrain[postgres]"`) for platforms without persistent disk. Northflank/Render/Railway's injected `DATABASE_URL` is picked up automatically.
-
-**Free hosting that fits**: Northflank's sandbox (always-on service + free Postgres + custom domain) — see [`docs/deploy-northflank.md`](docs/deploy-northflank.md) for a step-by-step including DNS for a subdomain.
 
 ## Examples of what changes
 
