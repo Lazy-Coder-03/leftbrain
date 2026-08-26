@@ -1186,7 +1186,8 @@ def set_days_left(tmp_path, prefix: str, days: int) -> None:
 
     from leftbrain.keys import KeyStore
 
-    iso = (datetime.now(UTC) + timedelta(days=days, hours=1)).isoformat(timespec="microseconds")
+    # a shade under N days: days_left rounds up, so this reads as exactly N
+    iso = (datetime.now(UTC) + timedelta(days=days, hours=-1)).isoformat(timespec="microseconds")
     KeyStore(str(tmp_path / "k.sqlite3")).db.run("UPDATE keys SET expires_at=? WHERE prefix=?", (iso, prefix))
 
 
