@@ -9,7 +9,12 @@ from pathlib import Path
 from markdown_it import MarkdownIt
 
 DOCS_DIR = Path(__file__).parent / "docs"
-PAGES: list[tuple[str, str]] = [("quickstart", "Quickstart"), ("clients", "MCP clients"), ("tools", "Tools")]
+PAGES: list[tuple[str, str]] = [
+    ("quickstart", "Quickstart"),
+    ("clients", "MCP clients"),
+    ("custom-agents", "Custom agents"),
+    ("tools", "Tools"),
+]
 OS_LABELS = [("windows", "Windows · PowerShell"), ("macos", "macOS"), ("linux", "Linux")]
 
 _md = MarkdownIt("commonmark", {"html": True, "linkify": False}).enable("table")

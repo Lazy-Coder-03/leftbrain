@@ -387,6 +387,27 @@ def test_render_markdown_os_block_unterminated_fails_open():
     assert "<h1>T</h1>" in html
 
 
+# --- the custom-agents page ---------------------------------------------------
+
+
+def test_custom_agents_page_covers_every_language_and_the_no_sdk_path(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/docs/custom-agents")
+        assert r.status_code == 200 and "<h1>Custom agents</h1>" in r.text
+        body = r.text.split('<article class="doc">')[1]
+        for language in ("Python", "TypeScript", "Go", "Rust", "Java", "C#", "Swift", "Kotlin"):
+            assert language in body, language
+        for framework in ("Anthropic Messages API", "OpenAI Agents SDK", "Vercel AI SDK", "LangChain"):
+            assert framework in body, framework
+        # every snippet says whether it was run
+        assert body.count("Executed") >= 2 and body.count("From the SDK docs") >= 6
+        # the no-SDK fallback carries the four things that bite
+        assert "text/event-stream" in body and "data: " in body
+        assert "x-ratelimit-remaining-today" in body
+        assert "retry-after" in body and "401" in body and "429" in body
+        assert 'href="/docs/custom-agents" class="cur"' in r.text  # sidebar marks it
+
+
 def test_docs_sidebar_marks_current_page(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         assert 'href="/docs/quickstart" class="cur"' in c.get("/docs").text
