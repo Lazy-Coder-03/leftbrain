@@ -20,9 +20,9 @@ zones, unit and currency conversion, counting, sorting, validation, hashing, see
   Transport  MCP Streamable HTTP
   Auth       header  Authorization: Bearer <key>
 
-The key: read $LB_KEY from my environment; if it is not set, ask me for it and wait. Never print
-it, echo it back, or write it into a file that gets committed — use your client's environment
-variable interpolation wherever the format below supports it.
+The key: lblz_YOUR_KEY — store that as LB_KEY in my environment and read $LB_KEY from there; if it
+is not filled in above, ask me for it and wait. Never print it, echo it back, or write it into a
+file that gets committed — use your client's env var interpolation wherever the format supports it.
 
 Configure the client this project actually uses. ENDPOINT below is https://leftbrain.idlesync.in/mcp.
 
@@ -74,25 +74,25 @@ Prefer to wire it up yourself? The rest of this page is the manual route.
 
 ## 1 · Get a key
 
-[Sign in with GitHub](/login) and create a key on the Keys page. The free tier gives every key 5,000 calls/day and 60 requests/minute. You'll see the key once — copy it immediately.
+[Sign in with GitHub](/login) and create a key on the Keys page. The free tier gives every key 5,000 calls/day and 60 requests/minute. While you stay signed in, **Show** on the Keys page brings a key back whenever you need it — and every example below is already filled in with it.
 
 ## 2 · Store it
 
 :::os
 ### windows
 ```powershell
-$env:LB_KEY = "lblz_…"
+$env:LB_KEY = "lblz_YOUR_KEY"
 # persist across sessions:
-[Environment]::SetEnvironmentVariable("LB_KEY", "lblz_…", "User")
+[Environment]::SetEnvironmentVariable("LB_KEY", "lblz_YOUR_KEY", "User")
 ```
 ### macos
 ```bash
-export LB_KEY="lblz_…"
+export LB_KEY="lblz_YOUR_KEY"
 # persist: add the line to ~/.zshrc
 ```
 ### linux
 ```bash
-export LB_KEY="lblz_…"
+export LB_KEY="lblz_YOUR_KEY"
 # persist: add the line to ~/.bashrc or ~/.profile
 ```
 :::

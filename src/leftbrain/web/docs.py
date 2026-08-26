@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from functools import lru_cache
+from html import escape
 from pathlib import Path
 
 from markdown_it import MarkdownIt
@@ -16,6 +17,9 @@ PAGES: list[tuple[str, str]] = [
     ("tools", "Tools"),
 ]
 OS_LABELS = [("windows", "Windows · PowerShell"), ("macos", "macOS"), ("linux", "Linux")]
+# Every key in every example is written as this literal, so one replace personalises a page.
+KEY_PLACEHOLDER = "lblz_YOUR_KEY"
+ANON_KEY = "lblz_…"  # what a reader without a key of their own sees instead
 
 _md = MarkdownIt("commonmark", {"html": True, "linkify": False}).enable("table")
 # Section headings inside a `:::os` container are split at top level only (this regex
@@ -87,6 +91,11 @@ def _render_os_block(inner: str) -> str:
 
 def render_markdown(text: str) -> str:
     return "".join(_render_os_block(chunk) if kind == "os" else _md.render(chunk) for kind, chunk in _split_os_containers(text))
+
+
+def fill_key(html: str, key: str | None) -> str:
+    """Put the reader's own key into every example, or the anonymous placeholder."""
+    return html.replace(KEY_PLACEHOLDER, escape(key) if key else ANON_KEY)
 
 
 @lru_cache(maxsize=32)

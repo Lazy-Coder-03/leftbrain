@@ -17,6 +17,10 @@
     b.addEventListener('click', function () { copyText(pre.textContent); }); w.appendChild(b);
   });
 
+  // docs key picker: choosing a key reloads the page with that key filled in
+  var keypick = $('#keypick');
+  if (keypick) keypick.addEventListener('change', function () { keypick.form.submit(); });
+
   // OS tabs in docs
   var os = (navigator.platform || '').match(/win/i) ? 'windows' : (navigator.platform || '').match(/mac/i) ? 'macos' : 'linux';
   try { os = localStorage.getItem('lb-os') || os; } catch (e) {}

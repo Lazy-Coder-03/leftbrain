@@ -34,7 +34,7 @@ Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/m
     "leftbrain": {
       "type": "http",
       "url": "https://leftbrain.idlesync.in/mcp",
-      "headers": { "Authorization": "Bearer lblz_…" }
+      "headers": { "Authorization": "Bearer lblz_YOUR_KEY" }
     }
   }
 }
@@ -49,7 +49,7 @@ from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 
 async def main():
-    http = httpx.AsyncClient(headers={"Authorization": "Bearer lblz_…"})
+    http = httpx.AsyncClient(headers={"Authorization": "Bearer lblz_YOUR_KEY"})
     url = "https://leftbrain.idlesync.in/mcp"
     async with streamable_http_client(url, http_client=http) as streams:
         async with ClientSession(streams[0], streams[1]) as s:

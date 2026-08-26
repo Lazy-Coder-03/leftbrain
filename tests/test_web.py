@@ -279,7 +279,7 @@ def test_dashboard_create_list_cap_revoke(tmp_path):
         assert page.status_code == 200 and "No keys yet" in page.text and "octo" in page.text
         csrf = csrf_from(page.text)
         r = c.post("/dashboard/keys", data={"name": "laptop", "csrf": csrf})
-        assert r.status_code == 200 and "lblz_" in r.text and "won't be shown again" in r.text
+        assert r.status_code == 200 and "lblz_" in r.text and "Copy it now" in r.text
         key = r.text.split("<code id=\"new-key\">")[1].split("</code>")[0]
         assert key.startswith("lblz_") and len(key) > 20
         # the key works on the API
@@ -894,3 +894,133 @@ def test_landing_cta_reflects_signed_in_user(tmp_path):
         html = c.get("/", headers={"Accept": "text/html"}).text
         assert "Sign in with GitHub → get a key" not in html
         assert 'href="/dashboard">Your API keys, octo →' in html
+
+
+# --- the reader's own key, in the dashboard and in every docs example ---------
+
+
+def article(html: str) -> str:
+    """Just the docs body, so nav and layout markup cannot satisfy an assertion."""
+    return html.split('<article class="doc">')[1].split("</article>")[0]
+
+
+def new_key(c: TestClient, name: str, csrf: str) -> str:
+    r = c.post("/dashboard/keys", data={"name": name, "csrf": csrf})
+    assert r.status_code == 200
+    return r.text.split('<code id="new-key">')[1].split("</code>")[0]
+
+
+def two_keys(c: TestClient) -> tuple[str, str]:
+    csrf = csrf_from(c.get("/dashboard").text)
+    return new_key(c, "older", csrf), new_key(c, "newer", csrf)
+
+
+def test_dashboard_show_reveals_a_key_again(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        csrf = csrf_from(c.get("/dashboard").text)
+        raw = new_key(c, "laptop", csrf)
+        prefix = raw[:13]
+        listing = c.get("/dashboard")
+        assert raw not in listing.text and f"/dashboard/keys/{prefix}/reveal" in listing.text
+
+        shown = c.post(f"/dashboard/keys/{prefix}/reveal", data={"csrf": csrf})
+        assert shown.status_code == 200 and shown.headers["cache-control"] == "no-store"
+        assert shown.text.split('<code id="new-key">')[1].split("</code>")[0] == raw
+        assert raw not in c.get("/dashboard").text  # only on the page that asked for it
+
+        assert c.post(f"/dashboard/keys/{prefix}/reveal").status_code == 403
+        assert c.post(f"/dashboard/keys/{prefix}/reveal", data={"csrf": "bogus"}).status_code == 403
+        assert c.post("/dashboard/keys/lblz_notmine1/reveal", data={"csrf": csrf}).status_code == 403
+
+        c.post(f"/dashboard/keys/{prefix}/revoke", data={"csrf": csrf})
+        gone = c.post(f"/dashboard/keys/{prefix}/reveal", data={"csrf": csrf})
+        assert gone.status_code == 200 and raw not in gone.text and "cannot be shown again" in gone.text
+
+
+def test_dashboard_marks_keys_that_predate_reveal(tmp_path):
+    from leftbrain.keys import KeyStore
+
+    KeyStore(str(tmp_path / "k.sqlite3")).create("octo@example.com", note="ancient")  # hash only
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        page = c.get("/dashboard").text
+        assert "created before reveal was enabled" in page and "/reveal" not in page
+        body = article(c.get("/docs/quickstart").text)
+        assert "lblz_…" in body and 'id="keypick"' not in body
+
+
+def test_docs_without_a_key_keep_the_placeholder(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        for slug in ("quickstart", "clients", "custom-agents"):
+            r = c.get(f"/docs/{slug}")
+            body = article(r.text)
+            assert "lblz_YOUR_KEY" not in body, slug  # the literal never reaches a reader
+            assert "lblz_…" in body, slug
+            assert 'id="keypick"' not in body, slug
+            assert "Sign in</a> to fill in your key" in body, slug
+            assert r.headers.get("cache-control") != "no-store", slug
+
+
+def test_docs_fill_in_the_readers_own_key(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        older, newer = two_keys(c)
+        r = c.get("/docs/quickstart")
+        body = article(r.text)
+        assert r.headers["cache-control"] == "no-store"  # never cached with a key in it
+        assert "lblz_YOUR_KEY" not in body and "lblz_…" not in body
+        assert newer in body and older not in body  # the newest key by default
+        assert '<a href="/docs/clients"' in r.text  # the sidebar is left alone
+        # the picker offers both, with the one in use selected
+        assert f'<option value="{newer[:13]}" selected>newer ({newer[:13]}' in body
+        assert f'<option value="{older[:13]}">older ({older[:13]}' in body
+        assert "Your key is filled into every example on this page." in body
+        # the copy buttons still have code blocks to attach to
+        assert "<pre>" in body
+
+        picked = article(c.get(f"/docs/quickstart?key={older[:13]}").text)
+        assert older in picked and newer not in picked
+        assert f'<option value="{older[:13]}" selected>' in picked
+        # a prefix this reader does not own falls back to the default, silently
+        fallback = article(c.get("/docs/quickstart?key=lblz_notmine1").text)
+        assert newer in fallback and "notmine" not in fallback
+
+
+def test_the_setup_prompt_and_the_other_pages_carry_the_key(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        _, key = two_keys(c)
+        body = article(c.get("/docs/quickstart").text)
+        prompt = body.split('<h2 id="set-it-up-for-me">')[1].split("<pre>")[1].split("</pre>")[0]
+        assert key in prompt
+        assert body.count(key) >= 4  # the prompt plus every $env:LB_KEY / export LB_KEY line
+        for slug in ("clients", "custom-agents"):
+            page = c.get(f"/docs/{slug}")
+            assert key in article(page.text), slug
+            assert page.headers["cache-control"] == "no-store", slug
+
+
+def test_docs_never_show_a_revoked_key(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        older, newer = two_keys(c)
+        csrf = csrf_from(c.get("/dashboard").text)
+        c.post(f"/dashboard/keys/{newer[:13]}/revoke", data={"csrf": csrf})
+        body = article(c.get("/docs/quickstart").text)
+        assert newer not in body and f'value="{newer[:13]}"' not in body
+        assert older in body
+        c.post(f"/dashboard/keys/{older[:13]}/revoke", data={"csrf": csrf})
+        body = article(c.get("/docs/quickstart").text)
+        assert older not in body and "lblz_…" in body
+        assert "Create a key</a> to fill it in" in body
+
+
+def test_every_docs_page_uses_the_one_placeholder(tmp_path):
+    """The whole feature is one string replace, so no page may spell it differently."""
+    from leftbrain.web import HERE
+    from leftbrain.web.docs import ANON_KEY, KEY_PLACEHOLDER
+
+    for page in sorted((HERE / "docs").glob("*.md")):
+        text = page.read_text(encoding="utf-8")
+        assert ANON_KEY not in text, f"{page.name}: use {KEY_PLACEHOLDER}, not the ellipsis form"

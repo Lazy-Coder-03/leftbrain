@@ -63,6 +63,8 @@ Project → **Services → Create service → Combined service** (build + deploy
 
 `GITHUB_CLIENT_SECRET` and `LEFTBRAIN_SECRET` are secrets, not plain config — add them to the `keys-link` secret group from Step 2 (alongside `LEFTBRAIN_KEYS_URL`) so they're inherited the same way, or set them directly on this service's **Environment** tab if you'd rather not share them project-wide.
 
+**Do not rotate `LEFTBRAIN_SECRET` casually.** It signs session and CSRF cookies, and it also derives the key that encrypts the retrievable copy of every API key — what the dashboard's *Show* button reads, and what fills a signed-in reader's own key into the docs examples. Changing it signs everyone out and leaves every key issued before the change unrevealable: those keys keep authenticating normally, they just can no longer be shown again, so their owners have to create new ones. Treat it like a database credential and keep it stable. Leave it unset and the store keeps nothing but the SHA-256 hash — sign-in is off in that case anyway.
+
 **Create service**. The first build takes ~2–3 min (BuildKit). Watch **Builds** then **Logs**; the startup line is a JSON object containing `"auth": "keys"` — that confirms the DB link worked. If it says `"auth": "none"`, the secret group isn't attached: Service → *Environment* → check inherited secret groups, then *Restart*.
 
 Open the public URL shown on the service header (`https://web--leftbrain--….code.run` or `….northflank.app`):
@@ -95,6 +97,7 @@ Turn on *Publicly accessible* on the `keys` addon only while you need it, copy t
 ```bash
 pip install "leftbrain[postgres]"
 LEFTBRAIN_KEYS_URL="postgresql://…external…" leftbrain-keys stats
+# set LEFTBRAIN_SECRET to the service's value too, so keys made here stay revealable
 leftbrain-keys create --owner partner@example.com --daily 50000 --rpm 300 --note "partner"
 leftbrain-keys list | disable <prefix> | revoke <prefix> | usage --days 7
 ```

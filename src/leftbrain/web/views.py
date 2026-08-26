@@ -44,8 +44,27 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         """An error page that still shows who is signed in, so the nav does not flip to Sign in."""
         return error_page(request, status, title, message, user=auth.current_user(request, cfg))
 
-    def docs_shell(request: Request, title: str, html: str, slug: str, tool: str | None = None) -> Response:
-        return render(request, "docs.html", 200, page="docs", user=auth.current_user(request, cfg), title=title, body=html, slug=slug, pages=docs_mod.PAGES, tools=toolref_mod.tool_names(), tool=tool)
+    def docs_shell(request: Request, title: str, html: str, slug: str, tool: str | None = None, *, user: auth.User | None = None, keys: Any = (), selected: str | None = None, note: str = "") -> Response:
+        return render(request, "docs.html", 200, page="docs", user=user, title=title, body=html, slug=slug, pages=docs_mod.PAGES, tools=toolref_mod.tool_names(), tool=tool, keybar=keys, key_selected=selected, key_note=note)
+
+    def docs_key(request: Request, user: auth.User | None) -> tuple[list[Any], str | None, str | None]:
+        """The reader's own revealable keys, which one the page uses, and its plaintext."""
+        if user is None or store is None:
+            return [], None, None
+        keys = [k for k in store.list(user.email) if not k.disabled and k.revealable]
+        if not keys:
+            return [], None, None
+        wanted = request.query_params.get("key")
+        # store.list() is newest first; a prefix they do not own simply falls back to that
+        chosen = next((k for k in keys if k.prefix == wanted), keys[0])
+        return keys, chosen.prefix, store.reveal(user.email, chosen.prefix)
+
+    def docs_note(user: auth.User | None) -> str:
+        if store is None:
+            return ""
+        if user is None:
+            return '<a href="/login">Sign in</a> to fill in your key wherever these examples ask for one.'
+        return '<a href="/dashboard">Create a key</a> to fill it in wherever these examples ask for one.'
 
     async def docs_page(request: Request) -> Response:
         slug = request.path_params.get("slug", "quickstart")
@@ -53,7 +72,10 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         if page is None:
             return fail_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
         title, html = page
-        return docs_shell(request, title, html, slug)
+        user = auth.current_user(request, cfg)
+        keys, selected, raw = docs_key(request, user)
+        resp = docs_shell(request, title, docs_mod.fill_key(html, raw), slug, user=user, keys=keys, selected=selected, note="" if raw else docs_note(user))
+        return no_store(resp) if raw else resp  # a page carrying a real key is never cached
 
     async def tool_page(request: Request) -> Response:
         name = request.path_params["name"]
@@ -61,7 +83,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         if page is None:
             return fail_page(request, 404, "No such tool", "leftbrain has twelve tools; that isn't one of them.")
         title, html = page
-        return docs_shell(request, title, html, "tools", tool=name)
+        return docs_shell(request, title, html, "tools", tool=name, user=auth.current_user(request, cfg))
 
     async def demo(request: Request) -> Response:
         tool = request.path_params["tool"]
@@ -166,7 +188,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         from ..keys import DEFAULT_DAILY, MAX_ACTIVE_KEYS_PER_EMAIL
 
         keys = store.list(user.email) if store else []
-        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "new_key": None, "error": None, **extra}
+        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "new_key": None, "revealed": False, "can_reveal": bool(store and store.can_reveal), "error": None, **extra}
 
     def keys_unavailable(request: Request) -> Response:
         return fail_page(request, 503, "Keys unavailable", "This server has no key store configured.")
@@ -193,6 +215,23 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=info)))
         return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw)))
 
+    async def reveal_key(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        if store is None:
+            return keys_unavailable(request)
+        prefix = request.path_params["prefix"]
+        if not store.owns(user.email, prefix):
+            return fail_page(request, 403, "Not your key", "That key belongs to a different account.")
+        raw = store.reveal(user.email, prefix)
+        if raw is None:
+            return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=f"{prefix} cannot be shown again — it was created before reveal was enabled, or it has since been revoked. Create a new key instead.")))
+        return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw, revealed=True)))
+
     async def revoke_key(request: Request) -> Response:
         user = require_user(request)
         if not user:
@@ -214,6 +253,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/logout", logout, methods=["POST"]),
         Route("/dashboard", dashboard),
         Route("/dashboard/keys", create_key, methods=["POST"]),
+        Route("/dashboard/keys/{prefix}/reveal", reveal_key, methods=["POST"]),
         Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
         Route("/demo/{tool}", demo, methods=["POST"]),
         Route("/docs", docs_page),

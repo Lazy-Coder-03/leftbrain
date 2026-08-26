@@ -98,7 +98,8 @@ def _today() -> str:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    # microseconds, so two keys made in the same second still sort newest-first
+    return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
 @dataclass

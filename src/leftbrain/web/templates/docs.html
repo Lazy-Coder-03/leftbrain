@@ -8,6 +8,18 @@
     {% if tools %}<div class="grp">Tools</div>
     {% for n in tools %}<a href="/docs/tools/{{ n }}" class="{{ 'cur' if n == tool else '' }}">{{ n }}</a>{% endfor %}{% endif %}
   </nav>
-  <article class="doc">{{ body|safe }}</article>
+  <article class="doc">
+    {% if keybar %}
+    <form class="keybar" method="get">
+      <label for="keypick">Your key</label>
+      <select id="keypick" name="key">{% for k in keybar %}<option value="{{ k.prefix }}"{% if k.prefix == key_selected %} selected{% endif %}>{{ k.note or "unnamed" }} ({{ k.prefix }}…)</option>{% endfor %}</select>
+      <button class="linklike" type="submit">Use</button>
+      <span class="hint">Your key is filled into every example on this page.</span>
+    </form>
+    {% elif key_note %}
+    <p class="keybar hint">{{ key_note|safe }}</p>
+    {% endif %}
+    {{ body|safe }}
+  </article>
 </div>
 {% endblock %}

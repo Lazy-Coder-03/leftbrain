@@ -22,7 +22,7 @@ there is no session to open and no `initialize` handshake required before you ca
 ```http
 POST /mcp HTTP/1.1
 Host: leftbrain.idlesync.in
-Authorization: Bearer lblz_…
+Authorization: Bearer lblz_YOUR_KEY
 Content-Type: application/json
 Accept: application/json, text/event-stream
 ```
@@ -538,7 +538,7 @@ Any language with an HTTP client can talk to leftbrain directly. Four things to 
 **The headers.** All three are required:
 
 ```text
-Authorization: Bearer lblz_…
+Authorization: Bearer lblz_YOUR_KEY
 Content-Type: application/json
 Accept: application/json, text/event-stream
 ```
