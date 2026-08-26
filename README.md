@@ -148,7 +148,15 @@ Health: `GET /healthz`. Service description: `GET /`.
 
 ### Per-user API keys (public free tier)
 
-Point `LEFTBRAIN_KEYS_URL` at SQLite or Postgres and `leftbrain-serve` grows a web site:
+To let other people use your deployment with their own keys, quotas and rate limits, enable the key store instead of (or alongside) the static key:
+
+```bash
+LEFTBRAIN_KEYS_DB=/data/keys.sqlite3 leftbrain-serve     # or --keys-db
+```
+
+The store speaks **SQLite** (a path, for one instance with a volume) or **Postgres** (`LEFTBRAIN_KEYS_URL=postgres://…`, `pip install "leftbrain[postgres]"`) for platforms without persistent disk. The DSN is read from `LEFTBRAIN_KEYS_URL`, then `DATABASE_URL`, then `LEFTBRAIN_KEYS_DB` — so Northflank/Render/Railway's injected `DATABASE_URL` is picked up automatically.
+
+With a store configured, `leftbrain-serve` also grows a web site:
 
 - `/` — landing page (browsers) or the JSON service description (`Accept: application/json`)
 - `/login` — GitHub OAuth; keys belong to the account's verified primary email
@@ -156,15 +164,30 @@ Point `LEFTBRAIN_KEYS_URL` at SQLite or Postgres and `leftbrain-serve` grows a w
 - `/docs` — quickstart with Windows PowerShell / macOS / Linux tabs, MCP client setup
 - `POST /demo/{numbers|convert|datetime|text}` — key-less demo, 30 req/min per IP
 
-Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars),
-`LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback).
-Anonymous `POST /keys/signup {"email": …}` is off unless `LEFTBRAIN_OPEN_SIGNUP=1`.
+and the key API behaves like this:
+
+- **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 5000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email. Anonymous signup is **off** unless `LEFTBRAIN_OPEN_SIGNUP=1`; with the web site, people sign in at `/login` instead.
+- **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key.
+- **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today.
+
+Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars), `LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback), and `LEFTBRAIN_TRUSTED_PROXY_HOPS` (default `1`) — how many proxies append to `X-Forwarded-For` in front of the process, so per-IP limits are keyed on the entry *your* proxy wrote rather than the caller-supplied leftmost one. One reverse proxy (Northflank, Render, Fly, nginx) is `1`; add Cloudflare in front and it becomes `2`; `0` means nothing proxies it and no forwarding header is believed.
+
+Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Only a SHA-256 of each key is stored.
 
 Admin CLI (any DSN):
 
 ```bash
-leftbrain-keys list | disable lblz_xxxxxxxx | enable … | revoke … | set lblz_xxxxxxxx --daily 20000 | usage --days 7 | stats
+leftbrain-keys create --owner you@example.com --daily 50000 --rpm 300 --note "partner"
+leftbrain-keys list
+leftbrain-keys disable lblz_xxxxxxxx
+leftbrain-keys enable lblz_xxxxxxxx
+leftbrain-keys revoke lblz_xxxxxxxx
+leftbrain-keys set lblz_xxxxxxxx --daily 20000 --rpm 120
+leftbrain-keys usage --days 7
+leftbrain-keys stats
 ```
+
+**Free hosting that fits**: Northflank's sandbox (always-on service + free Postgres + custom domain) — see [`docs/deploy-northflank.md`](docs/deploy-northflank.md) for a step-by-step including DNS for a subdomain.
 
 ## Examples of what changes
 

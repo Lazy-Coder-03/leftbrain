@@ -734,3 +734,48 @@ def test_docs_json_samples_are_pretty_printed():
     assert '"remaining_today": 4988\n  }\n}' in md
     assert '"assumptions": [],\n  "warnings": []\n}' in md
     assert '{"ok":true,"result":' not in md  # no one-line JSON blobs left in the samples
+
+
+# --- the README is the contract people read before deploying (I5) -------------
+
+
+def test_readme_documents_the_key_store_and_proxy_contract():
+    import pathlib
+
+    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    section = readme.split("### Per-user API keys")[1].split("\n## ")[0]
+    for token in (
+        "LEFTBRAIN_KEYS_URL",
+        "DATABASE_URL",
+        "LEFTBRAIN_KEYS_DB",
+        "LEFTBRAIN_TRUSTED_PROXY_HOPS",
+        "LEFTBRAIN_DEFAULT_DAILY_QUOTA",
+        "LEFTBRAIN_DEFAULT_RPM",
+        "LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY",
+        "LEFTBRAIN_OPEN_SIGNUP",
+        "X-RateLimit-Remaining-Today",
+        "X-RateLimit-Limit-Day",
+        "X-RateLimit-Limit-Minute",
+        "Retry-After",
+        "GET /keys/me",
+        "SHA-256",
+        "docs/deploy-northflank.md",
+        "leftbrain-keys usage --days 7",
+    ):
+        assert token in section, token
+    # one runnable command per line, not a collapsed pipe-separated list
+    assert "| disable" not in section
+    for cmd in ("leftbrain-keys create ", "leftbrain-keys list", "leftbrain-keys revoke ", "leftbrain-keys stats"):
+        assert f"\n{cmd}" in section, cmd
+
+
+def test_readme_defaults_match_the_code():
+    import pathlib
+
+    from leftbrain import keys as keys_mod
+
+    readme = (pathlib.Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+    assert f"`LEFTBRAIN_DEFAULT_DAILY_QUOTA` ({keys_mod.DEFAULT_DAILY})" in readme
+    assert f"`LEFTBRAIN_DEFAULT_RPM` ({keys_mod.DEFAULT_RPM})" in readme
+    assert f"`LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` ({keys_mod.SIGNUPS_PER_IP_PER_DAY})" in readme
+    assert f"create up to {keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL} keys" in readme
