@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md LICENSE CHANGELOG.md ./
 COPY src ./src
 RUN pip install --upgrade pip && pip install ".[server,files,postgres]"
 

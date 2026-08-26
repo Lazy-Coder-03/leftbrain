@@ -6,6 +6,10 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Docker image build failed after the changelog was bundled into the wheel (`CHANGELOG.md` was not copied into the image).
+
 ### Changed
 
 - Docs examples are labelled Request/Response and colour-coded: blue blocks are what you
