@@ -12,6 +12,8 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Changed
 
+- Docs key picker shows the key name only (prefix only for unnamed keys).
+
 - Docs examples are labelled Request/Response and colour-coded: blue blocks are what you
   send, green blocks are what comes back, and a neutral block marks a setup command.
 

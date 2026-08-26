@@ -1094,8 +1094,9 @@ def test_docs_fill_in_the_readers_own_key(tmp_path):
         assert newer in body and older not in body  # the newest key by default
         assert '<a href="/docs/clients"' in r.text  # the sidebar is left alone
         # the picker offers both, with the one in use selected
-        assert f'<option value="{newer[:13]}" selected>newer ({newer[:13]}' in body
-        assert f'<option value="{older[:13]}">older ({older[:13]}' in body
+        assert f'<option value="{newer[:13]}" selected>newer</option>' in body
+        assert f'<option value="{older[:13]}">older</option>' in body
+        assert newer[:13] + "…" not in body  # named keys show only their name
         assert "Your key is filled into every example on this page." in body
         # the copy buttons still have code blocks to attach to
         assert "<pre>" in body

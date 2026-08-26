@@ -12,7 +12,7 @@
     {% if keybar %}
     <form class="keybar" method="get">
       <label for="keypick">Your key</label>
-      <select id="keypick" name="key">{% for k in keybar %}<option value="{{ k.prefix }}"{% if k.prefix == key_selected %} selected{% endif %}>{{ k.note or "unnamed" }} ({{ k.prefix }}…)</option>{% endfor %}</select>
+      <select id="keypick" name="key">{% for k in keybar %}<option value="{{ k.prefix }}"{% if k.prefix == key_selected %} selected{% endif %}>{% if k.note %}{{ k.note }}{% else %}unnamed · {{ k.prefix }}…{% endif %}</option>{% endfor %}</select>
       <button class="linklike" type="submit">Use</button>
       <span class="hint">Your key is filled into every example on this page.</span>
     </form>
