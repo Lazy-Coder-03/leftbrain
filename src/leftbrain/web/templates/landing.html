@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="hero">
+  <div>
+    <div class="eyebrow">MCP server · REST · Python library</div>
+    <h1 class="hl">The <em>left brain</em> for your AI agent.</h1>
+    <p class="lede">Exact, deterministic answers for everything language models get wrong: arithmetic, dates, units, ordering, validation. One free key, one endpoint, twelve tools that refuse to guess.</p>
+    <div class="cta">
+      <a class="btn primary" href="/login">Sign in with GitHub → get a key</a>
+      <a class="btn ghost" href="/docs">Read the docs</a>
+      <span class="hint">5,000 calls/day free · no card</span>
+    </div>
+  </div>
+  <div class="demo" id="demo" data-demo>
+    <div class="bar">
+      <button type="button" aria-pressed="true" data-tool="numbers">numbers</button>
+      <button type="button" aria-pressed="false" data-tool="convert">convert</button>
+      <button type="button" aria-pressed="false" data-tool="datetime">datetime</button>
+      <button type="button" aria-pressed="false" data-tool="text">text</button>
+    </div>
+    <div class="body" id="demo-body">
+      <noscript><p class="hint">Enable JavaScript to try the tools here, or <a href="/docs/quickstart">use curl</a>.</p></noscript>
+    </div>
+  </div>
+</section>
+
+<div class="proof">
+  <div><div class="big num">9.9 &gt; 9.11</div><div class="sm">Decimal comparison, not token comparison.</div></div>
+  <div><div class="big num">12 tools</div><div class="sm">Each with a <code>mode</code> parameter. Same contract everywhere.</div></div>
+  <div><div class="big num">0 guesses</div><div class="sm">Ambiguous input returns <code>needs.options</code> instead of a wrong answer.</div></div>
+</div>
+
+<section class="tools" id="tools">
+  <div class="sec-h">
+    <h2 class="sec">Twelve tools. One shape.</h2>
+    <p>Every call returns <code>{ok, result, assumptions[], warnings[]}</code> — or <code>{ok:false, error, needs}</code> when the input could mean two things.</p>
+  </div>
+  <div class="tgrid">
+    {% for name, desc, modes in tools %}<div class="tool"><div class="n"><a href="/docs/tools/{{ name }}">{{ name }}</a></div><div class="d">{{ desc }}</div><div class="m">{{ modes }}</div></div>{% endfor %}
+  </div>
+</section>
+
+<section class="contract">
+  <div>
+    <h2 class="sec">It would rather ask than guess.</h2>
+    <p>"3 oz" is either weight or volume. "03/04/2025" is March 4th or April 3rd. "IST" is India or Israel. leftbrain returns the options and lets the model pick — every assumption it does make is listed in the response.</p>
+  </div>
+<pre class="out"><span class="k">// convert · mode: units · "3 oz" → ml</span>
+{
+  <span class="k">"ok"</span>: <span class="b">false</span>,
+  <span class="k">"error"</span>: <span class="s">"ambiguous"</span>,
+  <span class="k">"message"</span>: <span class="s">"'oz' is ambiguous; specify which one (or pass assume='common')"</span>,
+  <span class="k">"needs"</span>: { <span class="k">"field"</span>: <span class="s">"from_unit"</span>, <span class="k">"options"</span>: [<span class="s">"ounce"</span>, <span class="s">"fluid_ounce"</span>] }
+}</pre>
+</section>
+{% endblock %}

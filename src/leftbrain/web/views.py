@@ -1,0 +1,226 @@
+"""Route handlers for the web site."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import JSONResponse, RedirectResponse, Response
+from starlette.routing import Route
+
+from . import auth, templates
+from .config import WebConfig
+from .tools_list import TOOLS
+
+
+def wants_html(request: Request) -> bool:
+    return "text/html" in request.headers.get("accept", "")
+
+
+def render(request: Request, name: str, status: int = 200, **ctx: Any) -> Response:
+    return templates.TemplateResponse(request, name, ctx, status_code=status)
+
+
+def no_store(response: Response) -> Response:
+    """Signed-in pages and key mutations must never be cached by a proxy or the browser."""
+    response.headers["cache-control"] = "no-store"
+    return response
+
+
+def error_page(request: Request, status: int, title: str, message: str, user: Any = None) -> Response:
+    return no_store(render(request, "error.html", status, title=title, message=message, page="error", user=user))
+
+
+def routes(store: Any, cfg: WebConfig) -> list[Any]:
+    from ..serve import _client_ip  # a module-level import would be circular
+    from . import demo as demo_mod
+    from . import docs as docs_mod
+    from . import toolref as toolref_mod
+
+    throttle = demo_mod.Throttle()
+
+    def fail_page(request: Request, status: int, title: str, message: str) -> Response:
+        """An error page that still shows who is signed in, so the nav does not flip to Sign in."""
+        return error_page(request, status, title, message, user=auth.current_user(request, cfg))
+
+    def docs_shell(request: Request, title: str, html: str, slug: str, tool: str | None = None) -> Response:
+        return render(request, "docs.html", 200, page="docs", user=auth.current_user(request, cfg), title=title, body=html, slug=slug, pages=docs_mod.PAGES, tools=toolref_mod.tool_names(), tool=tool)
+
+    async def docs_page(request: Request) -> Response:
+        slug = request.path_params.get("slug", "quickstart")
+        page = docs_mod.load_page(slug)
+        if page is None:
+            return fail_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
+        title, html = page
+        return docs_shell(request, title, html, slug)
+
+    async def tool_page(request: Request) -> Response:
+        name = request.path_params["name"]
+        page = await run_in_threadpool(toolref_mod.tool_page, name)  # first build runs every example
+        if page is None:
+            return fail_page(request, 404, "No such tool", "leftbrain has twelve tools; that isn't one of them.")
+        title, html = page
+        return docs_shell(request, title, html, "tools", tool=name)
+
+    async def demo(request: Request) -> Response:
+        tool = request.path_params["tool"]
+        if tool not in demo_mod.DEMO_TOOLS:
+            return JSONResponse({"ok": False, "error": "unsupported", "message": f"demo supports {', '.join(demo_mod.DEMO_TOOLS)}"}, status_code=404)
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            declared = 0
+        if declared > demo_mod.MAX_BODY:
+            return JSONResponse({"ok": False, "error": "invalid_input", "message": "body too large"}, status_code=413)
+        ok, retry = throttle.allow(_client_ip(request.scope))
+        if not ok:
+            return JSONResponse({"ok": False, "error": "rate_limited", "message": "demo limit reached; get a free key for 5,000 calls/day"}, status_code=429, headers={"retry-after": str(retry)})
+        try:
+            args = await request.json()
+            if not isinstance(args, dict):
+                raise ValueError
+        except Exception:
+            return JSONResponse({"ok": False, "error": "invalid_input", "message": "send a JSON object with a mode and the tool's arguments"}, status_code=400)
+        rejected = demo_mod.validate(tool, args)
+        if rejected is not None:
+            return JSONResponse(rejected, status_code=400)
+        try:
+            # core functions are sync and can be slow: keep them off the event loop
+            result = await run_in_threadpool(demo_mod.run, tool, args)
+        except Exception:
+            return JSONResponse({"ok": False, "error": "internal", "message": "the tool failed; try different input"}, status_code=500)
+        if isinstance(result, dict):
+            result.pop("trace", None)  # never leak a traceback from the public demo
+        return JSONResponse(result)
+
+    async def login(request: Request) -> Response:
+        if not cfg.oauth_ready:
+            return no_store(
+                render(
+                    request,
+                    "login.html",
+                    200,
+                    page="login",
+                    user=None,
+                    notice="Sign-in is not configured on this server. Set GITHUB_CLIENT_ID, "
+                    "GITHUB_CLIENT_SECRET and LEFTBRAIN_SECRET.",
+                )
+            )
+        state = auth.new_state()
+        resp = RedirectResponse(
+            auth.authorize_url(cfg, auth.base_url(request, cfg) + "/auth/github/callback", state),
+            status_code=302,
+        )
+        resp.set_cookie(
+            auth.OAUTH_COOKIE,
+            auth.sign_state(cfg.secret or "", state),
+            max_age=auth.OAUTH_MAX_AGE,
+            httponly=True,
+            samesite="lax",
+            secure=auth.is_https(request),
+            path="/",
+        )
+        return no_store(resp)
+
+    async def callback(request: Request) -> Response:
+        if not cfg.oauth_ready:
+            return fail_page(request, 404, "Sign-in unavailable", "Sign-in is not configured on this server.")
+        expected = auth.read_state(cfg.secret or "", request.cookies.get(auth.OAUTH_COOKIE))
+        got = request.query_params.get("state")
+        code = request.query_params.get("code")
+        if not expected or not got or expected != got or not code:
+            return no_store(
+                render(
+                    request,
+                    "login.html",
+                    400,
+                    page="login",
+                    user=None,
+                    notice="That sign-in link is stale or invalid. Please sign in again.",
+                )
+            )
+        try:
+            user = await auth.fetch_github_user(cfg, code, auth.base_url(request, cfg) + "/auth/github/callback")
+        except auth.OAuthError as e:
+            return no_store(render(request, "login.html", e.status, page="login", user=None, notice=e.message))
+        resp = RedirectResponse("/dashboard", status_code=302)
+        resp.delete_cookie(auth.OAUTH_COOKIE, path="/")
+        auth.set_session_cookie(resp, request, cfg, user)
+        return no_store(resp)
+
+    async def logout(request: Request) -> Response:
+        user = auth.current_user(request, cfg)
+        if user is not None:  # a session-less logout changes nothing; nothing to forge
+            form = await request.form()
+            if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+                return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        resp = RedirectResponse("/", status_code=302)
+        auth.clear_session_cookie(resp, request)
+        return no_store(resp)
+
+    def require_user(request: Request) -> auth.User | None:
+        return auth.current_user(request, cfg)
+
+    def dashboard_ctx(request: Request, user: auth.User, **extra: Any) -> dict[str, Any]:
+        from ..keys import DEFAULT_DAILY, MAX_ACTIVE_KEYS_PER_EMAIL
+
+        keys = store.list(user.email) if store else []
+        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "new_key": None, "error": None, **extra}
+
+    def keys_unavailable(request: Request) -> Response:
+        return fail_page(request, 503, "Keys unavailable", "This server has no key store configured.")
+
+    async def dashboard(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        if store is None:
+            return keys_unavailable(request)
+        return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user)))
+
+    async def create_key(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        if store is None:
+            return keys_unavailable(request)
+        raw, info = store.create_for_owner(user.email, str(form.get("name") or ""))
+        if raw is None:
+            return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=info)))
+        return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw)))
+
+    async def revoke_key(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        if store is None:
+            return keys_unavailable(request)
+        prefix = request.path_params["prefix"]
+        if not store.owns(user.email, prefix):
+            return fail_page(request, 403, "Not your key", "That key belongs to a different account.")
+        store.set_disabled(prefix, True)
+        return no_store(RedirectResponse("/dashboard", status_code=302))
+
+    return [
+        Route("/login", login),
+        Route("/auth/github/callback", callback),
+        Route("/logout", logout, methods=["POST"]),
+        Route("/dashboard", dashboard),
+        Route("/dashboard/keys", create_key, methods=["POST"]),
+        Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
+        Route("/demo/{tool}", demo, methods=["POST"]),
+        Route("/docs", docs_page),
+        Route("/docs/tools/{name}", tool_page),
+        Route("/docs/{slug}", docs_page),
+    ]
+
+
+async def landing(request: Request, store: Any, cfg: WebConfig) -> Response:
+    return render(request, "landing.html", 200, page="landing", user=auth.current_user(request, cfg), tools=TOOLS)

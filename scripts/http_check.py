@@ -54,7 +54,7 @@ async def call(base: str, key: str) -> None:
 
 def main() -> int:
     tmp = tempfile.mkdtemp(prefix="leftbrain_http_")
-    env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "LEFTBRAIN_KEYS_DB": str(Path(tmp) / "keys.sqlite3")}
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "src"), "LEFTBRAIN_KEYS_DB": str(Path(tmp) / "keys.sqlite3"), "LEFTBRAIN_OPEN_SIGNUP": "1"}
     proc = subprocess.Popen([sys.executable, "-m", "leftbrain.serve", "--port", str(PORT), "--host", "127.0.0.1", "--no-external"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     base = f"http://127.0.0.1:{PORT}"
     try:

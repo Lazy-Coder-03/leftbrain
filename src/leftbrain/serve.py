@@ -29,22 +29,93 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from . import __version__
 
-PUBLIC_PATHS = {"/", "/healthz", "/keys/signup"}
+PROTECTED_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp", "/keys/me")
 
 
-def _client_ip(scope: Any) -> str:
-    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-    fwd = headers.get("x-forwarded-for") or headers.get("cf-connecting-ip") or headers.get("x-real-ip")
-    if fwd:
-        return fwd.split(",")[0].strip()
+def _protected(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in PROTECTED_PREFIXES)
+
+
+def _trusted_proxy_hops() -> int:
+    """How many proxies sit in front of this process (``LEFTBRAIN_TRUSTED_PROXY_HOPS``).
+
+    1 = one reverse proxy (Northflank, Render, Fly, a single nginx). 2 = Cloudflare
+    in front of that proxy. 0 = the process is reached directly, so no forwarding
+    header may be believed at all.
+    """
+    try:
+        return max(0, int(os.environ.get("LEFTBRAIN_TRUSTED_PROXY_HOPS", "1")))
+    except ValueError:
+        return 1
+
+
+TRUSTED_PROXY_HOPS = _trusted_proxy_hops()
+
+
+def _client_ip(scope: Any, hops: int | None = None) -> str:
+    """The nearest IP this process is willing to believe.
+
+    ``X-Forwarded-For`` is appended to by each hop, so the *rightmost* entries were
+    written by our own infrastructure and the leftmost ones by the caller - which
+    means the leftmost entry is attacker-controlled and must never be used as a
+    rate-limit key. We count ``hops`` in from the right and fail closed to the last
+    entry when the chain is shorter than expected. ``X-Real-IP`` and
+    ``CF-Connecting-IP`` are ignored entirely: they are single-valued, so a client
+    that can reach the origin directly can forge them with no way to tell.
+    """
+    n = TRUSTED_PROXY_HOPS if hops is None else hops
     client = scope.get("client")
-    return client[0] if client else "unknown"
+    direct = client[0] if client else "unknown"
+    if n < 1:
+        return direct
+    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    chain = [p.strip() for p in headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if not chain:
+        return direct
+    return chain[-n] if len(chain) >= n else chain[-1]
+
+
+SECURITY_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "x-frame-options": "DENY",
+    "content-security-policy": (
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "img-src 'self' https://avatars.githubusercontent.com data:; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    ),
+}
+
+
+class SecurityHeadersMiddleware:
+    """Add the baseline security headers to every response that does not set them."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {k.decode().lower() for k, _ in headers}
+                headers.extend((k.encode(), v.encode()) for k, v in SECURITY_HEADERS.items() if k not in present)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 def _bearer(scope: Any) -> str:
@@ -64,7 +135,7 @@ class AuthMiddleware:
         self.store = store
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] != "http" or scope.get("path") in PUBLIC_PATHS:
+        if scope["type"] != "http" or not _protected(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
         supplied = _bearer(scope)
@@ -102,7 +173,25 @@ class AuthMiddleware:
         await resp(scope, receive, send)
 
 
-def build_app(*, include_external: bool = True, include_files: bool = False, stateless: bool = True, json_response: bool = False, host: str = "0.0.0.0", api_key: str | None = None, keys_db: str | None = None) -> Any:
+class _McpOnly:
+    """Guard for the core MCP app, which is mounted at ``""`` so it can own ``/mcp``.
+
+    Without this, that mount is the catch-all for the whole site and answers every
+    unrouted path with its own bare ``404 Not Found``. Raising ``HTTPException``
+    instead lets the site's branded 404 handler produce the response.
+    """
+
+    def __init__(self, app: Any, path: str = "/mcp") -> None:
+        self.app, self.path = app, path
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        path = scope.get("path", "")
+        if scope["type"] == "http" and path != self.path and not path.startswith(self.path + "/"):
+            raise HTTPException(status_code=404)
+        await self.app(scope, receive, send)
+
+
+def build_app(*, include_external: bool = True, include_files: bool = False, stateless: bool = True, json_response: bool = False, host: str = "0.0.0.0", api_key: str | None = None, keys_db: str | None = None, web_config: Any | None = None) -> Any:
     from .mcp_server import server as core
 
     servers: list[tuple[str, Any]] = [("", core)]
@@ -123,6 +212,13 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     static_key = api_key if api_key is not None else os.environ.get("LEFTBRAIN_API_KEY") or None
     auth_kind = "none" if not (static_key or store) else ("keys" if store else "bearer")
 
+    from .web import build_web
+    from .web.config import WebConfig
+
+    cfg = web_config or WebConfig.from_env()
+    if cfg.oauth_ready and cfg.base_url is None:
+        print(json.dumps({"warning": "LEFTBRAIN_BASE_URL is not set; the OAuth callback URL is derived from request headers"}), flush=True)
+
     mounts: list[Any] = []
     root_app = None
     for prefix, srv in servers:
@@ -132,18 +228,22 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
         else:
             root_app = app
 
-    async def index(_: Request) -> JSONResponse:
-        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if store else None, "transport": "streamable-http", "stateless": stateless})
+    async def index(request: Request) -> Any:
+        from .web.views import landing, wants_html
+
+        if wants_html(request):
+            return await landing(request, store, cfg)
+        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if (store and cfg.open_signup) else None, "login": "/login", "docs": "/docs", "transport": "streamable-http", "stateless": stateless})
 
     async def healthz(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "version": __version__})
 
     async def signup(request: Request) -> JSONResponse:
-        if store is None:
-            return JSONResponse({"ok": False, "error": "unsupported", "message": "self-serve keys are not enabled on this server"}, status_code=404)
+        if store is None or not cfg.open_signup:
+            return JSONResponse({"ok": False, "error": "unsupported", "message": "self-serve signup is closed; sign in at /login to create a key"}, status_code=404)
         try:
             body = await request.json()
-        except Exception:  # noqa: BLE001
+        except Exception:
             form = await request.form()
             body = dict(form)
         email = str(body.get("email", ""))
@@ -169,11 +269,19 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
                 await stack.enter_async_context(srv.session_manager.run())
             yield
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *mounts, Mount("", app=root_app)]
-    app: Any = Starlette(routes=routes, lifespan=lifespan)
+    async def not_found(request: Request, _exc: Any) -> Any:
+        from .web import auth as web_auth
+        from .web.views import error_page, wants_html
+
+        if wants_html(request):
+            return error_page(request, 404, "Page not found", "That page isn't here. Try the docs, or start from the home page.", user=web_auth.current_user(request, cfg))
+        return JSONResponse({"ok": False, "error": "unsupported", "message": "no such endpoint; see / for the endpoint list"}, status_code=404)
+
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *mounts, Mount("", app=_McpOnly(root_app))]
+    app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store)
-    return app
+    return SecurityHeadersMiddleware(app)
 
 
 def app_from_env() -> Any:
@@ -220,7 +328,7 @@ def main(argv: list[str] | None = None) -> None:
     keys_db = os.environ.get("LEFTBRAIN_KEYS_URL") or os.environ.get("DATABASE_URL") or os.environ.get("LEFTBRAIN_KEYS_DB")
     if keys_db and args.workers > 1:
         print("note: the SQLite key store keeps per-minute rate windows in memory; with several workers the per-minute limit is per worker (daily quotas stay exact)", flush=True)
-    print(json.dumps({"leftbrain": __version__, "listen": f"http://{args.host}:{args.port}", "core": "/mcp", "external": None if args.no_external else "/external/mcp", "files": "/files/mcp" if args.files else None, "auth": "keys" if keys_db else ("bearer" if os.environ.get("LEFTBRAIN_API_KEY") else "none"), "signup": "/keys/signup" if keys_db else None}), flush=True)
+    print(json.dumps({"leftbrain": __version__, "listen": f"http://{args.host}:{args.port}", "core": "/mcp", "external": None if args.no_external else "/external/mcp", "files": "/files/mcp" if args.files else None, "auth": "keys" if keys_db else ("bearer" if os.environ.get("LEFTBRAIN_API_KEY") else "none"), "signup": "/keys/signup" if (keys_db and os.environ.get("LEFTBRAIN_OPEN_SIGNUP", "0") in ("1", "true", "yes")) else None}), flush=True)
     uvicorn.run("leftbrain.serve:app_from_env", host=args.host, port=args.port, workers=args.workers, factory=True, log_level="info")
 
 

@@ -191,6 +191,7 @@ class KeyStore:
         return self._info(row) if row else None
 
     def list(self, owner: str | None = None) -> list[KeyInfo]:
+        owner = (owner or "").strip().lower() or None  # owners are stored normalised
         rows = self.db.all("SELECT * FROM keys WHERE owner = ? ORDER BY created_at DESC", (owner,)) if owner else self.db.all("SELECT * FROM keys ORDER BY created_at DESC")
         return [self._info(r) for r in rows]
 
@@ -271,6 +272,20 @@ class KeyStore:
             self.db.run("INSERT INTO signups(ip, day, count) VALUES (?,?,1) ON CONFLICT(ip, day) DO UPDATE SET count = signups.count + 1", (ip, day))
         raw, _ = self.create(email, note="self-serve signup", daily_quota=daily_quota, rpm=rpm)
         return raw, "ok"
+
+    def create_for_owner(self, email: str, name: str | None, *, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM) -> tuple[str | None, Any]:
+        """Dashboard key creation: verified owner, enforce the active-key cap, no IP throttle."""
+        email = (email or "").strip().lower()
+        with self._lock:
+            active = int(self.db.scalar("SELECT COUNT(*) FROM keys WHERE owner=? AND disabled=0", (email,)) or 0)
+            if active >= MAX_ACTIVE_KEYS_PER_EMAIL:
+                return None, f"you already have {MAX_ACTIVE_KEYS_PER_EMAIL} active keys; revoke one first"
+        note = (name or "").strip()[:40] or None
+        return self.create(email, note=note, daily_quota=daily_quota, rpm=rpm)
+
+    def owns(self, email: str, prefix: str) -> bool:
+        row = self.db.one("SELECT owner FROM keys WHERE prefix = ?", (prefix,))
+        return bool(row) and row["owner"] == (email or "").strip().lower()
 
     def usage(self, prefix: str | None = None, days: int = 7) -> list[dict[str, Any]]:
         base = "SELECT k.prefix, k.owner, u.day, u.count FROM usage u JOIN keys k ON k.key_hash=u.key_hash"

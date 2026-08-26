@@ -4,6 +4,7 @@ from starlette.testclient import TestClient
 
 from leftbrain.keys import KeyStore
 from leftbrain.serve import build_app
+from leftbrain.web.config import WebConfig
 
 
 def test_keystore_lifecycle(tmp_path):
@@ -39,7 +40,11 @@ def test_signup_limits(tmp_path):
 
 
 def test_http_server_with_keys(tmp_path):
-    app = build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"))
+    app = build_app(
+        include_external=False,
+        keys_db=str(tmp_path / "k.sqlite3"),
+        web_config=WebConfig(None, None, "s" * 20, None, True),
+    )
     with TestClient(app) as c:
         assert c.get("/healthz").json()["ok"]
         assert c.get("/").json()["auth"] == "keys"
@@ -65,6 +70,20 @@ def test_http_server_static_key():
         assert c.get("/keys/me").status_code == 401
         assert c.get("/keys/me", headers={"X-API-Key": "s3cret"}).json()["result"]["quota"] == "unlimited"
         assert c.post("/keys/signup", json={"email": "a@b.co"}).status_code == 404
+
+
+def test_create_for_owner_cap_and_owns(tmp_path):
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    made = [store.create_for_owner("Me@Example.com", f"key {i}") for i in range(3)]
+    assert all(raw and raw.startswith("lblz_") for raw, _ in made)
+    assert made[0][1].owner == "me@example.com" and made[0][1].note == "key 0"
+    raw, reason = store.create_for_owner("me@example.com", None)
+    assert raw is None and "3 active" in reason
+    prefix = made[0][1].prefix
+    assert store.owns("me@example.com", prefix) and not store.owns("other@example.com", prefix)
+    assert store.set_disabled(prefix, True)
+    raw, info = store.create_for_owner("me@example.com", "")  # slot freed, empty name -> None
+    assert raw and info.note is None
 
 
 def test_keystore_postgres_if_configured():
