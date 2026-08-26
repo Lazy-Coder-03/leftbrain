@@ -204,18 +204,19 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
 
         servers.append(("/files", files_srv))
 
-    store = None
-    if keys_db:
-        from .keys import PREFIX_LEN, KeyStore
-
-        store = KeyStore(keys_db)
-    static_key = api_key if api_key is not None else os.environ.get("LEFTBRAIN_API_KEY") or None
-    auth_kind = "none" if not (static_key or store) else ("keys" if store else "bearer")
-
     from .web import build_web
     from .web.config import WebConfig
 
     cfg = web_config or WebConfig.from_env()
+
+    store = None
+    if keys_db:
+        from .keys import PREFIX_LEN, KeyStore
+
+        # the same secret that signs sessions encrypts the retrievable copy of each key
+        store = KeyStore(keys_db, secret=cfg.secret)
+    static_key = api_key if api_key is not None else os.environ.get("LEFTBRAIN_API_KEY") or None
+    auth_kind = "none" if not (static_key or store) else ("keys" if store else "bearer")
     if cfg.oauth_ready and cfg.base_url is None:
         print(json.dumps({"warning": "LEFTBRAIN_BASE_URL is not set; the OAuth callback URL is derived from request headers"}), flush=True)
 

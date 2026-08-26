@@ -103,3 +103,54 @@ def test_keystore_postgres_if_configured():
         assert store.get_by_prefix(info.prefix).used_today == 2
     finally:
         store.revoke(info.prefix)
+
+
+def test_reveal_roundtrip_and_ownership(tmp_path):
+    store = KeyStore(str(tmp_path / "k.sqlite3"), secret="s" * 20)
+    assert store.can_reveal
+    raw, info = store.create("Me@Example.com", note="laptop")
+    assert info.revealable and "revealable" not in info.to_dict()
+    assert store.reveal("me@example.com", info.prefix) == raw
+    assert store.reveal("  ME@Example.com ", info.prefix) == raw  # owners are normalised
+    assert store.reveal("other@example.com", info.prefix) is None
+    assert store.reveal("me@example.com", "lblz_nosuch1") is None
+    assert store.set_disabled(info.prefix, True)
+    assert store.reveal("me@example.com", info.prefix) is None  # revoked keys never come back
+
+
+def test_reveal_needs_a_secret_and_does_not_survive_rotation(tmp_path):
+    db = str(tmp_path / "k.sqlite3")
+    plain = KeyStore(db)
+    assert not plain.can_reveal
+    _, info = plain.create("a@b.co")
+    assert not info.revealable and plain.reveal("a@b.co", info.prefix) is None
+
+    later = KeyStore(db, secret="s" * 20)  # encryption switched on after that key was issued
+    assert later.reveal("a@b.co", info.prefix) is None
+    assert later.get_by_prefix(info.prefix).revealable is False
+    raw2, info2 = later.create("a@b.co")
+    assert later.reveal("a@b.co", info2.prefix) == raw2
+
+    rotated = KeyStore(db, secret="a-completely-different-secret")
+    assert rotated.reveal("a@b.co", info2.prefix) is None  # unrevealable...
+    assert rotated.verify_and_count(raw2).ok  # ...but still valid for authentication
+
+
+def test_migration_adds_secret_enc_to_an_existing_database(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "old.sqlite3")
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE keys (key_hash TEXT PRIMARY KEY, prefix TEXT NOT NULL, owner TEXT NOT NULL,"
+        " note TEXT, created_at TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0,"
+        " daily_quota INTEGER NOT NULL, rpm INTEGER NOT NULL, last_used TEXT)"
+    )
+    con.commit()
+    con.close()
+
+    store = KeyStore(path, secret="s" * 20)
+    assert "secret_enc" in {c["name"] for c in store.db.all("PRAGMA table_info(keys)")}
+    raw, info = store.create("a@b.co")
+    assert store.reveal("a@b.co", info.prefix) == raw
+    KeyStore(path, secret="s" * 20)  # the migration is guarded: opening it again is a no-op

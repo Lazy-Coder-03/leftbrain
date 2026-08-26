@@ -172,7 +172,7 @@ and the key API behaves like this:
 
 Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars), `LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback), and `LEFTBRAIN_TRUSTED_PROXY_HOPS` (default `1`) — how many proxies append to `X-Forwarded-For` in front of the process, so per-IP limits are keyed on the entry *your* proxy wrote rather than the caller-supplied leftmost one. One reverse proxy (Northflank, Render, Fly, nginx) is `1`; add Cloudflare in front and it becomes `2`; `0` means nothing proxies it and no forwarding header is believed.
 
-Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Only a SHA-256 of each key is stored.
+Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Authentication only ever compares a SHA-256 of the key. When `LEFTBRAIN_SECRET` is set the store also keeps a Fernet-encrypted copy of each key, under a key derived from that secret, so the signed-in owner can be shown their own key again on the dashboard and have it filled into the docs examples. Rotating `LEFTBRAIN_SECRET` leaves existing keys working but no longer revealable; leave the secret unset and nothing but the hash is stored.
 
 Admin CLI (any DSN):
 

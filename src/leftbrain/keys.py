@@ -1,6 +1,9 @@
 """API key store for the hosted server: issue, verify, quota, usage.
 
-Keys look like ``lblz_<40 url-safe chars>``. Only a SHA-256 hash is stored.
+Keys look like ``lblz_<40 url-safe chars>``. A SHA-256 hash is what authenticates a
+call; when ``LEFTBRAIN_SECRET`` is set the store also keeps a Fernet-encrypted copy
+of the key so its owner can be shown it again (dashboard "Show", docs examples).
+Rotating ``LEFTBRAIN_SECRET`` leaves older keys valid but no longer revealable.
 
 Backends (chosen from the DSN):
     sqlite      ``leftbrain-keys.sqlite3`` / ``sqlite:///path``   - single instance
@@ -20,6 +23,7 @@ CLI::
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -49,7 +53,8 @@ _SCHEMA = [
         disabled    INTEGER NOT NULL DEFAULT 0,
         daily_quota INTEGER NOT NULL,
         rpm         INTEGER NOT NULL,
-        last_used   TEXT
+        last_used   TEXT,
+        secret_enc  TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_keys_owner ON keys(owner)",
     "CREATE INDEX IF NOT EXISTS idx_keys_prefix ON keys(prefix)",
@@ -77,6 +82,17 @@ def _hash(key: str) -> str:
     return hashlib.sha256(key.encode()).hexdigest()
 
 
+def _fernet(secret: str | None) -> Any:
+    """A Fernet built from ``LEFTBRAIN_SECRET``, or None when reveal is unavailable."""
+    if not secret:
+        return None
+    try:
+        from cryptography.fernet import Fernet
+    except ImportError:  # pragma: no cover - reveal degrades, auth is unaffected
+        return None
+    return Fernet(base64.urlsafe_b64encode(hashlib.sha256(secret.encode()).digest()))
+
+
 def _today() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%d")
 
@@ -96,9 +112,11 @@ class KeyInfo:
     rpm: int
     last_used: str | None
     used_today: int = 0
+    revealable: bool = False  # a decryptable copy of the key exists
 
     def to_dict(self) -> dict[str, Any]:
-        return {**self.__dict__, "remaining_today": max(0, self.daily_quota - self.used_today)}
+        fields = {k: v for k, v in self.__dict__.items() if k != "revealable"}
+        return {**fields, "remaining_today": max(0, self.daily_quota - self.used_today)}
 
 
 @dataclass
@@ -163,14 +181,30 @@ class _DB:
 
 
 class KeyStore:
-    def __init__(self, dsn: str | None = None) -> None:
+    def __init__(self, dsn: str | None = None, *, secret: str | None = None) -> None:
         self.dsn = dsn or default_dsn()
         self.db = _DB(self.dsn)
         self.backend = "postgres" if self.db.pg else "sqlite"
         self._lock = threading.Lock()
         self._rpm_window: dict[str, list[float]] = {}
+        self._crypto = _fernet(secret)
         for stmt in _SCHEMA:
             self.db.run(stmt)
+        self._migrate()
+
+    @property
+    def can_reveal(self) -> bool:
+        return self._crypto is not None
+
+    def _migrate(self) -> None:
+        """Add columns that older databases predate. Guarded, so it is safe to re-run."""
+        if self.db.pg:
+            self.db.run("ALTER TABLE keys ADD COLUMN IF NOT EXISTS secret_enc TEXT")
+        elif "secret_enc" not in {c["name"] for c in self.db.all("PRAGMA table_info(keys)")}:
+            self.db.run("ALTER TABLE keys ADD COLUMN secret_enc TEXT")
+
+    def _encrypt(self, raw: str) -> str | None:
+        return self._crypto.encrypt(raw.encode()).decode() if self._crypto else None
 
     # -- issue / manage ------------------------------------------------------
 
@@ -178,13 +212,14 @@ class KeyStore:
         raw = KEY_PREFIX + secrets.token_urlsafe(30)
         prefix = raw[:PREFIX_LEN]
         now = _now()
+        enc = self._encrypt(raw)
         with self._lock:
-            self.db.run("INSERT INTO keys(key_hash, prefix, owner, note, created_at, disabled, daily_quota, rpm) VALUES (?,?,?,?,?,0,?,?)", (_hash(raw), prefix, owner.strip().lower(), note, now, daily_quota, rpm))
-        return raw, KeyInfo(prefix, owner, note, now, False, daily_quota, rpm, None)
+            self.db.run("INSERT INTO keys(key_hash, prefix, owner, note, created_at, disabled, daily_quota, rpm, secret_enc) VALUES (?,?,?,?,?,0,?,?,?)", (_hash(raw), prefix, owner.strip().lower(), note, now, daily_quota, rpm, enc))
+        return raw, KeyInfo(prefix, owner, note, now, False, daily_quota, rpm, None, revealable=enc is not None)
 
     def _info(self, row: dict[str, Any]) -> KeyInfo:
         used = self.db.scalar("SELECT count FROM usage WHERE key_hash=? AND day=?", (row["key_hash"], _today()))
-        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0))
+        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0), revealable=bool(row.get("secret_enc")) and self.can_reveal)
 
     def get_by_prefix(self, prefix: str) -> KeyInfo | None:
         row = self.db.one("SELECT * FROM keys WHERE prefix = ?", (prefix,))
@@ -287,6 +322,25 @@ class KeyStore:
         row = self.db.one("SELECT owner FROM keys WHERE prefix = ?", (prefix,))
         return bool(row) and row["owner"] == (email or "").strip().lower()
 
+    def reveal(self, owner: str, prefix: str) -> str | None:
+        """The full key back, for its owner only.
+
+        None when the caller does not own it, the key is disabled, the store has no
+        secret configured, the key predates encryption, or ``LEFTBRAIN_SECRET`` has
+        been rotated since the key was issued.
+        """
+        if self._crypto is None:
+            return None
+        row = self.db.one("SELECT owner, disabled, secret_enc FROM keys WHERE prefix = ?", (prefix,))
+        if not row or row["disabled"] or not row["secret_enc"]:
+            return None
+        if row["owner"] != (owner or "").strip().lower():
+            return None
+        try:
+            return self._crypto.decrypt(str(row["secret_enc"]).encode()).decode()
+        except Exception:
+            return None  # rotated secret or corrupt ciphertext: the key still authenticates
+
     def usage(self, prefix: str | None = None, days: int = 7) -> list[dict[str, Any]]:
         base = "SELECT k.prefix, k.owner, u.day, u.count FROM usage u JOIN keys k ON k.key_hash=u.key_hash"
         if prefix:
@@ -331,11 +385,11 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("stats")
     args = ap.parse_args(argv)
 
-    store = KeyStore(args.db)
+    store = KeyStore(args.db, secret=os.environ.get("LEFTBRAIN_SECRET"))
     if args.cmd == "create":
         raw, info = store.create(args.owner, note=args.note, daily_quota=args.daily, rpm=args.rpm)
         print(json.dumps({"key": raw, **info.to_dict()}, indent=2))
-        print("\nStore this key now - it cannot be shown again.")
+        print("\nStore this key now." if store.can_reveal else "\nStore this key now - it cannot be shown again.")
     elif args.cmd == "list":
         for k in store.list(args.owner):
             print(json.dumps(k.to_dict()))
