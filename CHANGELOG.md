@@ -8,6 +8,7 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- Demo endpoint: the 8 KB body cap now applies to chunked requests too, and deeply nested arguments return a contract `invalid_input` instead of a bare 500.
 - Docker image build failed after the changelog was bundled into the wheel (`CHANGELOG.md` was not copied into the image).
 
 ### Changed

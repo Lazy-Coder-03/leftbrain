@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from starlette.concurrency import run_in_threadpool
@@ -102,16 +103,22 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         ok, retry = throttle.allow(_client_ip(request.scope))
         if not ok:
             return JSONResponse({"ok": False, "error": "rate_limited", "message": "demo limit reached; get a free key for 5,000 calls/day"}, status_code=429, headers={"retry-after": str(retry)})
+        # Read the body ourselves so the cap holds for chunked requests too (no content-length).
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > demo_mod.MAX_BODY:
+                return JSONResponse({"ok": False, "error": "invalid_input", "message": "body too large"}, status_code=413)
         try:
-            args = await request.json()
+            args = json.loads(bytes(body) or b"null")
             if not isinstance(args, dict):
                 raise ValueError
         except Exception:
             return JSONResponse({"ok": False, "error": "invalid_input", "message": "send a JSON object with a mode and the tool's arguments"}, status_code=400)
-        rejected = demo_mod.validate(tool, args)
-        if rejected is not None:
-            return JSONResponse(rejected, status_code=400)
         try:
+            rejected = demo_mod.validate(tool, args)
+            if rejected is not None:
+                return JSONResponse(rejected, status_code=400)
             # core functions are sync and can be slow: keep them off the event loop
             result = await run_in_threadpool(demo_mod.run, tool, args)
         except Exception:

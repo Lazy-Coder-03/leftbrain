@@ -1146,3 +1146,26 @@ def test_every_docs_page_uses_the_one_placeholder(tmp_path):
     for page in sorted((HERE / "docs").glob("*.md")):
         text = page.read_text(encoding="utf-8")
         assert ANON_KEY not in text, f"{page.name}: use {KEY_PLACEHOLDER}, not the ellipsis form"
+
+
+def test_demo_body_cap_holds_for_chunked_bodies(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        big = b'{"mode":"compare","values":["' + b"9" * 20000 + b'"]}'
+
+        def chunks():
+            for i in range(0, len(big), 1024):
+                yield big[i : i + 1024]
+
+        r = c.post("/demo/numbers", content=chunks(), headers={"content-type": "application/json"})
+        assert r.status_code == 413 and r.json()["error"] == "invalid_input"
+
+
+def test_demo_rejects_deep_nesting_with_contract_error(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        body = '{"mode":"compare","values":' + "[" * 400 + '"1"' + "]" * 400 + "}"
+        r = c.post("/demo/numbers", content=body, headers={"content-type": "application/json"})
+        assert r.status_code == 400
+        assert r.json()["error"] == "invalid_input" and "nested" in r.json()["message"]
+        # a sane shape is unaffected
+        ok = c.post("/demo/numbers", json={"mode": "compare", "values": ["9.11", "9.9"]})
+        assert ok.status_code == 200 and ok.json()["ok"]

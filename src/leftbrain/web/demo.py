@@ -57,15 +57,25 @@ def _bad(message: str) -> dict[str, Any]:
     return {"ok": False, "error": "invalid_input", "message": message}
 
 
+MAX_DEPTH = 4  # nesting levels of lists an argument may contain
+
+
 def _too_big(name: str, value: Any) -> dict[str, Any] | None:
-    if isinstance(value, str):
-        return _bad(f"'{name}' is too long for the demo (max {MAX_STRING} characters)") if len(value) > MAX_STRING else None
-    if isinstance(value, list):
-        if len(value) > MAX_ITEMS:
-            return _bad(f"'{name}' has too many items for the demo (max {MAX_ITEMS})")
-        return next((e for e in (_too_big(name, v) for v in value) if e), None)
-    if isinstance(value, dict):
-        return _bad(f"'{name}' must be a string, number or list in the demo")
+    """Iterative walk with a depth cap: hostile nesting can never exhaust the recursion limit."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if isinstance(item, str):
+            if len(item) > MAX_STRING:
+                return _bad(f"'{name}' is too long for the demo (max {MAX_STRING} characters)")
+        elif isinstance(item, list):
+            if len(item) > MAX_ITEMS:
+                return _bad(f"'{name}' has too many items for the demo (max {MAX_ITEMS})")
+            if depth >= MAX_DEPTH and any(isinstance(v, list | dict) for v in item):
+                return _bad(f"'{name}' is nested too deeply for the demo (max {MAX_DEPTH} levels)")
+            stack.extend((v, depth + 1) for v in item)
+        elif isinstance(item, dict):
+            return _bad(f"'{name}' must be a string, number or list in the demo")
     return None
 
 
