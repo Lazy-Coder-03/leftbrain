@@ -117,7 +117,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
 
     store = None
     if keys_db:
-        from .keys import KeyStore
+        from .keys import PREFIX_LEN, KeyStore
 
         store = KeyStore(keys_db)
     static_key = api_key if api_key is not None else os.environ.get("LEFTBRAIN_API_KEY") or None
@@ -151,8 +151,8 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
         key, msg = store.signup(email, ip)
         if key is None:
             return JSONResponse({"ok": False, "error": "rejected", "message": msg}, status_code=429 if "limit" in msg else 400)
-        info = store.get_by_prefix(key[:11])
-        return JSONResponse({"ok": True, "key": key, "prefix": key[:11], "daily_quota": info.daily_quota if info else None, "rpm": info.rpm if info else None, "usage": "Authorization: Bearer <key> on /mcp and /external/mcp", "note": "store this key now; it cannot be shown again"}, status_code=201)
+        info = store.get_by_prefix(key[:PREFIX_LEN])
+        return JSONResponse({"ok": True, "key": key, "prefix": key[:PREFIX_LEN], "daily_quota": info.daily_quota if info else None, "rpm": info.rpm if info else None, "usage": "Authorization: Bearer <key> on /mcp and /external/mcp", "note": "store this key now; it cannot be shown again"}, status_code=201)
 
     async def me(request: Request) -> JSONResponse:
         auth = request.scope.get("state", {}).get("auth") or {}

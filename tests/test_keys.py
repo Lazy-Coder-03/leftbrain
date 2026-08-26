@@ -47,6 +47,8 @@ def test_http_server_with_keys(tmp_path):
         r = c.post("/keys/signup", json={"email": "dev@example.com"})
         assert r.status_code == 201
         key = r.json()["key"]
+        assert key.startswith("lblz_") and r.json()["prefix"] == key[:13]
+        assert r.json()["daily_quota"] == 5000 and r.json()["rpm"] == 60
         me = c.get("/keys/me", headers={"Authorization": f"Bearer {key}"})
         assert me.status_code == 200 and me.json()["result"]["owner"] == "dev@example.com"
         init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}
