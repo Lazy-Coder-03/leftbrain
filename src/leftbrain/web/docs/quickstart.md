@@ -2,7 +2,6 @@
 
 Two ways in: hand the prompt below to your coding agent, or wire it up yourself in three steps — get a key, store it in your shell, call a tool. All examples target the hosted server at **https://leftbrain.idlesync.in**; a self-hosted server uses the same routes on your own host.
 
-Every example on this page is labelled: **blue blocks are what you send**, **green blocks are what comes back**.
 
 <h2 id="set-it-up-for-me">Set it up for me</h2>
 

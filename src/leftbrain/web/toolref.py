@@ -515,8 +515,7 @@ _NETWORK_LEAD = (
 )
 
 _PAGE_LEAD = (
-    "Each example below shows the `tools/call` request first and the exact response underneath — "
-    "**blue blocks are what you send, green blocks are what comes back**.  "
+    "Each example below shows the `tools/call` request first and the exact response underneath.  "
     "Responses are produced by running the real tool when this page is built, so they cannot drift "
     "from what the server returns.  A failure that never reaches the tool — a missing or mistyped "
     "argument — comes back as an MCP error result (`isError`) rather than the leftbrain contract; "
@@ -568,8 +567,7 @@ def index_markdown() -> str:
         CONTRACT_NOTE,
         "",
         "Each page below documents every mode: what it does, its parameters, worked examples, and "
-        "the inputs that make it fail. In every example, **blue blocks are what you send and green "
-        "blocks are what comes back**.",
+        "the inputs that make it fail.",
         "",
     ]
     described = {t.name: t for t in CATALOGUE}

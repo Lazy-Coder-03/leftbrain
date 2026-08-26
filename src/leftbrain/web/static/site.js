@@ -1,5 +1,31 @@
 (function () {
   document.documentElement.classList.add('js');
+  function skeleton(n) { var h = '<div class="skel-lines">'; for (var i = 0; i < n; i++) h += '<i></i>'; return h + '</div>'; }
+  // Server-rendered pages: show a skeleton the instant a same-origin navigation or form submit starts.
+  function startLoading(target) {
+    var doc = document.querySelector('.doc') || document.querySelector('main') || document.body;
+    if (!doc.classList.contains('is-loading')) { doc.classList.add('is-loading'); doc.insertAdjacentHTML('afterbegin', skeleton(6)); }
+    if (target && target.classList && target.classList.contains('btn')) target.classList.add('is-busy');
+  }
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('a[href]'); if (!a) return;
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (a.target && a.target !== '_self') return;
+    if (a.origin !== location.origin || (a.hash && a.pathname === location.pathname)) return;
+    if (a.hasAttribute('download') || a.protocol === 'mailto:') return;
+    startLoading(a);
+  });
+  document.addEventListener('submit', function (e) {
+    var f = e.target; if (!(f instanceof HTMLFormElement)) return;
+    var table = document.querySelector('table.keys'); if (table) table.classList.add('is-loading');
+    var btn = f.querySelector('button[type="submit"], .btn'); if (btn) btn.classList.add('is-busy');
+    if (f.classList.contains('keybar')) startLoading(btn);
+  });
+  window.addEventListener('pageshow', function () { // back/forward cache restores the page mid-skeleton
+    document.querySelectorAll('.is-loading').forEach(function (el) { el.classList.remove('is-loading'); });
+    document.querySelectorAll('.doc > .skel-lines').forEach(function (el) { el.remove(); });
+    document.querySelectorAll('.is-busy').forEach(function (el) { el.classList.remove('is-busy'); });
+  });
   var $ = function (s, r) { return (r || document).querySelector(s); };
   var $$ = function (s, r) { return Array.prototype.slice.call((r || document).querySelectorAll(s)); };
 
@@ -65,11 +91,11 @@
   }
   function run() {
     var v = {}; $$('input', body).forEach(function (i) { v[i.getAttribute('data-k')] = i.value; });
-    var t0 = performance.now(); $('#out').textContent = '…';
+    var t0 = performance.now(); $('#out').innerHTML = skeleton(5); $('#out').classList.add('skel');
     fetch('/demo/' + cur, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args(cur, v)) })
       .then(function (r) { return r.json(); })
-      .then(function (j) { $('#out').innerHTML = pretty(j); $('#lat').textContent = (performance.now() - t0).toFixed(0) + ' ms'; })
-      .catch(function () { $('#out').textContent = 'network error'; });
+      .then(function (j) { $('#out').classList.remove('skel'); $('#out').innerHTML = pretty(j); $('#lat').textContent = (performance.now() - t0).toFixed(0) + ' ms'; })
+      .catch(function () { $('#out').classList.remove('skel'); $('#out').textContent = 'network error'; });
   }
   $$('.bar button', demo).forEach(function (b) { b.addEventListener('click', function () { $$('.bar button', demo).forEach(function (x) { x.setAttribute('aria-pressed', x === b); }); cur = b.getAttribute('data-tool'); render(); }); });
   render();

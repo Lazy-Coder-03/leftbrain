@@ -288,9 +288,9 @@ def test_the_failure_examples_are_labelled_too(client):
     assert ":::request tools/call" in fails and ":::response" in fails
 
 
-def test_the_tools_index_explains_the_colours(client):
+def test_the_tools_index_has_no_colour_legend(client):
     body = client.get("/docs/tools").text.split('<article class="doc">')[1]
-    assert "blue blocks are what you send" in body and "green blocks are what comes back" in body
+    assert "blue blocks" not in body and "green blocks" not in body
 
 
 def test_index_and_tool_pages_are_cached():

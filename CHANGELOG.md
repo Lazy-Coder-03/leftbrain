@@ -13,6 +13,7 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Changed
 
+- Site shows loading skeletons on navigation, form submits and demo runs; the colour legend on docs pages was dropped.
 - Docs key picker shows the key name only (prefix only for unnamed keys).
 
 - Docs examples are labelled Request/Response and colour-coded: blue blocks are what you

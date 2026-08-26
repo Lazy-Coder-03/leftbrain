@@ -503,7 +503,7 @@ def test_hand_written_pages_label_what_you_send_and_what_comes_back(tmp_path):
             assert "```" not in body, path
         quickstart = article(c.get("/docs").text)
         assert 'class="io io-cmd"' in quickstart  # storing the key is neither a call nor a reply
-        assert "blue blocks are what you send" in quickstart.lower()  # the legend, once
+        assert "blue blocks" not in quickstart.lower()  # labels speak for themselves; no legend
 
 
 # --- the set-it-up prompt and the custom-agents page --------------------------

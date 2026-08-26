@@ -94,3 +94,16 @@ pre,.out{scrollbar-width:thin}pre::-webkit-scrollbar{height:8px}pre::-webkit-scr
 p.keybar.hint{display:block;font-family:var(--body);font-size:.92rem;color:var(--ink2)}
 p.keybar.hint a{color:var(--accent)}
 @media (max-width:860px){.keybar .hint{margin-left:0;flex-basis:100%}}
+/* loading skeletons (progressive enhancement) */
+.skel{position:relative;overflow:hidden;background:var(--line2);border-radius:var(--radius);color:transparent!important;pointer-events:none}
+.skel::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.75),transparent);animation:skel-shimmer 1.1s infinite}
+.skel-lines{display:grid;gap:10px;padding:14px}
+.skel-lines i{display:block;height:12px;border-radius:3px;background:var(--line);opacity:.55}
+.skel-lines i:nth-child(2){width:78%}.skel-lines i:nth-child(3){width:64%}.skel-lines i:nth-child(4){width:86%}.skel-lines i:nth-child(5){width:40%}
+.doc{position:relative}
+.doc.is-loading>*:not(.skel-lines){opacity:.25;transition:opacity .15s}
+.doc.is-loading>.skel-lines{position:absolute;inset:0 0 auto 0;padding:24px 0}
+.keys.is-loading tbody{opacity:.35}
+.btn.is-busy{opacity:.6;pointer-events:none}
+@keyframes skel-shimmer{to{transform:translateX(100%)}}
+@media (prefers-reduced-motion:reduce){.skel::after{animation:none}}
