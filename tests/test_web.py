@@ -753,7 +753,10 @@ def test_static_assets_are_cached_and_version_stamped(tmp_path):
         assert c.get("/static/site.js").headers["cache-control"] == "public, max-age=86400"
         html = c.get("/", headers={"Accept": "text/html"}).text
         for asset in ("site.css", "site.js", "logo.svg"):
-            assert f"/static/{asset}?v={__version__}" in html, asset
+            from leftbrain.web import templates as _t
+
+            assert f"/static/{asset}?v={_t.env.globals['asset_v']}" in html, asset
+            assert f"?v={__version__}" not in html
 
 
 def test_dashboard_quota_comes_from_the_configured_default(tmp_path, monkeypatch):
