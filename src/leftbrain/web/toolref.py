@@ -286,8 +286,15 @@ def docstring_modes(tool_name: str) -> DocModes:
 
 
 def purpose_of(tool: ToolDoc, mode: Mode) -> str:
-    """The one-liner for the mode index: the catalogue's where it says more, else the docstring's."""
-    return mode.purpose or docstring_modes(tool.name).summary.get(mode.name, "")
+    """The one-liner for the mode index: the catalogue's where it says more, else the docstring's.
+
+    Docstring bullets are written lowercase for the agent reading them; the index is a table of
+    sentences, so the first letter is raised here rather than in the docstring.
+    """
+    if mode.purpose:
+        return mode.purpose
+    summary = docstring_modes(tool.name).summary.get(mode.name, "")
+    return summary[:1].upper() + summary[1:]
 
 
 # --------------------------------------------------------------------------- #
