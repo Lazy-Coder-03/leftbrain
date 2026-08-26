@@ -449,8 +449,24 @@ def _params_table(table: list[Row]) -> list[str]:
 
 
 def _example_block(tool: ToolDoc, example: Example, response: dict[str, Any]) -> list[str]:
+    """Caption, then the call you send, then the answer it came back with — each one labelled.
+
+    The `:::request` / `:::response` containers are the same ones the hand-written pages use;
+    `render_markdown` turns them into the colour-coded blocks (see `docs.py`).
+    """
     request = {"name": tool.name, "arguments": example.args}
-    out = [example.caption, "", _json_block(request), "", _json_block(response), ""]
+    out = [
+        example.caption,
+        "",
+        ":::request tools/call",
+        _json_block(request),
+        ":::",
+        "",
+        ":::response",
+        _json_block(response),
+        ":::",
+        "",
+    ]
     if example.volatile:
         out += ["*Time-dependent: the response above was captured when this page was built.*", ""]
     return out
@@ -499,7 +515,8 @@ _NETWORK_LEAD = (
 )
 
 _PAGE_LEAD = (
-    "Each example below shows the `tools/call` request first and the exact response underneath.  "
+    "Each example below shows the `tools/call` request first and the exact response underneath — "
+    "**blue blocks are what you send, green blocks are what comes back**.  "
     "Responses are produced by running the real tool when this page is built, so they cannot drift "
     "from what the server returns.  A failure that never reaches the tool — a missing or mistyped "
     "argument — comes back as an MCP error result (`isError`) rather than the leftbrain contract; "
@@ -551,7 +568,8 @@ def index_markdown() -> str:
         CONTRACT_NOTE,
         "",
         "Each page below documents every mode: what it does, its parameters, worked examples, and "
-        "the inputs that make it fail.",
+        "the inputs that make it fail. In every example, **blue blocks are what you send and green "
+        "blocks are what comes back**.",
         "",
     ]
     described = {t.name: t for t in CATALOGUE}

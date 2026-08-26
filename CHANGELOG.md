@@ -6,6 +6,11 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Docs examples are labelled Request/Response and colour-coded: blue blocks are what you
+  send, green blocks are what comes back, and a neutral block marks a setup command.
+
 ## [0.1.0] - 2026-08-26
 
 First public release, and a **pre-release** — the package ships as

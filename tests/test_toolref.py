@@ -266,8 +266,31 @@ def test_pages_have_no_raw_markdown_artefacts(client):
         text = client.get(f"/docs/tools/{name}").text
         body = text.split('<article class="doc">')[1]
         assert "| ---" not in body and "\n## " not in body
-        assert "```" not in body
+        assert "```" not in body and ":::" not in body
         assert "<table>" in body and "<code" in body
+
+
+@pytest.mark.parametrize("tool", [t for t in toolref.CATALOGUE if t.modes], ids=_ids)
+def test_every_example_says_which_half_you_send(client, tool):
+    """Request and response are colour-coded, so a reader never confuses input with output."""
+    body = client.get(f"/docs/tools/{tool.name}").text.split('<article class="doc">')[1]
+    assert '<div class="io io-req"><span class="io-label">Request · tools/call</span>' in body
+    assert '<div class="io io-res"><span class="io-label">Response · you get this back</span>' in body
+    # one labelled response for every labelled request — the failures are paired too
+    assert body.count('class="io io-req"') == body.count('class="io io-res"')
+
+
+def test_the_failure_examples_are_labelled_too(client):
+    """"Fails when" comes from the same generator, so its blocks carry the same labels."""
+    math = toolref.by_name("math")
+    markdown = "\n".join(toolref._mode_markdown(math, math.modes[0]))
+    fails = markdown.split("### Fails when")[1]
+    assert ":::request tools/call" in fails and ":::response" in fails
+
+
+def test_the_tools_index_explains_the_colours(client):
+    body = client.get("/docs/tools").text.split('<article class="doc">')[1]
+    assert "blue blocks are what you send" in body and "green blocks are what comes back" in body
 
 
 def test_index_and_tool_pages_are_cached():
