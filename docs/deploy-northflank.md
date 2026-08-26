@@ -66,9 +66,9 @@ Open the public URL shown on the service header (`https://web--leftbrain--….co
 
 ```bash
 curl -X POST https://<public-url>/keys/signup -H "content-type: application/json" -d '{"email":"you@example.com"}'
-# {"ok":true,"key":"lb_…","daily_quota":5000,"rpm":60,…}
-curl https://<public-url>/keys/me -H "Authorization: Bearer lb_…"
-claude mcp add --transport http leftbrain https://<public-url>/mcp --header "Authorization: Bearer lb_…"
+# {"ok":true,"key":"lblz_…","daily_quota":5000,"rpm":60,…}
+curl https://<public-url>/keys/me -H "Authorization: Bearer lblz_…"
+claude mcp add --transport http leftbrain https://<public-url>/mcp --header "Authorization: Bearer lblz_…"
 ```
 
 ## Step 5 — Custom domain leftbrain.idlesync.in

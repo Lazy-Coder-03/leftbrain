@@ -154,14 +154,14 @@ To let other people use your deployment with their own keys, quotas and rate lim
 LEFTBRAIN_KEYS_DB=/data/keys.sqlite3 leftbrain-serve     # or --keys-db
 ```
 
-- **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lb_…", "daily_quota": 5000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email.
+- **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 5000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email.
 - **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for disabled keys.
 - **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today.
 - **Admin CLI**:
 
 ```bash
 leftbrain-keys create --owner you@example.com --daily 50000 --rpm 300 --note "partner"
-leftbrain-keys list | disable lb_xxxxxxxx | enable … | revoke … | set lb_xxxxxxxx --daily 20000
+leftbrain-keys list | disable lblz_xxxxxxxx | enable … | revoke … | set lblz_xxxxxxxx --daily 20000
 leftbrain-keys usage --days 7
 leftbrain-keys stats
 ```

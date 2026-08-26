@@ -1,6 +1,6 @@
 """API key store for the hosted server: issue, verify, quota, usage.
 
-Keys look like ``lb_<40 url-safe chars>``. Only a SHA-256 hash is stored.
+Keys look like ``lblz_<40 url-safe chars>``. Only a SHA-256 hash is stored.
 
 Backends (chosen from the DSN):
     sqlite      ``leftbrain-keys.sqlite3`` / ``sqlite:///path``   - single instance
@@ -34,6 +34,8 @@ from typing import Any
 DEFAULT_DB = "leftbrain-keys.sqlite3"
 DEFAULT_DAILY = int(os.environ.get("LEFTBRAIN_DEFAULT_DAILY_QUOTA", "5000"))
 DEFAULT_RPM = int(os.environ.get("LEFTBRAIN_DEFAULT_RPM", "60"))
+KEY_PREFIX = "lblz_"
+PREFIX_LEN = len(KEY_PREFIX) + 8  # shown/stored identifier, e.g. lblz_pI5brWOG
 SIGNUPS_PER_IP_PER_DAY = int(os.environ.get("LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY", "3"))
 MAX_ACTIVE_KEYS_PER_EMAIL = int(os.environ.get("LEFTBRAIN_MAX_KEYS_PER_EMAIL", "3"))
 
@@ -173,8 +175,8 @@ class KeyStore:
     # -- issue / manage ------------------------------------------------------
 
     def create(self, owner: str, *, note: str | None = None, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM) -> tuple[str, KeyInfo]:
-        raw = "lb_" + secrets.token_urlsafe(30)
-        prefix = raw[:11]
+        raw = KEY_PREFIX + secrets.token_urlsafe(30)
+        prefix = raw[:PREFIX_LEN]
         now = _now()
         with self._lock:
             self.db.run("INSERT INTO keys(key_hash, prefix, owner, note, created_at, disabled, daily_quota, rpm) VALUES (?,?,?,?,?,0,?,?)", (_hash(raw), prefix, owner.strip().lower(), note, now, daily_quota, rpm))
@@ -223,7 +225,7 @@ class KeyStore:
     # -- verify + meter ------------------------------------------------------
 
     def verify_and_count(self, raw_key: str) -> Verdict:
-        if not raw_key or not raw_key.startswith("lb_"):
+        if not raw_key or not raw_key.startswith(KEY_PREFIX):
             return Verdict(False, "invalid key", 401)
         h = _hash(raw_key)
         row = self.db.one("SELECT * FROM keys WHERE key_hash = ?", (h,))

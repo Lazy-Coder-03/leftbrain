@@ -9,7 +9,7 @@ from leftbrain.serve import build_app
 def test_keystore_lifecycle(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
     raw, info = store.create("a@b.co", daily_quota=3, rpm=100)
-    assert raw.startswith("lb_") and info.prefix == raw[:11]
+    assert raw.startswith("lblz_") and info.prefix == raw[:13]
     for i in range(3):
         v = store.verify_and_count(raw)
         assert v.ok and v.remaining == 2 - i
@@ -17,7 +17,7 @@ def test_keystore_lifecycle(tmp_path):
     assert not v.ok and v.status == 429 and "quota" in v.reason
     assert store.set_disabled(info.prefix, True)
     assert store.verify_and_count(raw).status == 403
-    assert store.verify_and_count("lb_nope").status == 401
+    assert store.verify_and_count("lblz_nope").status == 401
     assert store.set_limits(info.prefix, daily_quota=10) and store.get_by_prefix(info.prefix).daily_quota == 10
     assert store.stats()["keys"] == 1
     assert store.revoke(info.prefix) and store.get_by_prefix(info.prefix) is None
@@ -53,7 +53,7 @@ def test_http_server_with_keys(tmp_path):
         r = c.post("/mcp", json=init, headers={"Authorization": f"Bearer {key}", "Accept": "application/json, text/event-stream"})
         assert r.status_code == 200 and "x-ratelimit-remaining-today" in r.headers
         assert "leftbrain" in r.text
-        bad = c.post("/mcp", json=init, headers={"Authorization": "Bearer lb_wrong", "Accept": "application/json, text/event-stream"})
+        bad = c.post("/mcp", json=init, headers={"Authorization": "Bearer lblz_wrong", "Accept": "application/json, text/event-stream"})
         assert bad.status_code == 401 and json.loads(bad.text)["error"] == "unknown key"
 
 
