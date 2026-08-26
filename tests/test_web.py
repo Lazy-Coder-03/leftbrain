@@ -177,9 +177,20 @@ def login_via_github(c: TestClient) -> None:
 def test_callback_happy_path_sets_session(tmp_path):
     with TestClient(oauth_app(tmp_path)) as c:
         login_via_github(c)
-        r = c.post("/logout", follow_redirects=False)
+        csrf = csrf_from(c.get("/dashboard").text)
+        r = c.post("/logout", data={"csrf": csrf}, follow_redirects=False)
         assert r.status_code == 302 and r.headers["location"] == "/"
         assert "lb_session" not in c.cookies
+
+
+def test_logout_requires_csrf(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        assert c.post("/logout").status_code == 403
+        assert c.post("/logout", data={"csrf": "bogus"}).status_code == 403
+        assert "lb_session" in c.cookies  # still signed in
+        csrf = csrf_from(c.get("/dashboard").text)
+        assert c.post("/logout", data={"csrf": csrf}, follow_redirects=False).status_code == 302
 
 
 def test_callback_unverified_email(tmp_path):
@@ -380,3 +391,247 @@ def test_docs_sidebar_marks_current_page(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         assert 'href="/docs/quickstart" class="cur"' in c.get("/docs").text
         assert 'href="/docs/clients" class="cur"' in c.get("/docs/clients").text
+
+
+# --- demo allow-list, body cap and failure handling (C1, I1) ------------------
+
+# exactly what static/site.js sends for each tab's prefilled values
+DEMO_DEFAULTS = {
+    "numbers": {"mode": "compare", "values": ["9.11", "9.9", "10"]},
+    "convert": {"mode": "units", "value": "3", "from_unit": "oz", "to": "ml"},
+    "datetime": {"mode": "diff", "from": "2026-08-26", "to": "2026-12-25"},
+    "text": {"mode": "count", "text": "strawberry \U0001f353 na\u00efve caf\u00e9"},
+}
+
+
+def test_demo_defaults_from_the_landing_page_still_run(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        for tool, body in DEMO_DEFAULTS.items():
+            r = c.post(f"/demo/{tool}", json=body)
+            assert r.status_code == 200, (tool, r.status_code)
+            j = r.json()
+            if tool == "convert":  # "oz" is deliberately ambiguous
+                assert j["ok"] is False and j["needs"]["field"] == "from_unit"
+            else:
+                assert j["ok"] is True, (tool, j)
+
+
+def test_demo_rejects_unlisted_mode_fast(tmp_path):
+    """A caller-supplied regex is off the allow-list, so no ReDoS can be triggered."""
+    import time
+
+    with TestClient(make_app(tmp_path)) as c:
+        t0 = time.monotonic()
+        r = c.post("/demo/text", json={"mode": "regex_match", "text": "a" * 40 + "!", "pattern": "(a+)+$"})
+        elapsed = time.monotonic() - t0
+        assert r.status_code == 400
+        assert r.json()["ok"] is False and r.json()["error"] == "invalid_input"
+        assert "count" in r.json()["message"]
+        assert elapsed < 1.0, f"took {elapsed:.2f}s"
+
+
+def test_demo_rejects_unlisted_argument_and_oversized_values(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.post("/demo/numbers", json={"mode": "compare", "values": ["1"], "precision": 99})
+        assert r.status_code == 400 and "precision" in r.json()["message"]
+        r = c.post("/demo/text", json={"mode": "count", "text": "x" * 2001})
+        assert r.status_code == 400 and "too long" in r.json()["message"]
+        r = c.post("/demo/numbers", json={"mode": "compare", "values": ["1"] * 51})
+        assert r.status_code == 400 and "too many" in r.json()["message"]
+        r = c.post("/demo/numbers", json={"values": ["1", "2"]})  # no mode at all
+        assert r.status_code == 400 and r.json()["error"] == "invalid_input"
+
+
+def test_demo_rejects_oversized_body_before_reading_it(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.post("/demo/numbers", content=b"x" * 9000, headers={"content-type": "application/json"})
+        assert r.request.headers["content-length"] == "9000"
+        assert r.status_code == 413
+        assert r.json() == {"ok": False, "error": "invalid_input", "message": "body too large"}
+
+
+def test_demo_never_returns_a_traceback(tmp_path, monkeypatch):
+    from leftbrain.web import demo as demo_mod
+
+    leaky = {"ok": False, "error": "internal", "message": "boom", "trace": "Traceback (most recent call last): ..."}
+    monkeypatch.setitem(demo_mod.DEMO_TOOLS, "numbers", lambda *a, **k: dict(leaky))
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.post("/demo/numbers", json={"mode": "compare", "values": ["1"]})
+        assert "trace" not in r.json() and "Traceback" not in r.text
+
+
+def test_demo_unexpected_exception_is_a_generic_500(tmp_path, monkeypatch):
+    from leftbrain.web import demo as demo_mod
+
+    def boom(*a, **k):
+        raise RuntimeError("secret internal detail")
+
+    monkeypatch.setitem(demo_mod.DEMO_TOOLS, "numbers", boom)
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.post("/demo/numbers", json={"mode": "compare", "values": ["1"]})
+        assert r.status_code == 500
+        assert r.json() == {"ok": False, "error": "internal", "message": "the tool failed; try different input"}
+        assert "secret internal detail" not in r.text and "Traceback" not in r.text
+
+
+# --- client IP / trusted proxy hops (C2) -------------------------------------
+
+
+def scope_with(xff=None, client="127.0.0.1", **extra_headers):
+    headers = [(k.replace("_", "-").encode(), v.encode()) for k, v in extra_headers.items()]
+    if xff is not None:
+        headers.append((b"x-forwarded-for", xff.encode()))
+    return {"type": "http", "client": (client, 1234), "headers": headers}
+
+
+def test_client_ip_counts_hops_from_the_right_and_ignores_spoofable_headers():
+    from leftbrain.serve import _client_ip
+
+    # one proxy in front: the single entry is the one it wrote
+    assert _client_ip(scope_with("1.2.3.4"), hops=1) == "1.2.3.4"
+    # the attacker-controlled leftmost entry must never be the rate-limit key
+    assert _client_ip(scope_with("9.9.9.9, 10.0.0.1"), hops=1) == "10.0.0.1"
+    assert _client_ip(scope_with("9.9.9.9, 10.0.0.1"), hops=2) == "9.9.9.9"
+    # a chain shorter than expected fails closed to the nearest hop
+    assert _client_ip(scope_with("1.2.3.4"), hops=2) == "1.2.3.4"
+    # x-real-ip / cf-connecting-ip are single-valued and forgeable: never believed
+    assert _client_ip(scope_with(None, x_real_ip="6.6.6.6", cf_connecting_ip="7.7.7.7")) == "127.0.0.1"
+    assert _client_ip(scope_with("1.2.3.4", x_real_ip="6.6.6.6"), hops=1) == "1.2.3.4"
+    # no proxy at all: the header is worthless
+    assert _client_ip(scope_with("1.2.3.4", client="5.5.5.5"), hops=0) == "5.5.5.5"
+    assert _client_ip({"type": "http", "client": None, "headers": []}) == "unknown"
+
+
+def test_trusted_proxy_hops_from_env(monkeypatch):
+    from leftbrain import serve
+
+    monkeypatch.setenv("LEFTBRAIN_TRUSTED_PROXY_HOPS", "2")
+    assert serve._trusted_proxy_hops() == 2
+    monkeypatch.setenv("LEFTBRAIN_TRUSTED_PROXY_HOPS", "nonsense")
+    assert serve._trusted_proxy_hops() == 1
+    monkeypatch.delenv("LEFTBRAIN_TRUSTED_PROXY_HOPS")
+    assert serve._trusted_proxy_hops() == 1
+
+
+def test_demo_throttle_is_keyed_on_the_trusted_hop_not_the_leftmost(tmp_path):
+    """A rotating leftmost X-Forwarded-For must not buy an attacker extra demo calls."""
+    with TestClient(make_app(tmp_path)) as c:
+        last = None
+        for i in range(31):
+            last = c.post("/demo/numbers", json={"mode": "compare", "values": ["1", "2"]}, headers={"x-forwarded-for": f"9.9.9.{i}, 10.0.0.1"})
+        assert last.status_code == 429 and int(last.headers["retry-after"]) > 0
+        assert last.json()["error"] == "rate_limited"
+
+
+# --- response headers (I2, I3) ------------------------------------------------
+
+
+def test_security_headers_on_html_and_json(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        for r in (c.get("/", headers={"Accept": "text/html"}), c.get("/healthz")):
+            assert r.headers["x-content-type-options"] == "nosniff"
+            assert r.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+            assert r.headers["x-frame-options"] == "DENY"
+            csp = r.headers["content-security-policy"]
+            assert "default-src 'self'" in csp and "script-src 'self'" in csp
+            assert "https://fonts.googleapis.com" in csp and "https://fonts.gstatic.com" in csp
+            assert "https://avatars.githubusercontent.com" in csp and "frame-ancestors 'none'" in csp
+
+
+def test_templates_carry_no_inline_script_so_the_csp_holds():
+    from leftbrain.web import HERE
+
+    for tpl in sorted((HERE / "templates").glob("*.html")):
+        body = tpl.read_text(encoding="utf-8")
+        assert "<script>" not in body and "<script type" not in body, tpl.name
+        assert "onclick=" not in body and "onload=" not in body, tpl.name
+
+
+def test_dashboard_and_key_mutations_are_never_cached(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        page = c.get("/dashboard")
+        assert page.headers["cache-control"] == "no-store"
+        csrf = csrf_from(page.text)
+        created = c.post("/dashboard/keys", data={"name": "x", "csrf": csrf})
+        assert created.headers["cache-control"] == "no-store"
+        key = created.text.split('<code id="new-key">')[1].split("</code>")[0]
+        r = c.post(f"/dashboard/keys/{key[:13]}/revoke", data={"csrf": csrf}, follow_redirects=False)
+        assert r.status_code == 302 and r.headers["cache-control"] == "no-store"
+
+
+# --- 503 guard, cookie flags, cross-owner revoke, protected prefixes (I6, I8) --
+
+
+def test_key_routes_503_without_a_store(tmp_path):
+    config = WebConfig(client_id="cid", client_secret="csec", secret="test-secret-0123456789", base_url=None, open_signup=False, github_transport=github_transport())
+    with TestClient(build_app(include_external=False, keys_db=None, web_config=config)) as c:
+        login_via_github(c)
+        assert c.get("/dashboard").status_code == 503
+        csrf = auth.csrf_token("test-secret-0123456789", auth.User("octo", "octo@example.com", None))
+        assert c.post("/dashboard/keys", data={"name": "x", "csrf": csrf}).status_code == 503
+        assert c.post("/dashboard/keys/lblz_whatever/revoke", data={"csrf": csrf}).status_code == 503
+
+
+def test_session_cookie_flags_and_oauth_cookie_cleared(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        r = c.get("/login", follow_redirects=False)
+        state = r.headers["location"].split("state=")[1].split("&")[0]
+        r = c.get(f"/auth/github/callback?code=ok&state={state}", headers={"x-forwarded-proto": "https"}, follow_redirects=False)
+        assert r.status_code == 302
+        cookies = r.headers.get_list("set-cookie")
+        session = next(h for h in cookies if h.startswith("lb_session="))
+        assert "httponly" in session.lower() and "samesite=lax" in session.lower() and "secure" in session.lower()
+        oauth = next(h for h in cookies if h.startswith("lb_oauth="))
+        assert "max-age=0" in oauth.lower() or "01 jan 1970" in oauth.lower()
+
+
+def test_revoke_of_a_real_other_owner_key_is_refused(tmp_path):
+    from leftbrain.keys import KeyStore
+
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    raw, _ = store.create("other@example.com", note="theirs")
+    prefix = raw[:13]
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        page = c.get("/dashboard")
+        assert prefix not in page.text  # never listed for the signed-in user
+        r = c.post(f"/dashboard/keys/{prefix}/revoke", data={"csrf": csrf_from(page.text)})
+        assert r.status_code == 403 and "different account" in r.text
+    assert store.get_by_prefix(prefix).disabled is False  # still usable by its owner
+
+
+def test_callback_404_when_oauth_not_configured(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/auth/github/callback?code=ok&state=x")
+        assert r.status_code == 404 and "not configured" in r.text
+
+
+def test_every_protected_prefix_needs_a_bearer(tmp_path):
+    from leftbrain.serve import PROTECTED_PREFIXES
+
+    config = WebConfig(client_id=None, client_secret=None, secret="test-secret-0123456789", base_url=None, open_signup=False)
+    app = build_app(include_external=True, keys_db=str(tmp_path / "k.sqlite3"), web_config=config)
+    with TestClient(app) as c:
+        for path in PROTECTED_PREFIXES:
+            r = c.get(path) if path == "/keys/me" else c.post(path, json={})
+            assert r.status_code != 200, path
+            if path != "/files/mcp":  # not mounted here; 401 or 404 are both fine
+                assert r.status_code == 401, (path, r.status_code)
+
+
+def test_key_store_list_normalises_the_owner(tmp_path):
+    from leftbrain.keys import KeyStore
+
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    store.create("Octo@Example.COM", note="mixed case")
+    assert len(store.list("octo@example.com")) == 1
+    assert len(store.list("  OCTO@Example.com ")) == 1
+    assert store.list(None) == store.list()
+
+
+def test_warns_when_base_url_is_unset(tmp_path, capsys):
+    make_app(tmp_path, client_id="cid", client_secret="csec")
+    assert "LEFTBRAIN_BASE_URL" in capsys.readouterr().out
+    make_app(tmp_path, client_id="cid", client_secret="csec", base_url="https://leftbrain.example")
+    assert "LEFTBRAIN_BASE_URL" not in capsys.readouterr().out

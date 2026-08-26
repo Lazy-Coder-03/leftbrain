@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
@@ -20,12 +21,18 @@ def render(request: Request, name: str, status: int = 200, **ctx: Any) -> Respon
     return templates.TemplateResponse(request, name, ctx, status_code=status)
 
 
+def no_store(response: Response) -> Response:
+    """Signed-in pages and key mutations must never be cached by a proxy or the browser."""
+    response.headers["cache-control"] = "no-store"
+    return response
+
+
 def error_page(request: Request, status: int, title: str, message: str) -> Response:
-    return render(request, "error.html", status, title=title, message=message, page="error", user=None)
+    return no_store(render(request, "error.html", status, title=title, message=message, page="error", user=None))
 
 
 def routes(store: Any, cfg: WebConfig) -> list[Any]:
-    from ..serve import _client_ip  # noqa: E402  (module-level import would be circular)
+    from ..serve import _client_ip  # a module-level import would be circular
     from . import demo as demo_mod
     from . import docs as docs_mod
 
@@ -43,6 +50,12 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         tool = request.path_params["tool"]
         if tool not in demo_mod.DEMO_TOOLS:
             return JSONResponse({"ok": False, "error": "unsupported", "message": f"demo supports {', '.join(demo_mod.DEMO_TOOLS)}"}, status_code=404)
+        try:
+            declared = int(request.headers.get("content-length") or 0)
+        except ValueError:
+            declared = 0
+        if declared > demo_mod.MAX_BODY:
+            return JSONResponse({"ok": False, "error": "invalid_input", "message": "body too large"}, status_code=413)
         ok, retry = throttle.allow(_client_ip(request.scope))
         if not ok:
             return JSONResponse({"ok": False, "error": "rate_limited", "message": "demo limit reached; get a free key for 5,000 calls/day"}, status_code=429, headers={"retry-after": str(retry)})
@@ -50,20 +63,32 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             args = await request.json()
             if not isinstance(args, dict):
                 raise ValueError
-        except Exception:  # noqa: BLE001
+        except Exception:
             return JSONResponse({"ok": False, "error": "invalid_input", "message": "send a JSON object with a mode and the tool's arguments"}, status_code=400)
-        return JSONResponse(demo_mod.run(tool, args))
+        rejected = demo_mod.validate(tool, args)
+        if rejected is not None:
+            return JSONResponse(rejected, status_code=400)
+        try:
+            # core functions are sync and can be slow: keep them off the event loop
+            result = await run_in_threadpool(demo_mod.run, tool, args)
+        except Exception:
+            return JSONResponse({"ok": False, "error": "internal", "message": "the tool failed; try different input"}, status_code=500)
+        if isinstance(result, dict):
+            result.pop("trace", None)  # never leak a traceback from the public demo
+        return JSONResponse(result)
 
     async def login(request: Request) -> Response:
         if not cfg.oauth_ready:
-            return render(
-                request,
-                "login.html",
-                200,
-                page="login",
-                user=None,
-                notice="Sign-in is not configured on this server. Set GITHUB_CLIENT_ID, "
-                "GITHUB_CLIENT_SECRET and LEFTBRAIN_SECRET.",
+            return no_store(
+                render(
+                    request,
+                    "login.html",
+                    200,
+                    page="login",
+                    user=None,
+                    notice="Sign-in is not configured on this server. Set GITHUB_CLIENT_ID, "
+                    "GITHUB_CLIENT_SECRET and LEFTBRAIN_SECRET.",
+                )
             )
         state = auth.new_state()
         resp = RedirectResponse(
@@ -79,7 +104,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             secure=auth.is_https(request),
             path="/",
         )
-        return resp
+        return no_store(resp)
 
     async def callback(request: Request) -> Response:
         if not cfg.oauth_ready:
@@ -88,27 +113,34 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         got = request.query_params.get("state")
         code = request.query_params.get("code")
         if not expected or not got or expected != got or not code:
-            return render(
-                request,
-                "login.html",
-                400,
-                page="login",
-                user=None,
-                notice="That sign-in link is stale or invalid. Please sign in again.",
+            return no_store(
+                render(
+                    request,
+                    "login.html",
+                    400,
+                    page="login",
+                    user=None,
+                    notice="That sign-in link is stale or invalid. Please sign in again.",
+                )
             )
         try:
             user = await auth.fetch_github_user(cfg, code, auth.base_url(request, cfg) + "/auth/github/callback")
         except auth.OAuthError as e:
-            return render(request, "login.html", e.status, page="login", user=None, notice=e.message)
+            return no_store(render(request, "login.html", e.status, page="login", user=None, notice=e.message))
         resp = RedirectResponse("/dashboard", status_code=302)
         resp.delete_cookie(auth.OAUTH_COOKIE, path="/")
         auth.set_session_cookie(resp, request, cfg, user)
-        return resp
+        return no_store(resp)
 
     async def logout(request: Request) -> Response:
+        user = auth.current_user(request, cfg)
+        if user is not None:  # a session-less logout changes nothing; nothing to forge
+            form = await request.form()
+            if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+                return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
         resp = RedirectResponse("/", status_code=302)
         auth.clear_session_cookie(resp, request)
-        return resp
+        return no_store(resp)
 
     def require_user(request: Request) -> auth.User | None:
         return auth.current_user(request, cfg)
@@ -119,13 +151,16 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         keys = store.list(user.email) if store else []
         return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "new_key": None, "error": None, **extra}
 
+    def keys_unavailable(request: Request) -> Response:
+        return error_page(request, 503, "Keys unavailable", "This server has no key store configured.")
+
     async def dashboard(request: Request) -> Response:
         user = require_user(request)
         if not user:
             return RedirectResponse("/login", status_code=302)
         if store is None:
-            return error_page(request, 503, "Keys unavailable", "This server has no key store configured.")
-        return render(request, "dashboard.html", 200, **dashboard_ctx(request, user))
+            return keys_unavailable(request)
+        return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user)))
 
     async def create_key(request: Request) -> Response:
         user = require_user(request)
@@ -134,10 +169,12 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         form = await request.form()
         if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
             return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        if store is None:
+            return keys_unavailable(request)
         raw, info = store.create_for_owner(user.email, str(form.get("name") or ""))
         if raw is None:
-            return render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=info))
-        return render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw))
+            return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=info)))
+        return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw)))
 
     async def revoke_key(request: Request) -> Response:
         user = require_user(request)
@@ -146,11 +183,13 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         form = await request.form()
         if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
             return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        if store is None:
+            return keys_unavailable(request)
         prefix = request.path_params["prefix"]
         if not store.owns(user.email, prefix):
             return error_page(request, 403, "Not your key", "That key belongs to a different account.")
         store.set_disabled(prefix, True)
-        return RedirectResponse("/dashboard", status_code=302)
+        return no_store(RedirectResponse("/dashboard", status_code=302))
 
     return [
         Route("/login", login),

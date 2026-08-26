@@ -42,13 +42,79 @@ def _protected(path: str) -> bool:
     return any(path == p or path.startswith(p + "/") for p in PROTECTED_PREFIXES)
 
 
-def _client_ip(scope: Any) -> str:
-    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
-    fwd = headers.get("x-forwarded-for") or headers.get("cf-connecting-ip") or headers.get("x-real-ip")
-    if fwd:
-        return fwd.split(",")[0].strip()
+def _trusted_proxy_hops() -> int:
+    """How many proxies sit in front of this process (``LEFTBRAIN_TRUSTED_PROXY_HOPS``).
+
+    1 = one reverse proxy (Northflank, Render, Fly, a single nginx). 2 = Cloudflare
+    in front of that proxy. 0 = the process is reached directly, so no forwarding
+    header may be believed at all.
+    """
+    try:
+        return max(0, int(os.environ.get("LEFTBRAIN_TRUSTED_PROXY_HOPS", "1")))
+    except ValueError:
+        return 1
+
+
+TRUSTED_PROXY_HOPS = _trusted_proxy_hops()
+
+
+def _client_ip(scope: Any, hops: int | None = None) -> str:
+    """The nearest IP this process is willing to believe.
+
+    ``X-Forwarded-For`` is appended to by each hop, so the *rightmost* entries were
+    written by our own infrastructure and the leftmost ones by the caller - which
+    means the leftmost entry is attacker-controlled and must never be used as a
+    rate-limit key. We count ``hops`` in from the right and fail closed to the last
+    entry when the chain is shorter than expected. ``X-Real-IP`` and
+    ``CF-Connecting-IP`` are ignored entirely: they are single-valued, so a client
+    that can reach the origin directly can forge them with no way to tell.
+    """
+    n = TRUSTED_PROXY_HOPS if hops is None else hops
     client = scope.get("client")
-    return client[0] if client else "unknown"
+    direct = client[0] if client else "unknown"
+    if n < 1:
+        return direct
+    headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+    chain = [p.strip() for p in headers.get("x-forwarded-for", "").split(",") if p.strip()]
+    if not chain:
+        return direct
+    return chain[-n] if len(chain) >= n else chain[-1]
+
+
+SECURITY_HEADERS = {
+    "x-content-type-options": "nosniff",
+    "referrer-policy": "strict-origin-when-cross-origin",
+    "x-frame-options": "DENY",
+    "content-security-policy": (
+        "default-src 'self'; script-src 'self'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "img-src 'self' https://avatars.githubusercontent.com data:; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    ),
+}
+
+
+class SecurityHeadersMiddleware:
+    """Add the baseline security headers to every response that does not set them."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        async def send_wrapper(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                present = {k.decode().lower() for k, _ in headers}
+                headers.extend((k.encode(), v.encode()) for k, v in SECURITY_HEADERS.items() if k not in present)
+                message = {**message, "headers": headers}
+            await send(message)
+
+        await self.app(scope, receive, send_wrapper)
 
 
 def _bearer(scope: Any) -> str:
@@ -131,6 +197,8 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     from .web.config import WebConfig
 
     cfg = web_config or WebConfig.from_env()
+    if cfg.oauth_ready and cfg.base_url is None:
+        print(json.dumps({"warning": "LEFTBRAIN_BASE_URL is not set; the OAuth callback URL is derived from request headers"}), flush=True)
 
     mounts: list[Any] = []
     root_app = None
@@ -186,7 +254,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     app: Any = Starlette(routes=routes, lifespan=lifespan)
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store)
-    return app
+    return SecurityHeadersMiddleware(app)
 
 
 def app_from_env() -> Any:

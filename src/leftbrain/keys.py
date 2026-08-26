@@ -191,6 +191,7 @@ class KeyStore:
         return self._info(row) if row else None
 
     def list(self, owner: str | None = None) -> list[KeyInfo]:
+        owner = (owner or "").strip().lower() or None  # owners are stored normalised
         rows = self.db.all("SELECT * FROM keys WHERE owner = ? ORDER BY created_at DESC", (owner,)) if owner else self.db.all("SELECT * FROM keys ORDER BY created_at DESC")
         return [self._info(r) for r in rows]
 

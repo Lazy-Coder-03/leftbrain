@@ -53,11 +53,13 @@ Project → **Services → Create service → Combined service** (build + deploy
 | Basic | Name | `leftbrain` (cannot be renamed later) |
 | Repository | Repo / branch | `Lazy-Coder-03/leftbrain` · `main` |
 | Build | Type | **Dockerfile** · path `/Dockerfile` · context `/` |
-| Environment | Runtime variables | `PORT=8080` · `WEB_CONCURRENCY=1` · `LEFTBRAIN_SERVE_EXTERNAL=1` · `LEFTBRAIN_SERVE_FILES=0` · `LEFTBRAIN_DEFAULT_DAILY_QUOTA=5000` · `LEFTBRAIN_DEFAULT_RPM=60` · `GITHUB_CLIENT_ID=…` · `GITHUB_CLIENT_SECRET=…` · `LEFTBRAIN_SECRET=<python -c "import secrets;print(secrets.token_urlsafe(48))">` · `LEFTBRAIN_BASE_URL=https://leftbrain.idlesync.in` |
+| Environment | Runtime variables | `PORT=8080` · `WEB_CONCURRENCY=1` · `LEFTBRAIN_SERVE_EXTERNAL=1` · `LEFTBRAIN_SERVE_FILES=0` · `LEFTBRAIN_DEFAULT_DAILY_QUOTA=5000` · `LEFTBRAIN_DEFAULT_RPM=60` · `GITHUB_CLIENT_ID=…` · `GITHUB_CLIENT_SECRET=…` · `LEFTBRAIN_SECRET=<python -c "import secrets;print(secrets.token_urlsafe(48))">` · `LEFTBRAIN_BASE_URL=https://leftbrain.idlesync.in` · `LEFTBRAIN_TRUSTED_PROXY_HOPS=1` |
 | Networking | Port | `8080`, protocol **HTTP**, **Public** ✔, name `web` (auto-filled from `EXPOSE 8080`; check the *Public* toggle) |
 | Resources | Plan | the sandbox default (`nf-compute-10`/`20`) · 1 instance |
 | Advanced → Health checks | | HTTP · port `8080` · path `/healthz` · initial delay 20 s |
 | Advanced → CMD override | | leave empty (Dockerfile runs `leftbrain-serve`) |
+
+`LEFTBRAIN_TRUSTED_PROXY_HOPS` tells the server how many proxies append to `X-Forwarded-For` in front of it, so per-IP limits (demo throttle, signup throttle) are keyed on the entry that hop wrote rather than on the leftmost, caller-supplied one. Northflank's router is **one** hop, so `1` (the default) is right here. Put Cloudflare’s proxy in front of it later and it becomes `2`. Set `0` only if the process is reachable directly with no proxy at all — then no forwarding header is believed and the socket address is used.
 
 `GITHUB_CLIENT_SECRET` and `LEFTBRAIN_SECRET` are secrets, not plain config — add them to the `keys-link` secret group from Step 2 (alongside `LEFTBRAIN_KEYS_URL`) so they're inherited the same way, or set them directly on this service's **Environment** tab if you'd rather not share them project-wide.
 
