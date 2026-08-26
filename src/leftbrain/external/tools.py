@@ -108,7 +108,7 @@ def weather(mode: str = "current", **params: Any) -> dict[str, Any]:
 def fx_rate(**params: Any) -> dict[str, Any]:
     """Exchange rates via Frankfurter (ECB reference rates). base, symbols/to, date, amount."""
     p = {k: v for k, v in params.items() if v is not None}
-    base = str(p.get("base") or p.get("from_unit") or p.get("from") or "USD").upper()
+    base = str(p.get("base") or p.get("from_unit") or "USD").upper()
     to = p.get("symbols") or p.get("to") or p.get("to_unit")
     if isinstance(to, str):
         to = [x.strip().upper() for x in to.split(",")]
@@ -132,7 +132,7 @@ def fx_rate(**params: Any) -> dict[str, Any]:
 
 @tool
 def geo(mode: str = "geocode", **params: Any) -> dict[str, Any]:
-    """Online geo: geocode (place -> coordinates), reverse (lat,lon -> address), route (driving distance/time)."""
+    """Online geo: geocode (place -> coordinates), reverse (lat,lon -> address), route (origin/destination driving distance/time)."""
     p = {k: v for k, v in params.items() if v is not None}
     if mode == "geocode":
         place = p.get("place") or p.get("query")
@@ -149,15 +149,15 @@ def geo(mode: str = "geocode", **params: Any) -> dict[str, Any]:
         data = _get("https://nominatim.openstreetmap.org/reverse", {"lat": lat, "lon": lon, "format": "jsonv2"})
         return ok({"display_name": data.get("display_name"), "address": data.get("address"), "type": data.get("type"), "lat": float(data.get("lat", lat)), "lon": float(data.get("lon", lon))}, assumptions=["OpenStreetMap Nominatim"])
     if mode == "route":
-        a_lat, a_lon, a_loc, aa = _resolve_point({"place": p.get("from"), "lat": (p.get("from") or {}).get("lat") if isinstance(p.get("from"), dict) else None, "lon": (p.get("from") or {}).get("lon") if isinstance(p.get("from"), dict) else None})
-        b_lat, b_lon, b_loc, ab = _resolve_point({"place": p.get("to"), "lat": (p.get("to") or {}).get("lat") if isinstance(p.get("to"), dict) else None, "lon": (p.get("to") or {}).get("lon") if isinstance(p.get("to"), dict) else None})
+        a_lat, a_lon, a_loc, aa = _resolve_point({"place": p.get("origin"), "lat": (p.get("origin") or {}).get("lat") if isinstance(p.get("origin"), dict) else None, "lon": (p.get("origin") or {}).get("lon") if isinstance(p.get("origin"), dict) else None})
+        b_lat, b_lon, b_loc, ab = _resolve_point({"place": p.get("destination"), "lat": (p.get("destination") or {}).get("lat") if isinstance(p.get("destination"), dict) else None, "lon": (p.get("destination") or {}).get("lon") if isinstance(p.get("destination"), dict) else None})
         profile = p.get("profile") or "driving"
         data = _get(f"https://router.project-osrm.org/route/v1/{profile}/{a_lon},{a_lat};{b_lon},{b_lat}", {"overview": "false"})
         routes = data.get("routes") or []
         if not routes:
             raise ToolError("no route found", code="upstream")
         r = routes[0]
-        return ok({"distance_km": round(r["distance"] / 1000, 2), "duration_min": round(r["duration"] / 60, 1), "duration_human": f"{int(r['duration'] // 3600)}h {int((r['duration'] % 3600) // 60)}m", "from": a_loc, "to": b_loc, "profile": profile}, assumptions=aa + ab + ["OSRM demo server; no live traffic"])
+        return ok({"distance_km": round(r["distance"] / 1000, 2), "duration_min": round(r["duration"] / 60, 1), "duration_human": f"{int(r['duration'] // 3600)}h {int((r['duration'] % 3600) // 60)}m", "origin": a_loc, "destination": b_loc, "profile": profile}, assumptions=aa + ab + ["OSRM demo server; no live traffic"])
     raise ToolError("mode must be geocode, reverse or route")
 
 

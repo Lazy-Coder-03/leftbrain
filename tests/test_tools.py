@@ -142,9 +142,11 @@ def test_random():
 def test_geo():
     assert lb.geo_tool("tz_for_place", place="Mumbai")["result"]["zone"] == "Asia/Kolkata"
     assert lb.geo_tool("tz_for_place", place="USA")["error"] == "ambiguous"
-    d = lb.geo_tool("distance", **{"from": "Kolkata", "to": "London"})["result"]
+    d = lb.geo_tool("distance", origin="Kolkata", destination="London")["result"]
     assert 7900 < d["km"] < 8000
     assert lb.geo_tool("country", value="India")["result"]["single_timezone"]
+    bad = lb.geo_tool("distance", **{"from": "Kolkata", "to": "London"})  # retired names
+    assert not bad["ok"] and bad["error"] == "invalid_input" and "origin" in bad["message"]
 
 
 # --- encode ----------------------------------------------------------------

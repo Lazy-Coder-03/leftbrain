@@ -66,11 +66,11 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
         name = hm.get(d.date())
         return ok({"date": d.date().isoformat(), "is_holiday": name is not None, "name": name, "weekday": d.strftime("%A"), "is_weekend": d.weekday() >= 5}, assumptions=a)
     if mode == "next":
-        d, _, a = parse_dt(p.get("date") or p.get("from") or "today", locale=p.get("locale"), field="date")
+        d, _, a = parse_dt(p.get("date") or "today", locale=p.get("locale"), field="date")
         n = int(p.get("n", 5))
         hm = holiday_map(code, {d.year, d.year + 1}, subdiv, p.get("categories"))
         upcoming = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A"), "days_away": (k - d.date()).days} for k, v in sorted(hm.items()) if k >= d.date()][:n]
-        return ok({"from": d.date().isoformat(), "next": upcoming}, assumptions=a)
+        return ok({"date": d.date().isoformat(), "next": upcoming}, assumptions=a)
     years = p.get("years") or [p.get("year") or date.today().year]
     if isinstance(years, (int, str)):
         years = [int(years)]

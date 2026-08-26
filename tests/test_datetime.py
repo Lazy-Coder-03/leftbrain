@@ -55,13 +55,23 @@ def test_add_business_days_skips_holidays():
 
 
 def test_diff_calendar_and_totals():
-    r = dt("diff", **{"from": "2024-02-29", "to": "2026-08-26"})["result"]
+    r = dt("diff", start="2024-02-29", end="2026-08-26")["result"]
     assert r["calendar"]["years"] == 2 and r["calendar"]["months"] == 5 and r["calendar"]["days"] == 28
     assert r["total"]["days"] == 909
 
 
+def test_the_retired_from_to_names_are_not_accepted():
+    """Ranges are `start`/`end` everywhere; `from`/`to` are not read and the error says so."""
+    r = dt("diff", **{"from": "2026-08-26", "to": "2026-12-25"})
+    assert not r["ok"] and r["error"] == "invalid_input" and "'start'" in r["message"]
+    r = dt("business_days", **{"from": "2026-10-01", "to": "2026-10-31"})
+    assert not r["ok"] and r["error"] == "invalid_input" and "'start' and 'end'" in r["message"]
+    r = dt("cron_next", expr="0 9 * * 1-5", tz="Asia/Kolkata", n=1, **{"from": "2026-08-28T10:00"})
+    assert r["ok"] and "no 'start' given; started from now" in r["assumptions"]
+
+
 def test_business_days_inclusive():
-    r = dt("business_days", region="IN", **{"from": "2026-10-01", "to": "2026-10-31"})["result"]
+    r = dt("business_days", region="IN", start="2026-10-01", end="2026-10-31")["result"]
     assert r["business_days"] == 20 and {h["date"] for h in r["holidays_skipped"]} == {"2026-10-02", "2026-10-20"}
 
 
@@ -83,7 +93,7 @@ def test_recurrence_phrase():
 
 
 def test_cron_next():
-    r = dt("cron_next", expr="0 9 * * 1-5", tz="Asia/Kolkata", n=2, **{"from": "2026-08-28T10:00"})
+    r = dt("cron_next", expr="0 9 * * 1-5", tz="Asia/Kolkata", n=2, start="2026-08-28T10:00")
     assert [x["date"] for x in r["result"]["next"]] == ["2026-08-31", "2026-09-01"]
 
 

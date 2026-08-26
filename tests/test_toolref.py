@@ -151,6 +151,16 @@ def test_examples_that_depend_on_the_clock_are_marked():
                 assert unmarked or not mode.examples, f"{tool.name}.{mode.name}"
 
 
+def test_no_documented_parameter_uses_a_retired_name():
+    """`from`/`from_` and the bare `to` were renamed; nothing may reintroduce them."""
+    retired = {"from", "from_", "to"}
+    for tool in toolref.CATALOGUE:
+        for mode in tool.modes:
+            assert not retired & {p.name for p in mode.params}, f"{tool.name}.{mode.name} parameters"
+            for example in mode.examples + mode.failures:
+                assert not retired & set(example.args), f"{tool.name}.{mode.name}: {example.caption}"
+
+
 def test_index_and_tool_pages_are_cached():
     first = toolref.tool_page("math")
     assert toolref.tool_page("math") is first

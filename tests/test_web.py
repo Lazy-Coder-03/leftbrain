@@ -307,7 +307,7 @@ def test_demo_runs_real_tools_and_rejects_unknown(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         r = c.post("/demo/numbers", json={"mode": "compare", "values": ["9.11", "9.9"]})
         assert r.status_code == 200 and r.json()["ok"] and r.json()["result"]["max"]["input"] == "9.9"
-        r = c.post("/demo/convert", json={"mode": "units", "value": 3, "from_unit": "oz", "to": "ml"})
+        r = c.post("/demo/convert", json={"mode": "units", "value": 3, "from_unit": "oz", "to_unit": "ml"})
         assert r.json()["ok"] is False and "needs" in r.json()
         assert c.post("/demo/math", json={"mode": "eval", "expr": "1+1"}).status_code == 404
         assert c.post("/demo/numbers", content=b"not json", headers={"content-type": "application/json"}).status_code == 400
@@ -424,8 +424,8 @@ def test_landing_tool_cards_link_to_docs_tools(tmp_path):
 # exactly what static/site.js sends for each tab's prefilled values
 DEMO_DEFAULTS = {
     "numbers": {"mode": "compare", "values": ["9.11", "9.9", "10"]},
-    "convert": {"mode": "units", "value": "3", "from_unit": "oz", "to": "ml"},
-    "datetime": {"mode": "diff", "from": "2026-08-26", "to": "2026-12-25"},
+    "convert": {"mode": "units", "value": "3", "from_unit": "oz", "to_unit": "ml"},
+    "datetime": {"mode": "diff", "start": "2026-08-26", "end": "2026-12-25"},
     "text": {"mode": "count", "text": "strawberry \U0001f353 na\u00efve caf\u00e9"},
 }
 

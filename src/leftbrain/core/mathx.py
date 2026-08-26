@@ -618,11 +618,11 @@ def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
 def _mode_integrate(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     var = _symbol(p.get("var"), expr)
-    lo, hi = p.get("from"), p.get("to")
+    lo, hi = p.get("lower"), p.get("upper")
     precision = p.get("precision", 15)
     warnings: list[str] = []
     if (lo is None) != (hi is None):
-        raise ToolError("definite integral needs both 'from' and 'to'")
+        raise ToolError("definite integral needs both 'lower' and 'upper'")
     if lo is None:
         res = sp.integrate(expr, var)
         if isinstance(res, sp.Integral) or res.has(sp.Integral):
@@ -643,17 +643,17 @@ def _mode_integrate(p: dict[str, Any]) -> dict[str, Any]:
 def _mode_limit(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     var = _symbol(p.get("var"), expr)
-    to = _num(p.get("to", 0))
+    point = _num(p.get("point", 0))
     side = p.get("side")
     dir_ = {"+": "+", "-": "-", "right": "+", "left": "-", None: "+-"}.get(side)
     if dir_ is None:
         raise ToolError("side must be '+', '-', 'left', 'right' or omitted")
     try:
-        res = sp.limit(expr, var, to, dir_)
+        res = sp.limit(expr, var, point, dir_)
     except ValueError as e:
         if "two-sided" in str(e) or "does not exist" in str(e):
-            left = sp.limit(expr, var, to, "-")
-            right = sp.limit(expr, var, to, "+")
+            left = sp.limit(expr, var, point, "-")
+            right = sp.limit(expr, var, point, "+")
             return ok(
                 {"exists": False, "left": _describe(left), "right": _describe(right)},
                 assumptions=assumptions,
@@ -1001,9 +1001,9 @@ def _mode_stats(p: dict[str, Any]) -> dict[str, Any]:
 
 def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
-    to = (p.get("to") or p.get("form") or "decimal").lower()
+    form = (p.get("form") or "decimal").lower()
     precision = p.get("precision", 15)
-    if to == "polar":
+    if form == "polar":
         r = sp.simplify(sp.Abs(expr))
         th = sp.simplify(sp.arg(expr))
         return ok(
@@ -1015,30 +1015,30 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
             },
             assumptions=assumptions,
         )
-    if to in ("rect", "rectangular", "cartesian"):
+    if form in ("rect", "rectangular", "cartesian"):
         e = sp.expand_complex(expr)
         d = _describe(e, precision)
         d["re"] = _describe(sp.re(e), precision)
         d["im"] = _describe(sp.im(e), precision)
         return ok(d, assumptions=assumptions)
-    if to == "latex":
+    if form == "latex":
         return ok({"latex": sp.latex(expr), "value": sp.sstr(expr)}, assumptions=assumptions)
-    if to == "decimal":
+    if form == "decimal":
         return ok(_describe(sp.N(expr, precision), precision), assumptions=assumptions)
-    if to in ("fraction", "rational", "exact"):
+    if form in ("fraction", "rational", "exact"):
         tol = p.get("tolerance")
         e = sp.nsimplify(expr, rational=True, tolerance=tol)
         return ok(_describe(e, precision), assumptions=assumptions + (["tolerance applied"] if tol else []))
-    if to == "scientific":
+    if form == "scientific":
         v = sp.N(expr, precision)
         if not v.is_real:
             raise ToolError("scientific notation needs a real number")
         sig = int(p.get("significant", 6))
         return ok({"value": f"{float(v):.{sig - 1}e}", "decimal": _clean_decimal(v)}, assumptions=assumptions)
-    if to == "percent":
+    if form == "percent":
         v = sp.N(expr * 100, precision)
         return ok({"value": f"{_clean_decimal(v)}%", "decimal": _clean_decimal(v)}, assumptions=assumptions)
-    raise ToolError("to must be one of polar, rect, latex, decimal, fraction, scientific, percent")
+    raise ToolError("form must be one of polar, rect, latex, decimal, fraction, scientific, percent")
 
 
 def _mode_plot_points(p: dict[str, Any]) -> dict[str, Any]:

@@ -49,12 +49,22 @@ def test_solve_needs_vars_when_underdetermined():
 
 
 def test_calculus():
-    assert math_tool("integrate", expr="x^2", **{"from": 0, "to": 3})["result"]["decimal"] == "9"
-    assert math_tool("limit", expr="sin(x)/x", to=0)["result"]["decimal"] == "1"
+    assert math_tool("integrate", expr="x^2", lower=0, upper=3)["result"]["decimal"] == "9"
+    assert math_tool("limit", expr="sin(x)/x", point=0)["result"]["decimal"] == "1"
     d = math_tool("diff", expr="x^3", var="x")["result"]["value"]
     assert d == "3*x**2"
     s = math_tool("series", expr="exp(x)", order=3)["result"]["polynomial"]
     assert s == "x**2/2 + x + 1"
+
+
+def test_the_retired_from_to_bound_names_are_not_accepted():
+    """Bounds are `lower`/`upper`; a limit approaches `point`. Old names are simply not read."""
+    r = math_tool("integrate", expr="x^2", var="x", **{"from": 0, "to": 3})
+    assert r["ok"] and r["result"]["value"].endswith("+ C")  # no bounds seen -> indefinite
+    r = math_tool("limit", expr="1/x", var="x", **{"to": 2})
+    assert r["ok"] and r["result"]["decimal"] != "0.5"  # approached 0, the default, not 2
+    r = math_tool("convert_form", expr="0.375", **{"to": "fraction"})
+    assert r["ok"] and r["result"]["value"] != "3/8"  # fell back to the default decimal form
 
 
 def test_ode():
@@ -80,7 +90,7 @@ def test_stats_exact():
 
 
 def test_polar_form():
-    r = math_tool("convert_form", expr="3+4i", to="polar")
+    r = math_tool("convert_form", expr="3+4i", form="polar")
     assert r["result"]["r"]["decimal"] == "5"
 
 

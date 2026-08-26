@@ -191,8 +191,8 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     assume = p.get("assume")
     val = _parse_value(p.get("value", 1))
-    src = _norm_unit(p.get("from_unit") or p.get("from"), assume, "from_unit", assumptions)
-    dst = _norm_unit(p.get("to_unit") or p.get("to"), assume, "to_unit", assumptions)
+    src = _norm_unit(p.get("from_unit"), assume, "from_unit", assumptions)
+    dst = _norm_unit(p.get("to_unit"), assume, "to_unit", assumptions)
     precision = int(p.get("precision", 10))
     try:
         u_src, u_dst = reg.Unit(src), reg.Unit(dst)
@@ -246,8 +246,8 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
 
 def _currency(p: dict[str, Any]) -> dict[str, Any]:
     val = _parse_value(p.get("value", 1))
-    src = str(p.get("from_unit") or p.get("from") or "").strip().upper()
-    dst = str(p.get("to_unit") or p.get("to") or "").strip().upper()
+    src = str(p.get("from_unit") or "").strip().upper()
+    dst = str(p.get("to_unit") or "").strip().upper()
     if not (_CURRENCY_RE.match(src) and _CURRENCY_RE.match(dst)):
         raise ToolError("currency codes must be 3-letter ISO codes like USD, INR, EUR")
     rates = p.get("rates")
@@ -299,8 +299,8 @@ def convert(mode: str = "auto", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
-    src = str(p.get("from_unit") or p.get("from") or "")
-    dst = str(p.get("to_unit") or p.get("to") or "")
+    src = str(p.get("from_unit") or "")
+    dst = str(p.get("to_unit") or "")
     if mode == "currency" or (mode == "auto" and _CURRENCY_RE.match(src.strip().upper()) and _CURRENCY_RE.match(dst.strip().upper()) and src.strip().upper() not in ("DEG", "RAD") and len(src.strip()) == 3 and src.strip().isupper()):
         return _currency(p)
     return _units(p)

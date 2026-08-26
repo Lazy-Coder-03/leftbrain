@@ -78,8 +78,10 @@ def math(
     domain: str | None = None,
     order: int | None = None,
     at: str | float | None = None,
-    from_: str | float | None = None,
-    to: str | float | None = None,
+    lower: str | float | None = None,
+    upper: str | float | None = None,
+    point: str | float | None = None,
+    form: str | None = None,
     side: str | None = None,
     equation: str | None = None,
     func: str | None = None,
@@ -105,17 +107,15 @@ def math(
     mode: eval | exact | simplify | expand | factor | solve | diff | integrate | limit | series | ode | matrix | stats | convert_form | plot_points
     - eval/exact: expr (e.g. "15% of 200", "(3+4i)*(1-2i)", "sin(30)" with angle="deg")
     - solve: equations=["x^2+1=0"] (+ vars, domain=real|complex|integer|positive)
-    - diff/integrate/limit/series: expr + var (+ order / from_,to / to,side / at,order)
+    - diff/integrate/limit/series: expr + var (+ order / lower,upper / point,side / at,order)
     - ode: equation="y'' + y = 0", func="y(x)", ics={"y(0)":1,"y'(0)":0}
     - matrix: op=det|inv|transpose|rank|trace|rref|eig|solve|mul|add|sub|pow, A=[[...]], B/b
     - stats: op=describe|mean|median|stdev|pstdev|variance|percentile|quartiles|corr|regress|..., data=[...]
-    - convert_form: to=polar|rect|latex|decimal|fraction|scientific|percent
+    - convert_form: form=polar|rect|latex|decimal|fraction|scientific|percent
     angle is REQUIRED ('rad' or 'deg') whenever the expression contains trigonometry.
     Returns exact form, decimal form and LaTeX together.
     """
-    params = _clean(dict(expr=expr, angle=angle, precision=precision, var=var, vars=vars, equations=equations, domain=domain, order=order, at=at, to=to, side=side, equation=equation, func=func, ics=ics, op=op, A=A, B=B, b=b, n=n, data=data, y=y, weights=weights, percentile=percentile, value=value, predict=predict, range=range, tolerance=tolerance, significant=significant))
-    if from_ is not None:
-        params["from"] = from_
+    params = _clean(dict(expr=expr, angle=angle, precision=precision, var=var, vars=vars, equations=equations, domain=domain, order=order, at=at, lower=lower, upper=upper, point=point, form=form, side=side, equation=equation, func=func, ics=ics, op=op, A=A, B=B, b=b, n=n, data=data, y=y, weights=weights, percentile=percentile, value=value, predict=predict, range=range, tolerance=tolerance, significant=significant))
     return mathx.math(mode, **params)
 
 
@@ -130,8 +130,6 @@ def datetime(
     ref_date: str | None = None,
     amount: float | None = None,
     unit: str | None = None,
-    from_: str | None = None,
-    to: str | None = None,
     region: str | None = None,
     subdiv: str | None = None,
     weekend: list[str] | None = None,
@@ -147,6 +145,7 @@ def datetime(
     ranges: list[dict[str, Any]] | None = None,
     rule: str | None = None,
     start: str | None = None,
+    end: str | None = None,
     count: int | None = None,
     until: str | None = None,
     limit: int | None = None,
@@ -163,17 +162,15 @@ def datetime(
     - convert_tz (value, from_tz, to_tz) - IANA names only ("Asia/Kolkata"); abbreviations like IST are refused as ambiguous
     - parse (value, locale, ref_date) - ISO, written, or relative ("next friday 5pm"); 03/04/2025 needs locale
     - add (value, amount, unit) - unit: days|weeks|months|years|hours|minutes|business_days (+ region)
-    - diff (from_, to, unit) - calendar breakdown + totals; unit=business_days for working days
+    - diff (start, end, unit) - calendar breakdown + totals; unit=business_days for working days
     - weekday (value) | nth_weekday (year, month, weekday, n; n=-1 = last)
-    - business_days (from_, to, region, subdiv, weekend, extra_holidays)
+    - business_days (start, end, region, subdiv, weekend, extra_holidays)
     - overlap (a={start,end}, b={start,end}) | duration_sum (ranges=[{start,end}])
     - recurrence (rule="every 2nd tuesday" or RRULE, start, count/until)
-    - cron_next (expr="0 9 * * 1-5", tz, from_, n)
+    - cron_next (expr="0 9 * * 1-5", tz, start, n)
     - age (dob, on) | fiscal (value, region or fy_start_month)
     """
-    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, to=to, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month))
-    if from_ is not None:
-        params["from"] = from_
+    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, end=end, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month))
     return datetimex.datetime_tool(mode, **params)
 
 
@@ -396,8 +393,8 @@ def geo(
     place: str | None = None,
     lat: float | None = None,
     lon: float | None = None,
-    from_: Any | None = None,
-    to: Any | None = None,
+    origin: Any | None = None,
+    destination: Any | None = None,
     country: str | None = None,
     zone: str | None = None,
     all: bool | None = None,
@@ -405,11 +402,9 @@ def geo(
     """Use to get the IANA timezone for a city/country ("Mumbai" -> Asia/Kolkata) before any
     timezone conversion, the zone nearest to coordinates, great-circle distance and bearing
     between two places or coordinates, or a country's zones. Fully offline.
-    mode: tz_for_place | tz_for_coords | distance | country | zone_info
+    mode: tz_for_place | tz_for_coords | distance (origin, destination) | country | zone_info
     """
-    params = _clean(dict(place=place, lat=lat, lon=lon, to=to, country=country, zone=zone, all=all))
-    if from_ is not None:
-        params["from"] = from_
+    params = _clean(dict(place=place, lat=lat, lon=lon, origin=origin, destination=destination, country=country, zone=zone, all=all))
     return geo_offline.geo_offline(mode, **params)
 
 

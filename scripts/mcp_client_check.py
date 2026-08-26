@@ -33,6 +33,8 @@ async def check(module: str, tool: str, args: dict) -> None:
 async def main() -> None:
     await check("leftbrain.mcp_server", "math", {"mode": "eval", "expr": "2^10 + 15% of 200"})
     await check("leftbrain.mcp_server", "datetime", {"mode": "convert_tz", "value": "2026-08-26 15:00", "from_tz": "Asia/Kolkata", "to_tz": "America/New_York"})
+    await check("leftbrain.mcp_server", "datetime", {"mode": "diff", "start": "2026-08-26", "end": "2026-12-25"})
+    await check("leftbrain.mcp_server", "math", {"mode": "integrate", "expr": "x^2", "var": "x", "lower": 0, "upper": 1})
     await check("leftbrain.files.mcp_server", "files", {"mode": "list_dir", "path": "src/leftbrain", "glob": "*.py"})
     await check("leftbrain.external.mcp_server", "fx_rate", {"base": "USD", "to": "INR"})
 

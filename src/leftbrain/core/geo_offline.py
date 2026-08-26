@@ -244,11 +244,11 @@ def _point(v: Any, name: str, assumptions: list[str]) -> tuple[float, float]:
 
 def _distance(p: dict[str, Any]) -> dict[str, Any]:
     assumptions: list[str] = []
-    a = _point(p.get("from") or p.get("a"), "from", assumptions)
-    b = _point(p.get("to") or p.get("b"), "to", assumptions)
+    a = _point(p.get("origin") or p.get("a"), "origin", assumptions)
+    b = _point(p.get("destination") or p.get("b"), "destination", assumptions)
     km = haversine_km(*a, *b)
     br = _bearing(*a, *b)
-    return ok({"km": round(km, 3), "miles": round(km / 1.609344, 3), "nautical_miles": round(km / 1.852, 3), "meters": round(km * 1000, 1), "bearing_deg": round(br, 2), "compass": _compass(br), "from": {"lat": a[0], "lon": a[1]}, "to": {"lat": b[0], "lon": b[1]}}, assumptions=assumptions + ["great-circle (haversine) distance, not driving distance"])
+    return ok({"km": round(km, 3), "miles": round(km / 1.609344, 3), "nautical_miles": round(km / 1.852, 3), "meters": round(km * 1000, 1), "bearing_deg": round(br, 2), "compass": _compass(br), "origin": {"lat": a[0], "lon": a[1]}, "destination": {"lat": b[0], "lon": b[1]}}, assumptions=assumptions + ["great-circle (haversine) distance, not driving distance"])
 
 
 def _tz_for_place(p: dict[str, Any]) -> dict[str, Any]:

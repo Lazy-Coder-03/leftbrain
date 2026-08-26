@@ -651,8 +651,8 @@ def _mode_now(p: dict[str, Any]) -> dict[str, Any]:
 
 def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
     value = p.get("value") or p.get("datetime") or p.get("date")
-    src = p.get("from_tz") or p.get("from")
-    dst = p.get("to_tz") or p.get("to")
+    src = p.get("from_tz")
+    dst = p.get("to_tz")
     if dst is None:
         raise ToolError("to_tz is required")
     ref = None
@@ -746,12 +746,14 @@ def _mode_add(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
-    a_raw = p.get("from") or p.get("start") or p.get("a")
-    b_raw = p.get("to") or p.get("end") or p.get("b") or "now"
+    a_raw = p.get("start") or p.get("a")
+    b_raw = p.get("end") or p.get("b") or "now"
+    if a_raw is None:
+        raise ToolError("diff needs 'start' (and 'end', which defaults to now)")
     unit = (p.get("unit") or "auto").lower()
     tz = p.get("tz")
-    d1, do1, a1 = parse_dt(a_raw, tz=tz, locale=p.get("locale"), field="from")
-    d2, do2, a2 = parse_dt(b_raw, tz=tz, locale=p.get("locale"), field="to")
+    d1, do1, a1 = parse_dt(a_raw, tz=tz, locale=p.get("locale"), field="start")
+    d2, do2, a2 = parse_dt(b_raw, tz=tz, locale=p.get("locale"), field="end")
     assumptions = a1 + [x for x in a2 if x not in a1]
     if (d1.tzinfo is None) != (d2.tzinfo is None):
         if d1.tzinfo is None:
@@ -765,10 +767,10 @@ def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
     rd = relativedelta(hi, lo)
     total_sec = abs(delta.total_seconds())
     out: dict[str, Any] = {
-        "from": _info(d1, do1),
-        "to": _info(d2, do2),
+        "start": _info(d1, do1),
+        "end": _info(d2, do2),
         "sign": sign,
-        "direction": "to is after from" if sign > 0 else ("same instant" if delta == timedelta(0) else "to is before from"),
+        "direction": "end is after start" if sign > 0 else ("same instant" if delta == timedelta(0) else "end is before start"),
         "calendar": {
             "years": rd.years, "months": rd.months, "days": rd.days,
             "hours": rd.hours, "minutes": rd.minutes, "seconds": rd.seconds,
@@ -797,7 +799,7 @@ def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
             d += timedelta(days=1)
         out["value"] = sign * n
         out["unit"] = "business_days"
-        assumptions.append("business days counted from 'from' (inclusive) up to 'to' (exclusive)")
+        assumptions.append("business days counted from 'start' (inclusive) up to 'end' (exclusive)")
         if not p.get("region"):
             assumptions.append("no region given; only weekends excluded")
     elif unit != "auto":
@@ -884,11 +886,11 @@ def _mode_nth_weekday(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
-    a_raw, b_raw = p.get("from") or p.get("start"), p.get("to") or p.get("end")
+    a_raw, b_raw = p.get("start"), p.get("end")
     if a_raw is None or b_raw is None:
-        raise ToolError("business_days needs 'from' and 'to'")
-    d1, _, a1 = parse_dt(a_raw, tz=p.get("tz"), locale=p.get("locale"), field="from")
-    d2, _, a2 = parse_dt(b_raw, tz=p.get("tz"), locale=p.get("locale"), field="to")
+        raise ToolError("business_days needs 'start' and 'end'")
+    d1, _, a1 = parse_dt(a_raw, tz=p.get("tz"), locale=p.get("locale"), field="start")
+    d2, _, a2 = parse_dt(b_raw, tz=p.get("tz"), locale=p.get("locale"), field="end")
     assumptions = a1 + [x for x in a2 if x not in a1]
     lo, hi = sorted([d1.date(), d2.date()])
     include_start = p.get("include_start", True)
@@ -917,8 +919,8 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
         "calendar_days": max(calendar_days, 0),
         "weekend_days": weekend_days,
         "holidays_skipped": skipped,
-        "from": lo.isoformat(),
-        "to": hi.isoformat(),
+        "start": lo.isoformat(),
+        "end": hi.isoformat(),
     }
     if len(dates) <= 200 and n <= 200:
         out["dates"] = dates
@@ -1050,13 +1052,13 @@ def _mode_cron_next(p: dict[str, Any]) -> dict[str, Any]:
     if not expr:
         raise ToolError("cron_next needs 'expr' such as '0 9 * * 1-5'")
     tz, name, a = resolve_tz(p.get("tz") or "UTC")
-    start_raw = p.get("from") or p.get("start")
+    start_raw = p.get("start")
     if start_raw:
-        start, _, a2 = parse_dt(start_raw, tz=tz, field="from")
+        start, _, a2 = parse_dt(start_raw, tz=tz, field="start")
         a += a2
     else:
         start = datetime.now(tz)
-        a.append("no 'from' given; started from now")
+        a.append("no 'start' given; started from now")
     n = int(p.get("n", 5))
     if n < 1 or n > 500:
         raise ToolError("n must be 1..500")
@@ -1067,11 +1069,11 @@ def _mode_cron_next(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mode_age(p: dict[str, Any]) -> dict[str, Any]:
-    dob_raw = p.get("dob") or p.get("birth_date") or p.get("from") or p.get("value")
+    dob_raw = p.get("dob") or p.get("birth_date") or p.get("value")
     if not dob_raw:
         raise ToolError("age needs 'dob'")
     dob, _, a = parse_dt(dob_raw, locale=p.get("locale"), field="dob")
-    on_raw = p.get("on") or p.get("to") or "today"
+    on_raw = p.get("on") or "today"
     on, _, a2 = parse_dt(on_raw, locale=p.get("locale"), field="on")
     d0, d1 = dob.date(), on.date()
     if d1 < d0:
