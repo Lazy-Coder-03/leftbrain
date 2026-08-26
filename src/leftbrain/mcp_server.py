@@ -34,6 +34,9 @@ from .core import (
     encode as encode_mod,
 )
 from .core import (
+    finance as finance_mod,
+)
+from .core import (
     numbers as numbers_mod,
 )
 from .core import (
@@ -279,6 +282,47 @@ def numbers(
     mode: compare | round | format | allocate | sequence | parse | to_words
     """
     return numbers_mod.numbers(mode, **_clean(dict(values=values, a=a, b=b, value=value, decimals=decimals, significant=significant, nearest=nearest, rounding=rounding, locale=locale, style=style, currency=currency, accounting=accounting, total=total, parts=parts, weights=weights, percentages=percentages, labels=labels, method=method, kind=kind, start=start, step=step, ratio=ratio, end=end, n=n, system=system, suffix_only=suffix_only)))
+
+
+@server.tool(name="finance")
+def finance(
+    mode: str = "emi",
+    principal: Any | None = None,
+    rate: Any | None = None,
+    rate_period: str | None = None,
+    months: Any | None = None,
+    years: Any | None = None,
+    schedule: bool | None = None,
+    decimals: int | None = None,
+    rounding: str | None = None,
+    compounding: str | None = None,
+    contribution: Any | None = None,
+    contribution_timing: str | None = None,
+    start_value: Any | None = None,
+    end_value: Any | None = None,
+    cashflows: list[Any] | None = None,
+    amount: Any | None = None,
+    amount_is: str | None = None,
+    supply: str | None = None,
+    op: str | None = None,
+    a: Any | None = None,
+    b: Any | None = None,
+    percent: Any | None = None,
+    value: Any | None = None,
+    price: Any | None = None,
+    discounts: list[Any] | None = None,
+    total: Any | None = None,
+    tip: Any | None = None,
+    people: int | None = None,
+) -> dict[str, Any]:
+    """Use for any money arithmetic: loan EMIs with a full amortisation schedule, compound
+    growth and SIPs, CAGR, NPV and IRR of a cash-flow series, GST inclusive/exclusive splits
+    with CGST/SGST/IGST, and percentages (change vs percentage points, stacked discounts,
+    bill splits). Exact decimals; the rate's period (annual|monthly) and whether an amount is
+    GST-inclusive are never guessed.
+    mode: emi | compound | cagr | npv_irr | gst | percent
+    """
+    return finance_mod.finance(mode, **_clean(dict(principal=principal, rate=rate, rate_period=rate_period, months=months, years=years, schedule=schedule, decimals=decimals, rounding=rounding, compounding=compounding, contribution=contribution, contribution_timing=contribution_timing, start_value=start_value, end_value=end_value, cashflows=cashflows, amount=amount, amount_is=amount_is, supply=supply, op=op, a=a, b=b, percent=percent, value=value, price=price, discounts=discounts, total=total, tip=tip, people=people)))
 
 
 @server.tool(name="text")

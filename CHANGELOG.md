@@ -6,6 +6,15 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`finance` tool** (13th core tool): `emi` (instalment, totals and amortisation schedule that
+  reconciles to zero), `compound` (future value with optional per-period contributions and the
+  effective annual rate), `cagr`, `npv_irr` (IRR by bisection), `gst` (inclusive/exclusive split
+  into CGST/SGST or IGST, rounding difference reported) and `percent` (change vs percentage
+  points, stacked vs additive discounts, exact bill splits). The rate's period and whether an
+  amount is GST-inclusive are required, not guessed.
+
 ### Fixed
 
 - Demo endpoint: the 8 KB body cap now applies to chunked requests too, and deeply nested arguments return a contract `invalid_input` instead of a bare 500.

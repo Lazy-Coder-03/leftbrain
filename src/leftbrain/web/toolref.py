@@ -33,6 +33,7 @@ from typing import Any
 from ..core import collections_, datetimex, geo_offline, holidays_, mathx, random_
 from ..core import convert as convert_mod
 from ..core import encode as encode_mod
+from ..core import finance as finance_mod
 from ..core import numbers as numbers_mod
 from ..core import scale as scale_mod
 from ..core import text as text_mod
@@ -1574,6 +1575,165 @@ NUMBERS = ToolDoc(
 
 
 # --------------------------------------------------------------------------- #
+# finance
+# --------------------------------------------------------------------------- #
+
+FINANCE = ToolDoc(
+    name="finance",
+    intro=(
+        "Money arithmetic, done the way a bank's back office does it rather than the way a "
+        "language model approximates it: instalments that come from the rounded schedule and "
+        "reconcile to zero, GST halves whose rounding difference is reported instead of hidden, "
+        "an IRR found by bisection rather than recalled. Every figure is a `Decimal`. The two "
+        "readings that silently ruin money maths — is the rate per year or per month, is the "
+        "amount inclusive of tax — are never guessed: leave them out and the tool asks."
+    ),
+    when=(
+        "Quoting an EMI, total interest or an amortisation schedule.",
+        "Projecting compound growth, with or without a monthly contribution.",
+        "Turning a start and end value into an annualised growth rate.",
+        "Valuing a cash-flow series at a discount rate, or finding the rate that makes it break even.",
+        "Splitting an Indian invoice amount into base and CGST/SGST or IGST.",
+        "Any percentage question where points and percent, or stacked and added discounts, get confused.",
+    ),
+    related=(
+        "[`numbers`](/docs/tools/numbers) for rounding rules, locale formatting and exact allocation · "
+        "[`math`](/docs/tools/math) for the formulas themselves · "
+        "[`convert`](/docs/tools/convert) `currency` when the money is in another currency."
+    ),
+    examples=finance_mod.EXAMPLES,
+    modes=(
+        Mode(
+            name="emi",
+            purpose="Loan instalment, total interest and the amortisation schedule.",
+            description=(
+                "The equal monthly instalment for a reducing-balance loan, from the standard formula "
+                "`P·r·(1+r)ⁿ / ((1+r)ⁿ−1)`. The instalment is rounded with the stated rule, then the "
+                "schedule is built month by month with that rounded figure, and the last instalment "
+                "clears the remaining balance exactly — so `total_interest` and `total_payment` are the "
+                "sums of what would actually be paid, not the formula times *n*. `decimals: 0` with "
+                "`rounding: ceil` gives whole-rupee instalments rounded up, as many Indian lenders do. "
+                "`schedule: true` returns every row."
+            ),
+            params=(
+                Param("principal", "Loan amount.", required=True),
+                Param("rate", "Interest rate in percent.", required=True),
+                Param("rate_period", "`annual` or `monthly` — what the rate is per. Required; never inferred.", required=True),
+                Param("months", "Term in months (or give `years`)."),
+                Param("years", "Term in years; may be fractional if it is a whole number of months."),
+                Param("schedule", "Return the month-by-month rows.", default="`false`"),
+                Param("decimals", "Rounding of each instalment and interest figure.", default="2"),
+                Param("rounding", "`half_up`, `half_even`, `ceil`, `floor`, `truncate`…", default="`half_up`"),
+            ),
+        ),
+        Mode(
+            name="compound",
+            purpose="Future value under compound interest, optionally with regular contributions.",
+            description=(
+                "Grows a principal at a rate compounded `annual`, `semiannual`, `quarterly`, `monthly`, "
+                "`weekly`, `daily` or `continuous`, over a term in years or months, and reports the "
+                "future value, the interest earned and the effective annual rate the compounding "
+                "implies. A `contribution` is added every compounding period, at its `end` (ordinary "
+                "annuity) or `begin` (annuity due) — the SIP case. When no compounding is given, "
+                "annual is used and said so in `assumptions`."
+            ),
+            params=(
+                Param("principal", "Opening balance; may be 0 for a pure contribution plan.", required=True),
+                Param("rate", "Interest rate in percent.", required=True),
+                Param("rate_period", "`annual` or `monthly` — what the rate is per. Required.", required=True),
+                Param("years", "Term in years (or give `months`)."),
+                Param("months", "Term in months."),
+                Param("compounding", "How often interest is credited.", default="`annual`"),
+                Param("contribution", "Amount added each compounding period.", default="0"),
+                Param("contribution_timing", "`end` or `begin` of each period.", default="`end`"),
+                Param("decimals", "Rounding of the money figures.", default="2"),
+                Param("rounding", "Rounding rule.", default="`half_up`"),
+            ),
+        ),
+        Mode(
+            name="cagr",
+            purpose="Compound annual growth rate between two values.",
+            description=(
+                "`(end / start)^(1 / years) − 1`, as a percentage to four decimals, alongside the total "
+                "growth and the multiple. A decline is a negative rate; a zero or negative start value "
+                "has no growth rate and is refused."
+            ),
+            params=(
+                Param("start_value", "Value at the start.", required=True),
+                Param("end_value", "Value at the end.", required=True),
+                Param("years", "Elapsed years; fractional is fine.", required=True),
+            ),
+        ),
+        Mode(
+            name="npv_irr",
+            purpose="Net present value at a rate, and the internal rate of return.",
+            description=(
+                "Takes a cash-flow series with the first entry at time 0 (an outlay is negative) and one "
+                "entry per period after it. With `rate`, returns the NPV at that rate per period. The IRR "
+                "is always attempted: the rate at which NPV is zero, found by bisection between −99.99% "
+                "and 1000% — deterministic, no starting guess, no dependence on a spreadsheet's solver. "
+                "Flows that never change sign have no IRR and say so."
+            ),
+            params=(
+                Param("cashflows", "Amounts per period, time 0 first.", required=True),
+                Param("rate", "Discount rate in percent per period, for the NPV."),
+                Param("decimals", "Rounding of the NPV.", default="2"),
+                Param("rounding", "Rounding rule.", default="`half_up`"),
+            ),
+        ),
+        Mode(
+            name="gst",
+            purpose="Split an amount into base and GST, with CGST/SGST or IGST.",
+            description=(
+                "Works out the tax-exclusive base and the tax from an amount that is either "
+                "`inclusive` or `exclusive` of GST — which one is required, because guessing wrong "
+                "changes the invoice. Intra-state supply splits the tax into equal CGST and SGST "
+                "halves; `supply: inter` gives a single IGST. Each half is rounded on its own, so when "
+                "the halves do not add up to the rounded total the difference is reported in "
+                "`rounding_difference` and a warning, instead of being quietly absorbed. The exact "
+                "unrounded tax is always included."
+            ),
+            params=(
+                Param("amount", "The amount to split.", required=True),
+                Param("rate", "GST rate in percent (5, 12, 18, 28…).", required=True),
+                Param("amount_is", "`inclusive` or `exclusive` of GST. Required; never inferred.", required=True),
+                Param("supply", "`intra` (CGST + SGST) or `inter` (IGST).", default="`intra`"),
+                Param("decimals", "Rounding of the tax figures.", default="2"),
+                Param("rounding", "Rounding rule.", default="`half_up`"),
+            ),
+        ),
+        Mode(
+            name="percent",
+            purpose="Percentage arithmetic that people get wrong in the same four ways.",
+            description=(
+                "`op` picks the calculation. `change` from `a` to `b` reports the relative percent "
+                "change *and* the difference in percentage points, because 10% → 12.5% is both a 25% "
+                "change and 2.5 points. `of` is `percent` of `value`. `discount` applies a list of "
+                "percentages `stacked` (each on the already-discounted price, as shops do) and "
+                "`additive` (percentages summed first, as people expect), with the effective rate of "
+                "each. `split` divides a bill plus an optional `tip` percent among `people` using "
+                "largest-remainder allocation so the shares add up to the total exactly."
+            ),
+            params=(
+                Param("op", "`change`, `of`, `discount` or `split`.", required=True),
+                Param("a", "Starting value, for `change`."),
+                Param("b", "Ending value, for `change`."),
+                Param("percent", "The percentage, for `of` (or a single discount)."),
+                Param("value", "The base value, for `of`."),
+                Param("price", "List price, for `discount`."),
+                Param("discounts", "Percentages applied in order, for `discount`."),
+                Param("total", "The bill, for `split`."),
+                Param("tip", "Tip in percent, for `split`.", default="0"),
+                Param("people", "How many ways to split."),
+                Param("decimals", "Rounding of money figures.", default="2"),
+                Param("rounding", "Rounding rule.", default="`half_up`"),
+            ),
+        ),
+    ),
+)
+
+
+# --------------------------------------------------------------------------- #
 # text
 # --------------------------------------------------------------------------- #
 
@@ -2531,6 +2691,7 @@ CATALOGUE: tuple[ToolDoc, ...] = (
     CONVERT,
     HOLIDAYS,
     NUMBERS,
+    FINANCE,
     TEXT,
     COLLECTIONS,
     VALIDATE,

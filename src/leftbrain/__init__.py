@@ -16,6 +16,7 @@ from .core import (
     convert,
     datetimex,
     encode,
+    finance,
     geo_offline,
     holidays_,
     mathx,
@@ -41,6 +42,7 @@ validate_tool = validate.validate
 random_tool = random_.random_tool
 geo_tool = geo_offline.geo_offline
 encode_tool = encode.encode
+finance_tool = finance.finance
 
 TOOLS = {
     "math": math_tool,
@@ -55,6 +57,7 @@ TOOLS = {
     "random": random_tool,
     "geo_offline": geo_tool,
     "encode": encode_tool,
+    "finance": finance_tool,
 }
 
 __all__ = [
@@ -67,6 +70,7 @@ __all__ = [
     "datetime_tool",
     "encode_tool",
     "fail",
+    "finance_tool",
     "geo_tool",
     "holidays_tool",
     "math_tool",

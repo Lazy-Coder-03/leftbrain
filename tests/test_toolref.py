@@ -13,6 +13,7 @@ from starlette.testclient import TestClient
 
 from leftbrain.core import collections_, datetimex, encode, geo_offline, holidays_, mathx, random_
 from leftbrain.core import convert as convert_mod
+from leftbrain.core import finance as finance_mod
 from leftbrain.core import numbers as numbers_mod
 from leftbrain.core import scale as scale_mod
 from leftbrain.core import text as text_mod
@@ -30,6 +31,7 @@ MODULE_MODES = {
     "convert": convert_mod.MODES,
     "holidays": holidays_.MODES,
     "numbers": numbers_mod.MODES,
+    "finance": finance_mod.MODES,
     "text": text_mod.MODES,
     "collections": collections_.MODES,
     "validate": validate_mod.MODES,
@@ -87,7 +89,7 @@ def client(tmp_path_factory):
 
 def test_catalogue_covers_every_tool():
     assert [t.name for t in toolref.CATALOGUE] == [name for name, _d, _m in TOOLS]
-    assert len(toolref.CATALOGUE) == 12
+    assert len(toolref.CATALOGUE) == 13
     assert [t.name for t in toolref.EXTERNAL_CATALOGUE] == ["weather", "fx_rate", "geo", "url_check"]
     assert set(toolref.specs()) == {t.name for t in toolref.CATALOGUE + toolref.EXTERNAL_CATALOGUE}
 
@@ -258,7 +260,7 @@ def test_tools_index_lists_every_tool(client):
 def test_unknown_tool_is_a_branded_404(client):
     r = client.get("/docs/tools/telepathy", headers={"Accept": "text/html"})
     assert r.status_code == 404
-    assert "twelve tools" in r.text and 'class="brand"' in r.text
+    assert "thirteen tools" in r.text and 'class="brand"' in r.text
 
 
 def test_pages_have_no_raw_markdown_artefacts(client):
