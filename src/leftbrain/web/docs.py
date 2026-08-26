@@ -8,8 +8,6 @@ from pathlib import Path
 
 from markdown_it import MarkdownIt
 
-from .tools_list import TOOLS
-
 DOCS_DIR = Path(__file__).parent / "docs"
 PAGES: list[tuple[str, str]] = [("quickstart", "Quickstart"), ("clients", "MCP clients"), ("tools", "Tools")]
 OS_LABELS = [("windows", "Windows · PowerShell"), ("macos", "macOS"), ("linux", "Linux")]
@@ -86,46 +84,12 @@ def render_markdown(text: str) -> str:
     return "".join(_render_os_block(chunk) if kind == "os" else _md.render(chunk) for kind, chunk in _split_os_containers(text))
 
 
-def _first_mode(modes: str) -> str:
-    """Pick the first mode out of a "a · b · c …" modes string, dropping the trailing marker."""
-    return modes.rstrip(" …").split(" · ")[0].strip()
-
-
-def _tools_page_markdown() -> str:
-    """Build the "Tools" docs page from the TOOLS list — no markdown file backs this page."""
-    parts = [
-        "# Tools",
-        "",
-        "Every tool takes a `mode` and returns the same contract — "
-        "`{ok, result, assumptions[], warnings[]}` on success, or `{ok:false, error, needs}` when the "
-        "input is ambiguous. Full per-tool reference pages are coming; for now, here is the complete "
-        "list of tools and their modes.",
-        "",
-    ]
-    for name, desc, modes in TOOLS:
-        clean_modes = modes.rstrip(" …")
-        first = _first_mode(modes)
-        if name == "numbers":
-            example = '{"name":"numbers","arguments":{"mode":"compare","values":["9.11","9.9"]}}'
-        else:
-            example = f'{{"name":"{name}","arguments":{{"mode":"{first}"}}}}'
-        parts.append(f'<h2 id="{name}">{name}</h2>')
-        parts.append("")
-        parts.append(desc)
-        parts.append("")
-        parts.append(f"**Modes:** {clean_modes}")
-        parts.append("")
-        parts.append("```json")
-        parts.append(example)
-        parts.append("```")
-        parts.append("")
-    return "\n".join(parts)
-
-
 @lru_cache(maxsize=32)
 def load_page(slug: str) -> tuple[str, str] | None:
     if slug == "tools":
-        return "Tools", render_markdown(_tools_page_markdown())
+        from .toolref import index_page  # local import: toolref imports render_markdown from here
+
+        return index_page()
     title = dict(PAGES).get(slug)
     path = DOCS_DIR / f"{slug}.md"
     if not title or not path.is_file():

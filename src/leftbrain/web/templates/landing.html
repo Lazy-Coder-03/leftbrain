@@ -36,7 +36,7 @@
     <p>Every call returns <code>{ok, result, assumptions[], warnings[]}</code> — or <code>{ok:false, error, needs}</code> when the input could mean two things.</p>
   </div>
   <div class="tgrid">
-    {% for name, desc, modes in tools %}<div class="tool"><div class="n"><a href="/docs/tools#{{ name }}">{{ name }}</a></div><div class="d">{{ desc }}</div><div class="m">{{ modes }}</div></div>{% endfor %}
+    {% for name, desc, modes in tools %}<div class="tool"><div class="n"><a href="/docs/tools/{{ name }}">{{ name }}</a></div><div class="d">{{ desc }}</div><div class="m">{{ modes }}</div></div>{% endfor %}
   </div>
 </section>
 

@@ -416,7 +416,7 @@ def test_docs_sidebar_drops_readme_link_for_tools_page(tmp_path):
 def test_landing_tool_cards_link_to_docs_tools(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         html = c.get("/", headers={"Accept": "text/html"}).text
-        assert 'href="/docs/tools#numbers"' in html
+        assert 'href="/docs/tools/numbers"' in html
 
 
 # --- demo allow-list, body cap and failure handling (C1, I1) ------------------

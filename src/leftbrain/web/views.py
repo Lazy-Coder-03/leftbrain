@@ -36,6 +36,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
     from ..serve import _client_ip  # a module-level import would be circular
     from . import demo as demo_mod
     from . import docs as docs_mod
+    from . import toolref as toolref_mod
 
     throttle = demo_mod.Throttle()
 
@@ -43,13 +44,24 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         """An error page that still shows who is signed in, so the nav does not flip to Sign in."""
         return error_page(request, status, title, message, user=auth.current_user(request, cfg))
 
+    def docs_shell(request: Request, title: str, html: str, slug: str, tool: str | None = None) -> Response:
+        return render(request, "docs.html", 200, page="docs", user=auth.current_user(request, cfg), title=title, body=html, slug=slug, pages=docs_mod.PAGES, tools=toolref_mod.tool_names(), tool=tool)
+
     async def docs_page(request: Request) -> Response:
         slug = request.path_params.get("slug", "quickstart")
         page = docs_mod.load_page(slug)
         if page is None:
             return fail_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
         title, html = page
-        return render(request, "docs.html", 200, page="docs", user=auth.current_user(request, cfg), title=title, body=html, slug=slug, pages=docs_mod.PAGES)
+        return docs_shell(request, title, html, slug)
+
+    async def tool_page(request: Request) -> Response:
+        name = request.path_params["name"]
+        page = await run_in_threadpool(toolref_mod.tool_page, name)  # first build runs every example
+        if page is None:
+            return fail_page(request, 404, "No such tool", "leftbrain has twelve tools; that isn't one of them.")
+        title, html = page
+        return docs_shell(request, title, html, "tools", tool=name)
 
     async def demo(request: Request) -> Response:
         tool = request.path_params["tool"]
@@ -205,6 +217,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
         Route("/demo/{tool}", demo, methods=["POST"]),
         Route("/docs", docs_page),
+        Route("/docs/tools/{name}", tool_page),
         Route("/docs/{slug}", docs_page),
     ]
 
