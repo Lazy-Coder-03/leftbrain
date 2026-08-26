@@ -337,3 +337,46 @@ def test_render_markdown_os_block():
     html = render_markdown(md)
     assert html.count('class="os-block"') == 3 and 'data-os="macos"' in html and "<p>after</p>" in html
     assert '<button type="button" data-os="windows"' in html
+
+
+def test_render_markdown_os_block_fence_aware_close_marker():
+    from leftbrain.web.docs import render_markdown
+
+    # A literal ":::" line inside the windows fence must not close the container early.
+    md = (
+        "# T\n\n"
+        ":::os\n"
+        "### windows\n"
+        "```text\n"
+        "before\n"
+        ":::\n"
+        "after-in-fence\n"
+        "```\n"
+        "### macos\n"
+        "```bash\nMACOS_MARKER\n```\n"
+        "### linux\n"
+        "```bash\nLINUX_MARKER\n```\n"
+        ":::\n"
+        "\nafter\n"
+    )
+    html = render_markdown(md)
+    assert html.count('class="os-block"') == 3
+    assert "MACOS_MARKER" in html and "LINUX_MARKER" in html  # macos/linux fully captured
+    assert "<h3>" not in html  # "### macos"/"### linux" must not leak as raw headings
+    assert "<p>:::</p>" not in html  # the real closing marker must not leak as text
+    assert "<p>after</p>" in html  # true terminator consumed; trailing text parses normally
+
+
+def test_render_markdown_os_block_unterminated_fails_open():
+    from leftbrain.web.docs import render_markdown
+
+    md = "# T\n\n:::os\n### windows\n```powershell\ncurl.exe -s X\n```\n\nno closing marker here\n"
+    html = render_markdown(md)  # must not raise
+    assert 'class="ostabs"' not in html and 'class="os-block"' not in html
+    assert "<h1>T</h1>" in html
+
+
+def test_docs_sidebar_marks_current_page(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        assert 'href="/docs/quickstart" class="cur"' in c.get("/docs").text
+        assert 'href="/docs/clients" class="cur"' in c.get("/docs/clients").text

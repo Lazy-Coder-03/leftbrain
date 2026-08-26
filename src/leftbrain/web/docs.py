@@ -13,8 +13,63 @@ PAGES: list[tuple[str, str]] = [("quickstart", "Quickstart"), ("clients", "MCP c
 OS_LABELS = [("windows", "Windows · PowerShell"), ("macos", "macOS"), ("linux", "Linux")]
 
 _md = MarkdownIt("commonmark", {"html": True, "linkify": False}).enable("table")
-_OS_BLOCK = re.compile(r"^:::os\s*\n(.*?)^:::\s*$", re.S | re.M)
+# Section headings inside a `:::os` container are split at top level only (this regex
+# is not fence-aware). Our own docs content never puts "### windows"/"### macos"/
+# "### linux" inside a fenced code block, so this is safe in practice; keep section
+# headings outside fences if you add new `:::os` content.
 _OS_SECTION = re.compile(r"^### (windows|macos|linux)\s*$", re.M)
+
+
+def _is_fence_marker(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("```") or stripped.startswith("~~~")
+
+
+def _split_os_containers(text: str) -> list[tuple[str, str]]:
+    """Split text into ("md", chunk) / ("os", inner) segments, fence-aware.
+
+    A `:::os` line (recognized only when not inside a fence) opens a container; it
+    closes at the next `:::` line that is also outside a fence. Fences are tracked
+    with a simple "a line starting with ``` or ~~~ toggles fence state" rule — enough
+    for our own docs content, though not a full CommonMark fence-length match.
+
+    An unterminated container (no matching `:::` before EOF) fails open: its `:::os`
+    line and everything after it are treated as plain markdown, not a container.
+    """
+    lines = text.split("\n")
+    n = len(lines)
+    segments: list[tuple[str, str]] = []
+    buf: list[str] = []
+    in_fence = False
+    i = 0
+    while i < n:
+        line = lines[i]
+        if not in_fence and line.strip() == ":::os":
+            end = None
+            inner_fence = False
+            j = i + 1
+            while j < n:
+                if not inner_fence and lines[j].strip() == ":::":
+                    end = j
+                    break
+                if _is_fence_marker(lines[j]):
+                    inner_fence = not inner_fence
+                j += 1
+            if end is not None:
+                if buf:
+                    segments.append(("md", "\n".join(buf)))
+                    buf = []
+                segments.append(("os", "\n".join(lines[i + 1 : end])))
+                i = end + 1
+                continue
+            # unterminated: fail open — fall through, treat this line as plain text
+        if _is_fence_marker(line):
+            in_fence = not in_fence
+        buf.append(line)
+        i += 1
+    if buf:
+        segments.append(("md", "\n".join(buf)))
+    return segments
 
 
 def _render_os_block(inner: str) -> str:
@@ -26,14 +81,7 @@ def _render_os_block(inner: str) -> str:
 
 
 def render_markdown(text: str) -> str:
-    out: list[str] = []
-    pos = 0
-    for m in _OS_BLOCK.finditer(text):
-        out.append(_md.render(text[pos : m.start()]))
-        out.append(_render_os_block(m.group(1)))
-        pos = m.end()
-    out.append(_md.render(text[pos:]))
-    return "".join(out)
+    return "".join(_render_os_block(chunk) if kind == "os" else _md.render(chunk) for kind, chunk in _split_os_containers(text))
 
 
 @lru_cache(maxsize=32)
