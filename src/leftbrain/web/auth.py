@@ -145,14 +145,16 @@ async def fetch_github_user(cfg: WebConfig, code: str, redirect_uri: str) -> Use
             user.raise_for_status()
             emails = await client.get(f"{GITHUB_API}/user/emails", headers=h)
             emails.raise_for_status()
+            u = user.json()
+            primary = next(
+                (e for e in emails.json() if e.get("primary") and e.get("verified")), None
+            )
         except OAuthError:
             raise
         except httpx.HTTPError:
             raise OAuthError("GitHub could not be reached. Please try again in a minute.") from None
-        except ValueError:
+        except (ValueError, AttributeError, TypeError):
             raise OAuthError("GitHub returned an unexpected response. Please try again.") from None
-    primary = next((e for e in emails.json() if e.get("primary") and e.get("verified")), None)
     if not primary:
         raise OAuthError("verify your GitHub email address, then sign in again", status=403)
-    u = user.json()
     return User(login=str(u.get("login") or ""), email=str(primary["email"]).lower(), avatar_url=u.get("avatar_url"))

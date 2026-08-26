@@ -88,6 +88,25 @@ def oauth_app(tmp_path, **kw):
     return make_app(tmp_path, client_id="cid", client_secret="csec", github_transport=github_transport(**kw))
 
 
+def github_transport_malformed_emails(token="gho_test"):
+    """Fake GitHub whose /user/emails endpoint returns a non-JSON body."""
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "github.com" and req.url.path == "/login/oauth/access_token":
+            assert req.headers["accept"] == "application/json"
+            return httpx.Response(200, json={"access_token": token, "token_type": "bearer"})
+        if req.url.path == "/user":
+            assert req.headers["authorization"] == f"Bearer {token}"
+            return httpx.Response(200, json={"login": "octo", "avatar_url": "https://a/octo.png"})
+        if req.url.path == "/user/emails":
+            return httpx.Response(
+                200, content=b"not json", headers={"content-type": "application/json"}
+            )
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
 def test_login_not_configured(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         r = c.get("/login")
@@ -142,3 +161,20 @@ def test_callback_github_error(tmp_path):
         state = r.headers["location"].split("state=")[1].split("&")[0]
         r = c.get(f"/auth/github/callback?code=bad&state={state}")
         assert r.status_code == 502 and "GitHub" in r.text and "gho_" not in r.text
+
+
+def test_callback_malformed_github_json(tmp_path):
+    app = make_app(
+        tmp_path,
+        client_id="cid",
+        client_secret="csec",
+        github_transport=github_transport_malformed_emails(),
+    )
+    with TestClient(app) as c:
+        r = c.get("/login", follow_redirects=False)
+        state = r.headers["location"].split("state=")[1].split("&")[0]
+        r = c.get(f"/auth/github/callback?code=ok&state={state}")
+        assert r.status_code == 502
+        assert "GitHub" in r.text
+        assert "gho_" not in r.text
+        assert "Traceback" not in r.text
