@@ -393,6 +393,31 @@ def test_docs_sidebar_marks_current_page(tmp_path):
         assert 'href="/docs/clients" class="cur"' in c.get("/docs/clients").text
 
 
+def test_docs_tools_page_lists_every_tool(tmp_path):
+    from leftbrain.web.tools_list import TOOLS
+
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/docs/tools")
+        assert r.status_code == 200
+        for name, _desc, _modes in TOOLS:
+            assert name in r.text
+        assert 'id="geo_offline"' in r.text
+        assert 'href="/docs/tools" class="cur"' in r.text
+
+
+def test_docs_sidebar_drops_readme_link_for_tools_page(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        html = c.get("/docs").text
+        assert "github.com/Lazy-Coder-03/leftbrain#tools" not in html
+        assert 'href="/docs/tools"' in html
+
+
+def test_landing_tool_cards_link_to_docs_tools(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        html = c.get("/", headers={"Accept": "text/html"}).text
+        assert 'href="/docs/tools#numbers"' in html
+
+
 # --- demo allow-list, body cap and failure handling (C1, I1) ------------------
 
 # exactly what static/site.js sends for each tab's prefilled values

@@ -11,6 +11,7 @@ from starlette.routing import Route
 
 from . import auth, templates
 from .config import WebConfig
+from .tools_list import TOOLS
 
 
 def wants_html(request: Request) -> bool:
@@ -206,22 +207,6 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/docs", docs_page),
         Route("/docs/{slug}", docs_page),
     ]
-
-
-TOOLS = [
-    ("math", "Exact arithmetic & symbolic algebra (SymPy)", "eval · exact · simplify · expand · factor · solve …"),
-    ("datetime", "Dates, durations, time zones, business days", "now · convert_tz · parse · add · diff · weekday …"),
-    ("scale", "Scale numbers and recipes proportionally", "linear · inverse"),
-    ("convert", "Units and currencies with pint", "units · temperature · currency · auto"),
-    ("holidays", "Public holidays by country/region", "list · check · next · countries · subdivisions"),
-    ("numbers", "Compare, round, format, allocate exactly", "compare · round · format · allocate · sequence · parse …"),
-    ("text", "Count, slice, case, diff — by codepoint", "count · regex_match · regex_replace · diff · sort · dedupe …"),
-    ("collections", "Sort, dedupe, group, set ops", "set_ops · group_by · pick_fields · flatten · unflatten · paginate …"),
-    ("validate", "Assert rules over JSON, emails, IBANs, schemas", "json_schema · assert · id · email · url · phone …"),
-    ("random", "Seeded, reproducible randomness", "uuid · int · float · pick · shuffle · token …"),
-    ("geo_offline", "Distance, bearing, bounding boxes", "tz_for_place · tz_for_coords · distance · country · zone_info"),
-    ("encode", "Hashes, base64, URL, hex", "hash · hmac · checksum · base64 · hex · url · html …"),
-]
 
 
 async def landing(request: Request, store: Any, cfg: WebConfig) -> Response:
