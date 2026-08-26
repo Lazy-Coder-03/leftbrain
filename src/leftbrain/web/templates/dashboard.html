@@ -10,8 +10,8 @@
   </aside>
   <main>
     <div class="stats">
-      <div class="stat"><div class="l">Calls today</div><div class="v num">{{ "{:,}".format(today_total) }}</div><div class="meter"><i style="width:{{ [100, (today_total / (5000 * (active or 1)) * 100)|round]|min }}%"></i></div></div>
-      <div class="stat"><div class="l">Daily quota</div><div class="v num">5,000 <span class="sub">/ key</span></div></div>
+      <div class="stat"><div class="l">Calls today</div><div class="v num">{{ "{:,}".format(today_total) }}</div><div class="meter"><i style="width:{{ [100, (today_total / ((daily_quota * (active or 1)) or 1) * 100)|round]|min }}%"></i></div></div>
+      <div class="stat"><div class="l">Daily quota</div><div class="v num">{{ "{:,}".format(daily_quota) }} <span class="sub">/ key</span></div></div>
       <div class="stat"><div class="l">Active keys</div><div class="v num">{{ active }} <span class="sub">/ {{ max_keys }}</span></div></div>
     </div>
     <h2 class="sec">Your keys</h2>

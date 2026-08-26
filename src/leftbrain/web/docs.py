@@ -77,7 +77,7 @@ def _render_os_block(inner: str) -> str:
     sections = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
     tabs = "".join(f'<button type="button" data-os="{k}" aria-pressed="{"true" if i == 0 else "false"}">{label}</button>' for i, (k, label) in enumerate(OS_LABELS))
     blocks = "".join(f'<div class="os-block" data-os="{k}"><h4>{label}</h4>{_md.render(sections.get(k, ""))}</div>' for k, label in OS_LABELS)
-    return f'<div class="os"><div class="ostabs" role="tablist">{tabs}</div>{blocks}</div>\n'
+    return f'<div class="os"><div class="ostabs">{tabs}</div>{blocks}</div>\n'
 
 
 def render_markdown(text: str) -> str:

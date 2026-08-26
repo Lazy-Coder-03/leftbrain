@@ -635,3 +635,102 @@ def test_warns_when_base_url_is_unset(tmp_path, capsys):
     assert "LEFTBRAIN_BASE_URL" in capsys.readouterr().out
     make_app(tmp_path, client_id="cid", client_secret="csec", base_url="https://leftbrain.example")
     assert "LEFTBRAIN_BASE_URL" not in capsys.readouterr().out
+
+
+# --- static caching, quota, tab markup, 404, throttle pruning (I4, I7, M1-M4) ---
+
+
+def test_static_assets_are_cached_and_version_stamped(tmp_path):
+    from leftbrain import __version__
+
+    with TestClient(make_app(tmp_path)) as c:
+        assert c.get("/static/site.css").headers["cache-control"] == "public, max-age=86400"
+        assert c.get("/static/site.js").headers["cache-control"] == "public, max-age=86400"
+        html = c.get("/", headers={"Accept": "text/html"}).text
+        for asset in ("site.css", "site.js", "logo.svg"):
+            assert f"/static/{asset}?v={__version__}" in html, asset
+
+
+def test_dashboard_quota_comes_from_the_configured_default(tmp_path, monkeypatch):
+    import leftbrain.keys
+
+    monkeypatch.setattr(leftbrain.keys, "DEFAULT_DAILY", 1234)
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        html = c.get("/dashboard").text
+        assert '1,234 <span class="sub">/ key</span>' in html
+        assert '5,000 <span class="sub">/ key</span>' not in html
+
+
+def test_tabs_are_plain_buttons_not_an_aria_tab_widget(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        landing = c.get("/", headers={"Accept": "text/html"}).text
+        assert 'role="tablist"' not in landing and 'role="tab"' not in landing
+        assert 'aria-pressed="true" data-tool="numbers"' in landing
+        docs = c.get("/docs").text
+        assert 'role="tablist"' not in docs and 'role="tab"' not in docs
+        assert 'class="ostabs"' in docs and 'aria-pressed="true"' in docs
+
+
+def test_unknown_path_gets_the_branded_404(tmp_path):
+    """The MCP app is mounted at "" as a catch-all; /nope must still reach our handler."""
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/nope", headers={"Accept": "text/html"})
+        assert r.status_code == 404 and r.headers["content-type"].startswith("text/html")
+        assert 'class="brand"' in r.text and "leftbrain" in r.text and "Page not found" in r.text
+        j = c.get("/nope", headers={"Accept": "application/json"})
+        assert j.status_code == 404 and j.json()["ok"] is False and j.json()["error"] == "unsupported"
+        assert c.post("/mcp", json={}).status_code == 401  # the MCP route itself still works
+
+
+def test_error_pages_keep_the_signed_in_nav(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        assert "Get an API key" in c.get("/docs/nope").text
+        login_via_github(c)
+        for path in ("/docs/nope", "/nope"):
+            r = c.get(path, headers={"Accept": "text/html"})
+            assert r.status_code == 404
+            assert '<a class="btn ghost" href="/dashboard">octo</a>' in r.text, path
+
+
+def test_throttle_prunes_on_a_timer_not_on_dict_size(monkeypatch):
+    from leftbrain.web import demo as demo_mod
+
+    class Clock:
+        t = 1000.0
+
+        def monotonic(self):
+            return self.t
+
+    clock = Clock()
+    monkeypatch.setattr(demo_mod, "time", clock)
+    t = demo_mod.Throttle(limit=2, window=60)
+    for i in range(6000):  # far past the old size-based trigger of 5000
+        assert t.allow(f"10.0.{i // 250}.{i % 250}")[0]
+    assert len(t._hits) == 6000
+    first_prune = t._last_prune
+    clock.t += 1
+    t.allow("10.0.0.0")
+    assert t._last_prune == first_prune and len(t._hits) == 6000  # still inside the window
+    clock.t += 61
+    t.allow("10.0.0.0")
+    assert t._last_prune > first_prune and len(t._hits) == 1  # idle IPs finally forgotten
+
+
+def test_stylesheet_caps_the_demo_output_and_thins_scrollbars():
+    from leftbrain.web import HERE
+
+    css = (HERE / "static" / "site.css").read_text(encoding="utf-8")
+    assert "max-height:340px" in css  # a long result scrolls instead of pushing the page down
+    assert "align-items:start" in css
+    assert ".doc .codewrap pre{padding-right:4.5rem}" in css  # copy button never overlaps code
+    assert "scrollbar-width:thin" in css and "pre::-webkit-scrollbar-thumb" in css
+
+
+def test_docs_json_samples_are_pretty_printed():
+    from leftbrain.web import HERE
+
+    md = (HERE / "docs" / "quickstart.md").read_text(encoding="utf-8")
+    assert '"remaining_today": 4988\n  }\n}' in md
+    assert '"assumptions": [],\n  "warnings": []\n}' in md
+    assert '{"ok":true,"result":' not in md  # no one-line JSON blobs left in the samples

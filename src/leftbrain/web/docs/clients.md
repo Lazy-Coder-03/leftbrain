@@ -7,15 +7,18 @@ leftbrain is a standard MCP server over Streamable HTTP. Point any client at `ht
 :::os
 ### windows
 ```powershell
-claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp --header "Authorization: Bearer $env:LB_KEY"
+claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp `
+  --header "Authorization: Bearer $env:LB_KEY"
 ```
 ### macos
 ```bash
-claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp --header "Authorization: Bearer $LB_KEY"
+claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp \
+  --header "Authorization: Bearer $LB_KEY"
 ```
 ### linux
 ```bash
-claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp --header "Authorization: Bearer $LB_KEY"
+claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp \
+  --header "Authorization: Bearer $LB_KEY"
 ```
 :::
 
@@ -45,7 +48,8 @@ from mcp.client.streamable_http import streamable_http_client
 
 async def main():
     http = httpx.AsyncClient(headers={"Authorization": "Bearer lblz_…"})
-    async with streamable_http_client("https://leftbrain.idlesync.in/mcp", http_client=http) as streams:
+    url = "https://leftbrain.idlesync.in/mcp"
+    async with streamable_http_client(url, http_client=http) as streams:
         async with ClientSession(streams[0], streams[1]) as s:
             await s.initialize()
             r = await s.call_tool("numbers", {"mode": "compare", "values": ["9.11", "9.9"]})

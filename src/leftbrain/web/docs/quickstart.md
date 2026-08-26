@@ -46,7 +46,16 @@ curl -s https://leftbrain.idlesync.in/keys/me -H "Authorization: Bearer $LB_KEY"
 :::
 
 ```json
-{"ok":true,"result":{"prefix":"lblz_qm9DsdMO","daily_quota":5000,"rpm":60,"used_today":12,"remaining_today":4988}}
+{
+  "ok": true,
+  "result": {
+    "prefix": "lblz_qm9DsdMO",
+    "daily_quota": 5000,
+    "rpm": 60,
+    "used_today": 12,
+    "remaining_today": 4988
+  }
+}
 ```
 
 ## 4 · Call a tool over MCP
@@ -86,7 +95,18 @@ curl -s https://leftbrain.idlesync.in/mcp \
 The response is an SSE stream by default (`content-type: text/event-stream`, one `event:`/`data:` pair); the JSON-RPC result is in the `data:` line and its `structuredContent` is the leftbrain contract:
 
 ```json
-{"ok":true,"result":{"ascending":[{"input":"9.11","value":"9.11"},{"input":"9.9","value":"9.9"}],"max":{"input":"9.9","value":"9.9"}},"assumptions":[],"warnings":[]}
+{
+  "ok": true,
+  "result": {
+    "ascending": [
+      {"input": "9.11", "value": "9.11"},
+      {"input": "9.9", "value": "9.9"}
+    ],
+    "max": {"input": "9.9", "value": "9.9"}
+  },
+  "assumptions": [],
+  "warnings": []
+}
 ```
 
 Add `-H "Accept: application/json"` only (no `text/event-stream`) if your server runs with `--json` to get a plain JSON body.

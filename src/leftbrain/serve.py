@@ -29,6 +29,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
@@ -172,6 +173,24 @@ class AuthMiddleware:
         await resp(scope, receive, send)
 
 
+class _McpOnly:
+    """Guard for the core MCP app, which is mounted at ``""`` so it can own ``/mcp``.
+
+    Without this, that mount is the catch-all for the whole site and answers every
+    unrouted path with its own bare ``404 Not Found``. Raising ``HTTPException``
+    instead lets the site's branded 404 handler produce the response.
+    """
+
+    def __init__(self, app: Any, path: str = "/mcp") -> None:
+        self.app, self.path = app, path
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        path = scope.get("path", "")
+        if scope["type"] == "http" and path != self.path and not path.startswith(self.path + "/"):
+            raise HTTPException(status_code=404)
+        await self.app(scope, receive, send)
+
+
 def build_app(*, include_external: bool = True, include_files: bool = False, stateless: bool = True, json_response: bool = False, host: str = "0.0.0.0", api_key: str | None = None, keys_db: str | None = None, web_config: Any | None = None) -> Any:
     from .mcp_server import server as core
 
@@ -210,9 +229,9 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
             root_app = app
 
     async def index(request: Request) -> Any:
-        if "text/html" in request.headers.get("accept", ""):
-            from .web.views import landing
+        from .web.views import landing, wants_html
 
+        if wants_html(request):
             return await landing(request, store, cfg)
         return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if (store and cfg.open_signup) else None, "login": "/login", "docs": "/docs", "transport": "streamable-http", "stateless": stateless})
 
@@ -224,7 +243,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
             return JSONResponse({"ok": False, "error": "unsupported", "message": "self-serve signup is closed; sign in at /login to create a key"}, status_code=404)
         try:
             body = await request.json()
-        except Exception:  # noqa: BLE001
+        except Exception:
             form = await request.form()
             body = dict(form)
         email = str(body.get("email", ""))
@@ -250,8 +269,16 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
                 await stack.enter_async_context(srv.session_manager.run())
             yield
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *mounts, Mount("", app=root_app)]
-    app: Any = Starlette(routes=routes, lifespan=lifespan)
+    async def not_found(request: Request, _exc: Any) -> Any:
+        from .web import auth as web_auth
+        from .web.views import error_page, wants_html
+
+        if wants_html(request):
+            return error_page(request, 404, "Page not found", "That page isn't here. Try the docs, or start from the home page.", user=web_auth.current_user(request, cfg))
+        return JSONResponse({"ok": False, "error": "unsupported", "message": "no such endpoint; see / for the endpoint list"}, status_code=404)
+
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *mounts, Mount("", app=_McpOnly(root_app))]
+    app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store)
     return SecurityHeadersMiddleware(app)

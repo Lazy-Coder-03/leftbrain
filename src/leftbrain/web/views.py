@@ -27,8 +27,8 @@ def no_store(response: Response) -> Response:
     return response
 
 
-def error_page(request: Request, status: int, title: str, message: str) -> Response:
-    return no_store(render(request, "error.html", status, title=title, message=message, page="error", user=None))
+def error_page(request: Request, status: int, title: str, message: str, user: Any = None) -> Response:
+    return no_store(render(request, "error.html", status, title=title, message=message, page="error", user=user))
 
 
 def routes(store: Any, cfg: WebConfig) -> list[Any]:
@@ -38,11 +38,15 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
 
     throttle = demo_mod.Throttle()
 
+    def fail_page(request: Request, status: int, title: str, message: str) -> Response:
+        """An error page that still shows who is signed in, so the nav does not flip to Sign in."""
+        return error_page(request, status, title, message, user=auth.current_user(request, cfg))
+
     async def docs_page(request: Request) -> Response:
         slug = request.path_params.get("slug", "quickstart")
         page = docs_mod.load_page(slug)
         if page is None:
-            return error_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
+            return fail_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
         title, html = page
         return render(request, "docs.html", 200, page="docs", user=auth.current_user(request, cfg), title=title, body=html, slug=slug, pages=docs_mod.PAGES)
 
@@ -108,7 +112,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
 
     async def callback(request: Request) -> Response:
         if not cfg.oauth_ready:
-            return error_page(request, 404, "Sign-in unavailable", "Sign-in is not configured on this server.")
+            return fail_page(request, 404, "Sign-in unavailable", "Sign-in is not configured on this server.")
         expected = auth.read_state(cfg.secret or "", request.cookies.get(auth.OAUTH_COOKIE))
         got = request.query_params.get("state")
         code = request.query_params.get("code")
@@ -137,7 +141,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         if user is not None:  # a session-less logout changes nothing; nothing to forge
             form = await request.form()
             if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
-                return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+                return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
         resp = RedirectResponse("/", status_code=302)
         auth.clear_session_cookie(resp, request)
         return no_store(resp)
@@ -146,13 +150,13 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         return auth.current_user(request, cfg)
 
     def dashboard_ctx(request: Request, user: auth.User, **extra: Any) -> dict[str, Any]:
-        from ..keys import MAX_ACTIVE_KEYS_PER_EMAIL
+        from ..keys import DEFAULT_DAILY, MAX_ACTIVE_KEYS_PER_EMAIL
 
         keys = store.list(user.email) if store else []
-        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "new_key": None, "error": None, **extra}
+        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "new_key": None, "error": None, **extra}
 
     def keys_unavailable(request: Request) -> Response:
-        return error_page(request, 503, "Keys unavailable", "This server has no key store configured.")
+        return fail_page(request, 503, "Keys unavailable", "This server has no key store configured.")
 
     async def dashboard(request: Request) -> Response:
         user = require_user(request)
@@ -168,7 +172,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
-            return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+            return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
         if store is None:
             return keys_unavailable(request)
         raw, info = store.create_for_owner(user.email, str(form.get("name") or ""))
@@ -182,12 +186,12 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             return RedirectResponse("/login", status_code=302)
         form = await request.form()
         if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
-            return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+            return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
         if store is None:
             return keys_unavailable(request)
         prefix = request.path_params["prefix"]
         if not store.owns(user.email, prefix):
-            return error_page(request, 403, "Not your key", "That key belongs to a different account.")
+            return fail_page(request, 403, "Not your key", "That key belongs to a different account.")
         store.set_disabled(prefix, True)
         return no_store(RedirectResponse("/dashboard", status_code=302))
 

@@ -13,7 +13,7 @@ a{color:inherit}button{font:inherit;color:inherit;cursor:pointer}code,pre,kbd,.m
 .hint{font-family:var(--mono);font-size:.8rem;color:var(--ink2)}
 .notice{border-left:3px solid var(--accent);background:var(--accent-soft);padding:10px 14px;border-radius:0 var(--radius) var(--radius) 0;font-size:.92rem;max-width:60ch}.notice.bad{border-color:var(--bad)}
 /* hero */
-.hero{position:relative;padding:72px 0 56px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.hero{position:relative;padding:80px 0 56px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:start}
 .hero::before{content:"";position:absolute;inset:0 -24px;background-image:var(--grid);background-size:24px 24px;z-index:-1;mask-image:linear-gradient(to bottom,#000 60%,transparent)}
 .eyebrow{font-family:var(--mono);font-size:.8rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink2);margin-bottom:18px;display:flex;gap:12px;align-items:center}.eyebrow::before{content:"";width:28px;height:1px;background:var(--accent)}
 h1.hl{font-family:var(--display);font-size:clamp(2.4rem,6vw,4.6rem);font-weight:500;letter-spacing:-.03em;line-height:.98}h1.hl em{font-style:normal;color:var(--accent)}
@@ -27,7 +27,7 @@ h1.hl{font-family:var(--display);font-size:clamp(2.4rem,6vw,4.6rem);font-weight:
 .demo label{display:grid;gap:6px;font-size:.8rem;letter-spacing:.06em;text-transform:uppercase;color:var(--ink2);font-family:var(--mono)}
 .demo input{font:inherit;font-family:var(--mono);font-size:1rem;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg);color:var(--ink);width:100%}
 .demo .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}.demo .run{justify-self:start}
-.out{background:#f0f2ef;border:1px solid var(--line2);border-radius:var(--radius);padding:14px;font-family:var(--mono);font-size:.82rem;line-height:1.5;white-space:pre-wrap;overflow-x:auto;margin:0;min-height:120px}
+.out{background:#f0f2ef;border:1px solid var(--line2);border-radius:var(--radius);padding:14px;font-family:var(--mono);font-size:.82rem;line-height:1.5;white-space:pre-wrap;overflow:auto;margin:0;min-height:120px;max-height:340px}
 .out .k{color:var(--ink2)}.out .s{color:var(--accent)}.out .n{color:var(--good)}.out .w{color:var(--warn)}.out .b{color:var(--bad)}
 .latency{font-family:var(--mono);font-size:.75rem;color:var(--ink2);display:flex;justify-content:space-between}
 /* proof + tools + contract */
@@ -67,7 +67,8 @@ table.keys{width:100%;border-collapse:collapse;font-size:.92rem}table.keys th{te
 .ostabs{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;margin:10px 0}.ostabs button{background:none;border:0;padding:8px 14px;font-size:.85rem;font-weight:500;color:var(--ink2)}.ostabs button+button{border-left:1px solid var(--line)}.ostabs button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}
 .os-block{position:relative}.os-block h4{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);margin:10px 0 6px}.js .os-block{display:none}.js .os-block.show{display:block}.js .os-block h4{display:none}
 .copy{font-family:var(--mono);font-size:.72rem;background:var(--bg2);border:1px solid var(--line);color:var(--ink2);padding:4px 8px;border-radius:var(--radius)}.copy:hover{color:var(--ink)}
-.doc .codewrap{position:relative}.doc .codewrap .copy{position:absolute;top:8px;right:8px}
+.doc .codewrap{position:relative}.doc .codewrap .copy{position:absolute;top:8px;right:8px}.doc .codewrap pre{padding-right:4.5rem}
+pre,.out{scrollbar-width:thin}pre::-webkit-scrollbar{height:8px}pre::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
 .callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 var(--radius) var(--radius) 0;margin:16px 0;font-size:.92rem}
 @media (max-width:860px){.hero,.contract,.dash,.docs{grid-template-columns:1fr}.tgrid{grid-template-columns:1fr 1fr}.proof{grid-template-columns:1fr}.proof>div{border-right:0;border-bottom:1px solid var(--line2);padding-left:0}.toc{position:static}.sec-h{flex-direction:column;align-items:flex-start}.sec-h p{text-align:left}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
