@@ -93,3 +93,66 @@ def read_state(secret: str, value: str | None) -> str | None:
         return str(URLSafeTimedSerializer(secret, salt="lb-oauth").loads(value, max_age=OAUTH_MAX_AGE))
     except BadSignature:
         return None
+
+
+GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
+GITHUB_TOKEN = "https://github.com/login/oauth/access_token"
+GITHUB_API = "https://api.github.com"
+
+
+class OAuthError(Exception):
+    def __init__(self, message: str, status: int = 502):
+        super().__init__(message)
+        self.message = message
+        self.status = status
+
+
+def authorize_url(cfg: WebConfig, redirect_uri: str, state: str) -> str:
+    from urllib.parse import urlencode
+
+    q = urlencode(
+        {
+            "client_id": cfg.client_id or "",
+            "redirect_uri": redirect_uri,
+            "scope": "read:user user:email",
+            "state": state,
+        }
+    )
+    return f"{GITHUB_AUTHORIZE}?{q}"
+
+
+async def fetch_github_user(cfg: WebConfig, code: str, redirect_uri: str) -> User:
+    import httpx
+
+    async with httpx.AsyncClient(timeout=15, transport=cfg.github_transport) as client:
+        try:
+            tok = await client.post(
+                GITHUB_TOKEN,
+                data={
+                    "client_id": cfg.client_id,
+                    "client_secret": cfg.client_secret,
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                headers={"Accept": "application/json"},
+            )
+            tok.raise_for_status()
+            access = tok.json().get("access_token")
+            if not access:
+                raise OAuthError("GitHub did not accept the sign-in code. Please try again.")
+            h = {"Authorization": f"Bearer {access}", "Accept": "application/vnd.github+json"}
+            user = await client.get(f"{GITHUB_API}/user", headers=h)
+            user.raise_for_status()
+            emails = await client.get(f"{GITHUB_API}/user/emails", headers=h)
+            emails.raise_for_status()
+        except OAuthError:
+            raise
+        except httpx.HTTPError:
+            raise OAuthError("GitHub could not be reached. Please try again in a minute.") from None
+        except ValueError:
+            raise OAuthError("GitHub returned an unexpected response. Please try again.") from None
+    primary = next((e for e in emails.json() if e.get("primary") and e.get("verified")), None)
+    if not primary:
+        raise OAuthError("verify your GitHub email address, then sign in again", status=403)
+    u = user.json()
+    return User(login=str(u.get("login") or ""), email=str(primary["email"]).lower(), avatar_url=u.get("avatar_url"))

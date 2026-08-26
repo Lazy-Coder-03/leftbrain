@@ -1,3 +1,4 @@
+import httpx
 from starlette.testclient import TestClient
 
 from leftbrain.serve import build_app
@@ -56,3 +57,88 @@ def test_csrf():
     assert auth.csrf_ok("s3cret", u, t)
     assert not auth.csrf_ok("s3cret", auth.User("x", "x@example.com", None), t)
     assert not auth.csrf_ok("s3cret", u, None) and not auth.csrf_ok("s3cret", u, "nope")
+
+
+def github_transport(emails=None, token="gho_test"):
+    """Fake GitHub: token exchange, /user, /user/emails."""
+    emails = (
+        emails
+        if emails is not None
+        else [{"email": "octo@example.com", "primary": True, "verified": True}]
+    )
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        if req.url.host == "github.com" and req.url.path == "/login/oauth/access_token":
+            body = dict(x.split("=") for x in req.content.decode().split("&")) if req.content else {}
+            assert req.headers["accept"] == "application/json"
+            if body.get("code") == "bad":
+                return httpx.Response(200, json={"error": "bad_verification_code"})
+            return httpx.Response(200, json={"access_token": token, "token_type": "bearer"})
+        if req.url.path == "/user":
+            assert req.headers["authorization"] == f"Bearer {token}"
+            return httpx.Response(200, json={"login": "octo", "avatar_url": "https://a/octo.png"})
+        if req.url.path == "/user/emails":
+            return httpx.Response(200, json=emails)
+        return httpx.Response(404)
+
+    return httpx.MockTransport(handler)
+
+
+def oauth_app(tmp_path, **kw):
+    return make_app(tmp_path, client_id="cid", client_secret="csec", github_transport=github_transport(**kw))
+
+
+def test_login_not_configured(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/login")
+        assert r.status_code == 200 and "not configured" in r.text
+
+
+def test_login_redirects_to_github_with_state(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        r = c.get("/login", follow_redirects=False)
+        assert r.status_code == 302
+        loc = r.headers["location"]
+        assert loc.startswith("https://github.com/login/oauth/authorize?") and "client_id=cid" in loc and "state=" in loc
+        assert "redirect_uri=http%3A%2F%2Ftestserver%2Fauth%2Fgithub%2Fcallback" in loc
+        assert "lb_oauth" in r.cookies
+
+
+def test_callback_bad_state_rejected(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        c.get("/login", follow_redirects=False)
+        r = c.get("/auth/github/callback?code=ok&state=wrong", follow_redirects=False)
+        assert r.status_code == 400 and "sign in again" in r.text
+
+
+def login_via_github(c: TestClient) -> None:
+    r = c.get("/login", follow_redirects=False)
+    state = r.headers["location"].split("state=")[1].split("&")[0]
+    r = c.get(f"/auth/github/callback?code=ok&state={state}", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/dashboard"
+    assert "lb_session" in c.cookies
+
+
+def test_callback_happy_path_sets_session(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        r = c.post("/logout", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == "/"
+        assert "lb_session" not in c.cookies
+
+
+def test_callback_unverified_email(tmp_path):
+    app = oauth_app(tmp_path, emails=[{"email": "octo@example.com", "primary": True, "verified": False}])
+    with TestClient(app) as c:
+        r = c.get("/login", follow_redirects=False)
+        state = r.headers["location"].split("state=")[1].split("&")[0]
+        r = c.get(f"/auth/github/callback?code=ok&state={state}")
+        assert r.status_code == 403 and "verify your GitHub email" in r.text
+
+
+def test_callback_github_error(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        r = c.get("/login", follow_redirects=False)
+        state = r.headers["location"].split("state=")[1].split("&")[0]
+        r = c.get(f"/auth/github/callback?code=bad&state={state}")
+        assert r.status_code == 502 and "GitHub" in r.text and "gho_" not in r.text
