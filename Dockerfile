@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
-RUN pip install --upgrade pip && pip install ".[server,files]"
+RUN pip install --upgrade pip && pip install ".[server,files,postgres]"
 
 # Non-root
 RUN useradd -m leftbrain && chown -R leftbrain /app
@@ -17,5 +17,6 @@ USER leftbrain
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request,os;urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8080\")}/healthz')" || exit 1
 
-# Set LEFTBRAIN_API_KEY to require a bearer token; LEFTBRAIN_SERVE_FILES=1 to expose file tools.
+# Auth: LEFTBRAIN_API_KEY (single token) and/or a key store via LEFTBRAIN_KEYS_URL / DATABASE_URL
+# (postgres://...) or LEFTBRAIN_KEYS_DB (sqlite path). LEFTBRAIN_SERVE_FILES=1 exposes file tools.
 CMD ["leftbrain-serve"]

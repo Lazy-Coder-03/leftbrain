@@ -185,7 +185,7 @@ def app_from_env() -> Any:
         stateless=env("LEFTBRAIN_SERVE_STATELESS", "1") != "0",
         json_response=env("LEFTBRAIN_SERVE_JSON", "0") == "1",
         host=env("HOST", "0.0.0.0"),
-        keys_db=env("LEFTBRAIN_KEYS_DB") or None,
+        keys_db=env("LEFTBRAIN_KEYS_URL") or env("DATABASE_URL") or env("LEFTBRAIN_KEYS_DB") or None,
     )
 
 
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--stateful", action="store_true", help="keep per-client sessions (default: stateless, scales horizontally)")
     ap.add_argument("--json", action="store_true", help="plain JSON responses instead of SSE streams")
     ap.add_argument("--api-key", default=None, help="require this single bearer token (or set LEFTBRAIN_API_KEY)")
-    ap.add_argument("--keys-db", default=None, help="enable per-user API keys + signup, backed by this SQLite file (or set LEFTBRAIN_KEYS_DB)")
+    ap.add_argument("--keys-db", default=None, help="enable per-user API keys + signup: SQLite path or postgres:// DSN (or set LEFTBRAIN_KEYS_URL / DATABASE_URL / LEFTBRAIN_KEYS_DB)")
     ap.add_argument("--workers", type=int, default=int(os.environ.get("WEB_CONCURRENCY", "1")))
     ap.add_argument("--version", action="version", version=f"leftbrain {__version__}")
     args = ap.parse_args(argv)
@@ -211,13 +211,13 @@ def main(argv: list[str] | None = None) -> None:
     if args.api_key:
         os.environ["LEFTBRAIN_API_KEY"] = args.api_key
     if args.keys_db:
-        os.environ["LEFTBRAIN_KEYS_DB"] = args.keys_db
+        os.environ["LEFTBRAIN_KEYS_URL"] = args.keys_db
     os.environ["LEFTBRAIN_SERVE_FILES"] = "1" if args.files else "0"
     os.environ["LEFTBRAIN_SERVE_EXTERNAL"] = "0" if args.no_external else "1"
     os.environ["LEFTBRAIN_SERVE_STATELESS"] = "0" if args.stateful else "1"
     os.environ["LEFTBRAIN_SERVE_JSON"] = "1" if args.json else "0"
     os.environ["HOST"] = args.host
-    keys_db = os.environ.get("LEFTBRAIN_KEYS_DB")
+    keys_db = os.environ.get("LEFTBRAIN_KEYS_URL") or os.environ.get("DATABASE_URL") or os.environ.get("LEFTBRAIN_KEYS_DB")
     if keys_db and args.workers > 1:
         print("note: the SQLite key store keeps per-minute rate windows in memory; with several workers the per-minute limit is per worker (daily quotas stay exact)", flush=True)
     print(json.dumps({"leftbrain": __version__, "listen": f"http://{args.host}:{args.port}", "core": "/mcp", "external": None if args.no_external else "/external/mcp", "files": "/files/mcp" if args.files else None, "auth": "keys" if keys_db else ("bearer" if os.environ.get("LEFTBRAIN_API_KEY") else "none"), "signup": "/keys/signup" if keys_db else None}), flush=True)

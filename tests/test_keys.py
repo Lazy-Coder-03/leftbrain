@@ -63,3 +63,22 @@ def test_http_server_static_key():
         assert c.get("/keys/me").status_code == 401
         assert c.get("/keys/me", headers={"X-API-Key": "s3cret"}).json()["result"]["quota"] == "unlimited"
         assert c.post("/keys/signup", json={"email": "a@b.co"}).status_code == 404
+
+
+def test_keystore_postgres_if_configured():
+    import os
+
+    import pytest
+
+    url = os.environ.get("LEFTBRAIN_TEST_PG_URL")
+    if not url:
+        pytest.skip("set LEFTBRAIN_TEST_PG_URL=postgres://... to run")
+    store = KeyStore(url)
+    assert store.backend == "postgres"
+    raw, info = store.create("pg@b.co", daily_quota=2, rpm=100)
+    try:
+        assert store.verify_and_count(raw).ok and store.verify_and_count(raw).ok
+        assert store.verify_and_count(raw).status == 429
+        assert store.get_by_prefix(info.prefix).used_today == 2
+    finally:
+        store.revoke(info.prefix)

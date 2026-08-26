@@ -166,7 +166,11 @@ leftbrain-keys usage --days 7
 leftbrain-keys stats
 ```
 
-Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Only a SHA-256 of each key is stored. SQLite is fine for one instance (mount a volume on Railway/Fly); the `KeyStore` class is the single seam if you later move to Postgres.
+Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Only a SHA-256 of each key is stored.
+
+The store speaks **SQLite** (a path, for one instance with a volume) or **Postgres** (`LEFTBRAIN_KEYS_URL=postgres://…`, `pip install "leftbrain[postgres]"`) for platforms without persistent disk. Northflank/Render/Railway's injected `DATABASE_URL` is picked up automatically.
+
+**Free hosting that fits**: Northflank's sandbox (always-on service + free Postgres + custom domain) — see [`docs/deploy-northflank.md`](docs/deploy-northflank.md) for a step-by-step including DNS for a subdomain.
 
 ## Examples of what changes
 
