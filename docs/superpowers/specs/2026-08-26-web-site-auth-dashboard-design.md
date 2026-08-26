@@ -40,7 +40,7 @@ src/leftbrain/web/
   Dockerfile is unchanged.
 - `serve.build_app` mounts the web routes before the MCP mounts. `AuthMiddleware` changes
   from "everything except PUBLIC_PATHS needs a bearer" to **"only PROTECTED_PREFIXES need a
-  bearer"**: `/mcp`, `/external/mcp`, `/files/mcp`, `/keys/`. Everything else passes through
+  bearer"**: `/mcp`, `/external/mcp`, `/files/mcp`, `/keys/me`. Everything else passes through
   and is protected (or not) by the cookie session inside the view.
 - `GET /` content-negotiates: if the `Accept` header prefers `text/html`, render the landing
   page; otherwise return the existing JSON service description (curl, SDKs and monitors keep
