@@ -310,3 +310,11 @@ def test_demo_throttle(tmp_path):
     ok, retry = t.allow("1.1.1.1")
     assert not ok and 0 < retry <= 60
     assert t.allow("2.2.2.2")[0]
+
+
+def test_landing_content(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        html = c.get("/", headers={"Accept": "text/html"}).text
+        assert "left brain" in html and 'id="demo"' in html and "geo_offline" in html
+        assert 'href="/login"' in html and 'href="/docs"' in html
+        assert "9.11" in html  # proof strip

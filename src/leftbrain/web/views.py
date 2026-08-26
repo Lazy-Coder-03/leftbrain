@@ -154,5 +154,21 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
     ]
 
 
+TOOLS = [
+    ("math", "Exact arithmetic & symbolic algebra (SymPy)", "eval · exact · simplify · expand · factor · solve …"),
+    ("datetime", "Dates, durations, time zones, business days", "now · convert_tz · parse · add · diff · weekday …"),
+    ("scale", "Scale numbers and recipes proportionally", "linear · inverse"),
+    ("convert", "Units and currencies with pint", "units · temperature · currency · auto"),
+    ("holidays", "Public holidays by country/region", "list · check · next · countries · subdivisions"),
+    ("numbers", "Compare, round, format, allocate exactly", "compare · round · format · allocate · sequence · parse …"),
+    ("text", "Count, slice, case, diff — by codepoint", "count · regex_match · regex_replace · diff · sort · dedupe …"),
+    ("collections", "Sort, dedupe, group, set ops", "set_ops · group_by · pick_fields · flatten · unflatten · paginate …"),
+    ("validate", "Assert rules over JSON, emails, IBANs, schemas", "json_schema · assert · id · email · url · phone …"),
+    ("random", "Seeded, reproducible randomness", "uuid · int · float · pick · shuffle · token …"),
+    ("geo_offline", "Distance, bearing, bounding boxes", "tz_for_place · tz_for_coords · distance · country · zone_info"),
+    ("encode", "Hashes, base64, URL, hex", "hash · hmac · checksum · base64 · hex · url · html …"),
+]
+
+
 async def landing(request: Request, store: Any, cfg: WebConfig) -> Response:
-    return render(request, "error.html", 200, title="leftbrain", message="Landing page coming in Task 7.", page="landing", user=None)
+    return render(request, "landing.html", 200, page="landing", user=auth.current_user(request, cfg), tools=TOOLS)
