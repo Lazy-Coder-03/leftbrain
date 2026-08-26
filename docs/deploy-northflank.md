@@ -1,64 +1,99 @@
-# Deploy leftbrain on Northflank (free tier) at leftbrain.idlesync.in
+# Deploy leftbrain on Northflank (free sandbox) at leftbrain.idlesync.in
 
-Northflank's Developer Sandbox gives 2 always-on services, 1 database and custom domains with TLS for free (a card is required at signup for verification only; nothing is charged unless you upgrade). Compute per free service is small (~0.1–0.2 vCPU, ~512 MB) — leftbrain runs one uvicorn worker and fits.
+Northflank's Developer Sandbox gives 2 always-on services, 1 database addon and custom domains with TLS for free. A card is required at signup for verification only; nothing is charged unless you upgrade. Free projects must live in a non-APAC region (Europe – West/London is fine from India: ~120 ms).
 
-## 1. Push the repo to GitHub
+Prerequisites: the repo is on GitHub (`Lazy-Coder-03/leftbrain`), the team has GitHub linked (top banner → *Link now* → authorize → select the repo), and a project `leftbrain` exists.
+
+---
+
+## Step 1 — PostgreSQL addon (the key store)
+
+Project → **Addons → Create addon** (or *Deploy database* on the welcome card).
+
+| Section | Field | Value |
+|---|---|---|
+| Basic information | Addon name | `keys` |
+| | Addon type | **PostgreSQL** |
+| | Version | newest offered (16/17) |
+| | Environment | `Default` |
+| Data | | **Fresh addon** |
+| Resources | Compute plan | `nf-compute-20` (0.2 vCPU / 512 MB — the default) |
+| | Storage type / size | NVMe, smallest offered (6 GB) |
+| | Replicas | 1 |
+| Networking | Deploy with TLS | ✔ on |
+| | Publicly accessible | **off** (only the service needs it; turn on temporarily if you want to run `leftbrain-keys` from your laptop) |
+
+**Create addon** → wait for status *Running* (1–2 min).
+
+## Step 2 — Secret group that exposes the DB to services
+
+Project → **Secrets → Create secret group**.
+
+| Field | Value |
+|---|---|
+| Name | `keys-link` |
+| Environment | `Default` |
+| Linked addons | expand → tick `keys` → **Configure** → choose **Suggested** variables |
+| Alias | on the connection-string variable (looks like `NF_KEYS_POSTGRES_URI` or the `…_URI`/`DATABASE_URL` entry) add alias **`LEFTBRAIN_KEYS_URL`** |
+| Inheritance | leave "all services and jobs in the project" |
+
+Save. Any service in the project now receives `LEFTBRAIN_KEYS_URL=postgresql://…` at start.
+(If the group already produced `DATABASE_URL`, that also works — leftbrain checks `LEFTBRAIN_KEYS_URL`, then `DATABASE_URL`.)
+
+## Step 3 — The service
+
+Project → **Services → Create service → Combined service** (build + deploy from Git).
+
+| Section | Field | Value |
+|---|---|---|
+| Basic | Name | `leftbrain` (cannot be renamed later) |
+| Repository | Repo / branch | `Lazy-Coder-03/leftbrain` · `main` |
+| Build | Type | **Dockerfile** · path `/Dockerfile` · context `/` |
+| Environment | Runtime variables | `PORT=8080` · `WEB_CONCURRENCY=1` · `LEFTBRAIN_SERVE_EXTERNAL=1` · `LEFTBRAIN_SERVE_FILES=0` · `LEFTBRAIN_DEFAULT_DAILY_QUOTA=5000` · `LEFTBRAIN_DEFAULT_RPM=60` |
+| Networking | Port | `8080`, protocol **HTTP**, **Public** ✔, name `web` (auto-filled from `EXPOSE 8080`; check the *Public* toggle) |
+| Resources | Plan | the sandbox default (`nf-compute-10`/`20`) · 1 instance |
+| Advanced → Health checks | | HTTP · port `8080` · path `/healthz` · initial delay 20 s |
+| Advanced → CMD override | | leave empty (Dockerfile runs `leftbrain-serve`) |
+
+**Create service**. The first build takes ~2–3 min (BuildKit). Watch **Builds** then **Logs**; the startup line is a JSON object containing `"auth": "keys"` — that confirms the DB link worked. If it says `"auth": "none"`, the secret group isn't attached: Service → *Environment* → check inherited secret groups, then *Restart*.
+
+Open the public URL shown on the service header (`https://web--leftbrain--….code.run` or `….northflank.app`):
+
+- `/healthz` → `{"ok": true, "version": "0.1.0"}`
+- `/` → service description with `"signup": "/keys/signup"`
+
+## Step 4 — First key and MCP test
 
 ```bash
-cd "D:\ML projects\leftbrain"
-gh repo create leftbrain --public --source . --push
+curl -X POST https://<public-url>/keys/signup -H "content-type: application/json" -d '{"email":"you@example.com"}'
+# {"ok":true,"key":"lb_…","daily_quota":5000,"rpm":60,…}
+curl https://<public-url>/keys/me -H "Authorization: Bearer lb_…"
+claude mcp add --transport http leftbrain https://<public-url>/mcp --header "Authorization: Bearer lb_…"
 ```
 
-## 2. Create the project and database
+## Step 5 — Custom domain leftbrain.idlesync.in
 
-1. Sign up at northflank.com → **Create project** (`leftbrain`, pick the region closest to your users; Mumbai is not offered, Singapore/Frankfurt/US are).
-2. **Add addon → PostgreSQL**, name `keys`, smallest plan. Wait until it's running.
+Team level (top-left team menu) → **Domains → Add domain** → `leftbrain.idlesync.in`.
 
-## 3. Create the service
+1. Northflank shows a **TXT** record: add it at your DNS provider (Cloudflare: *DNS → Add record → TXT*, name/value exactly as shown). Click **Verify** (propagation 1–10 min).
+2. It then shows a **CNAME** target: add `CNAME leftbrain → <target>`; in Cloudflare set **Proxy status = DNS only (grey cloud)** until the certificate is issued.
+3. Go to the service → **Ports & DNS** → the `web` port → **Assign domain** → pick `leftbrain.idlesync.in`. Let's Encrypt issues the cert automatically (a few minutes).
+4. `curl https://leftbrain.idlesync.in/healthz` → ok. You may switch the Cloudflare record to proxied afterwards if you want its WAF; keep "Full (strict)" SSL mode.
 
-1. **Add service → Deployment / Combined service → Git repository**, link GitHub, pick `leftbrain`, branch `main`.
-2. Build: **Dockerfile**, path `/Dockerfile`, context `/`.
-3. Ports: Northflank detects `8080` from `EXPOSE`; make sure it is **HTTP, public**.
-4. Environment variables (Runtime):
+## Step 6 — Admin
 
-   | Name | Value |
-   |---|---|
-   | `PORT` | `8080` |
-   | `WEB_CONCURRENCY` | `1` |
-   | `LEFTBRAIN_SERVE_EXTERNAL` | `1` |
-   | `LEFTBRAIN_SERVE_FILES` | `0` |
-   | `LEFTBRAIN_DEFAULT_DAILY_QUOTA` | `5000` |
-   | `LEFTBRAIN_DEFAULT_RPM` | `60` |
-
-5. **Link the addon**: on the `keys` addon → *Secrets / Link to service* → choose the service and accept the suggested variables. Northflank injects `DATABASE_URL`, which leftbrain picks up automatically as the key store.
-6. Health check: HTTP, port `8080`, path `/healthz`.
-7. Deploy. When it's green, open the generated `https://….northflank.app/` — you should see the service JSON with `"auth": "keys"`.
-
-## 4. Attach leftbrain.idlesync.in
-
-1. Northflank → **Domains → Add domain** → `leftbrain.idlesync.in`. It shows a **TXT** record for verification.
-2. In your DNS (Cloudflare recommended): add the TXT record, then the **CNAME** `leftbrain` → the target Northflank shows. Keep the record **DNS-only (grey cloud)** during verification and certificate issuance; you can proxy it afterwards if you want Cloudflare's WAF.
-3. Back in Northflank: **Verify**, then on the service's **Ports & DNS** page assign the domain to the public port. TLS is issued automatically within a few minutes.
-
-## 5. Smoke test
+Turn on *Publicly accessible* on the `keys` addon only while you need it, copy the external connection string, then:
 
 ```bash
-curl https://leftbrain.idlesync.in/healthz
-curl -X POST https://leftbrain.idlesync.in/keys/signup -H "content-type: application/json" -d '{"email":"you@example.com"}'
-# copy the key
-claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp --header "Authorization: Bearer lb_..."
+pip install "leftbrain[postgres]"
+LEFTBRAIN_KEYS_URL="postgresql://…external…" leftbrain-keys stats
+leftbrain-keys create --owner partner@example.com --daily 50000 --rpm 300 --note "partner"
+leftbrain-keys list | disable <prefix> | revoke <prefix> | usage --days 7
 ```
 
-Admin from your machine (uses the same Postgres):
+## Limits and next steps
 
-```bash
-LEFTBRAIN_KEYS_URL="postgres://…external URL from the addon…" leftbrain-keys stats
-leftbrain-keys create --owner partner@example.com --daily 50000 --rpm 300
-```
-
-## Limits to know
-
-- ~10 GB egress and ~1M HTTP requests per month on the free tier — plenty for an early public API.
-- One container: per-minute rate limits are in memory (exact), daily quotas are in Postgres (exact across restarts).
-- Cold starts don't exist (always-on); redeploys take ~1–2 min while the new container builds.
-- If you later need more CPU, the next step is `nf-compute-20`/`50` on pay-as-you-go ($5–12/mo) — no migration.
+- Free tier: ~10 GB egress and ~1M requests/month; always-on, no cold starts; redeploys on every push to `main` (~2 min).
+- Per-minute rate limits are in memory (one container = exact); daily quotas live in Postgres.
+- More CPU later: change the service plan to `nf-compute-50`+ on pay-as-you-go — no migration.
+- To expose file tools set `LEFTBRAIN_SERVE_FILES=1` and mount a volume at the path you put in `LEFTBRAIN_FILE_ROOTS` (Advanced → Volumes).
