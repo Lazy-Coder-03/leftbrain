@@ -884,3 +884,13 @@ def test_readme_defaults_match_the_code():
     assert f"`LEFTBRAIN_DEFAULT_RPM` ({keys_mod.DEFAULT_RPM})" in readme
     assert f"`LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` ({keys_mod.SIGNUPS_PER_IP_PER_DAY})" in readme
     assert f"create up to {keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL} keys" in readme
+
+
+def test_landing_cta_reflects_signed_in_user(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        anon = c.get("/", headers={"Accept": "text/html"}).text
+        assert "Sign in with GitHub" in anon and 'href="/dashboard">Your API keys' not in anon
+        login_via_github(c)
+        html = c.get("/", headers={"Accept": "text/html"}).text
+        assert "Sign in with GitHub → get a key" not in html
+        assert 'href="/dashboard">Your API keys, octo →' in html

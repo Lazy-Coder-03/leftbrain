@@ -6,7 +6,7 @@
     <h1 class="hl">The <em>left brain</em> for your AI agent.</h1>
     <p class="lede">Exact, deterministic answers for everything language models get wrong: arithmetic, dates, units, ordering, validation. One free key, one endpoint, twelve tools that refuse to guess.</p>
     <div class="cta">
-      <a class="btn primary" href="/login">Sign in with GitHub → get a key</a>
+      {% if user %}<a class="btn primary" href="/dashboard">Your API keys, {{ user.login }} →</a>{% else %}<a class="btn primary" href="/login">Sign in with GitHub → get a key</a>{% endif %}
       <a class="btn ghost" href="/docs">Read the docs</a>
       <span class="hint">5,000 calls/day free · no card</span>
     </div>
