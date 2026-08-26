@@ -214,6 +214,8 @@ ruff check src tests
 
 Layout: `src/leftbrain/core/` holds the pure functions (one file per tool), `contract.py` the envelope, `mcp_server.py` the stdio server, `serve.py` the HTTP server, `external/` and `files/` the optional sets.
 
+Releases are cut by pushing a `vX.Y.Z` tag — see [`docs/releasing.md`](docs/releasing.md); what changed in each one is in [`CHANGELOG.md`](CHANGELOG.md).
+
 ## Roadmap
 
 - TypeScript port (same tool names and contract) for Node-based agents

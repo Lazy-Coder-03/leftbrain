@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release and upload dist/*
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: python -m pip install --upgrade pip build
+
+      - name: Tag matches the version in the source
+        run: python scripts/check_version.py "${GITHUB_REF_NAME}"
+
+      - run: python -m build
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # everything under "## [<version>]" up to the next release heading or the
+          # link-reference block at the end of the file
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { found = 1; next }
+            found && index($0, "## [") == 1 { exit }
+            found && substr($0, 1, 1) == "[" && index($0, "]: ") > 0 { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          sed -i -e '/./,$!d' release-notes.md  # drop the leading blank line
+          if [ ! -s release-notes.md ]; then
+            echo "CHANGELOG.md has no '## [$version]' section" >&2
+            exit 1
+          fi
+          cat release-notes.md
+
+      - name: 0.x is a pre-release
+        id: kind
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            0.*|*a[0-9]*|*b[0-9]*|*rc[0-9]*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: release-notes.md
+          prerelease: ${{ steps.kind.outputs.prerelease == 'true' }}
+          files: dist/*
+          fail_on_unmatched_files: true
+
+# Publishing to PyPI. Enable once the `leftbrain` project exists on PyPI and a trusted
+# publisher is configured for it (PyPI project → Settings → Publishing → add a GitHub
+# publisher: owner `Lazy-Coder-03`, repo `leftbrain`, workflow `release.yml`, environment
+# `pypi`). Then create the `pypi` environment in this repository's settings and uncomment
+# the job below - no API token is stored anywhere, the OIDC id-token is the credential.
+#
+#  pypi:
+#    needs: release
+#    runs-on: ubuntu-latest
+#    environment: pypi
+#    permissions:
+#      id-token: write
+#    steps:
+#      - uses: actions/checkout@v4
+#      - uses: actions/setup-python@v5
+#        with:
+#          python-version: "3.12"
+#      - run: python -m pip install --upgrade pip build
+#      - run: python -m build
+#      - uses: pypa/gh-action-pypi-publish@release/v1
