@@ -1,19 +1,31 @@
-"""Per-tool reference pages, generated from a catalogue and verified by running it.
+"""Per-tool reference pages, generated from the MCP servers and verified by running them.
 
-Every example in :data:`CATALOGUE` is executed against the real core function when a
-page is built, and the exact response is embedded in the page.  Docs therefore cannot
-drift from behaviour: if a tool changes, the page changes with it (and
-``tests/test_toolref.py`` fails if a documented success starts failing, or a
-documented failure starts succeeding).
+Nothing here restates what the code already says. Three sources feed a page:
 
-Examples whose output depends on the current instant are marked ``volatile=True`` and
-carry a note; everything else is pinned with explicit dates or a seed.
+* **The published input schema** (``leftbrain.mcp_server`` / ``leftbrain.external.mcp_server``)
+  gives every parameter's name, JSON type, whether the schema itself requires it, and its
+  default. Renaming a parameter in a wrapper renames it in the docs; documenting a parameter
+  the wrapper does not accept raises at build time and fails the test suite.
+* **The wrapper docstring** gives the authoritative list of modes and, where it is written as
+  ``- name (args) - prose``, the one-liner for the mode index.
+* **The core module's ``EXAMPLES``** gives the worked calls. Each one is executed while the
+  page is built and filed under "Examples" or "Fails when" according to what came back, so a
+  fixture never claims an outcome. The generator then probes each mode with nothing but the
+  mode, and with each required parameter removed or mistyped, and adds those real responses
+  to "Fails when" (deduplicated by error message).
+
+The catalogue below therefore carries only prose: what a tool is for, what each mode does, and
+what each parameter means to a human. To add a tool, add a ``ToolDoc``; to add a mode, add a
+``Mode`` and a ``mode:`` entry in the wrapper docstring; to add an example, append to the core
+module's ``EXAMPLES``. ``tests/test_toolref.py`` fails if any of the three drift apart.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
-from collections.abc import Callable
+import re
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -31,16 +43,60 @@ from .tools_list import TOOLS
 #: Responses longer than this are elided in the page (the call still returns them all).
 MAX_JSON_LINES = 140
 
+#: At most this many generator-derived failures are added to a mode, after the hand-written ones.
+MAX_DERIVED_FAILURES = 2
+
+
+# --------------------------------------------------------------------------- #
+# Catalogue types - prose only; everything factual is read from the server
+# --------------------------------------------------------------------------- #
+
 
 @dataclass(frozen=True)
 class Param:
-    """One row of a mode's parameter table."""
+    """What one parameter means to a human.
+
+    Its name is matched against the tool's published schema, which supplies the JSON type and
+    the default. ``required`` marks a parameter this *mode* cannot work without: the schema is
+    flat across every mode of a tool, so it cannot know that. ``default`` records the value the
+    tool falls back to when the schema declares none (wrappers default to ``None`` and let the
+    core module choose).
+    """
 
     name: str
-    type: str
-    required: bool
-    meaning: str
-    default: str = "—"
+    doc: str
+    required: bool = False
+    default: str = ""
+
+
+@dataclass(frozen=True)
+class Mode:
+    """One mode of one tool."""
+
+    name: str
+    description: str
+    params: tuple[Param, ...] = ()
+    #: Overrides the one-liner parsed out of the wrapper docstring, where it says more.
+    purpose: str = ""
+    #: Set only when no input can make the mode return ``ok: false`` - and say why.
+    never_fails: str = ""
+
+
+@dataclass(frozen=True)
+class ToolDoc:
+    """One tool: intro, when to use it, and every mode."""
+
+    name: str
+    intro: str
+    when: tuple[str, ...]
+    related: str
+    modes: tuple[Mode, ...] = ()
+    #: ``mode -> [{"caption", "args", "volatile"?}]``, imported from the core module.
+    examples: Mapping[str, list[dict[str, Any]]] = field(default_factory=dict)
+    #: For a tool with no modes: its parameters, documented once.
+    params: tuple[Param, ...] = ()
+    #: Network tools are documented from schema and docstring; their examples are not executed.
+    network: bool = False
 
 
 @dataclass(frozen=True)
@@ -50,47 +106,313 @@ class Example:
     caption: str
     args: dict[str, Any]
     volatile: bool = False
+    #: True when the generator derived this call rather than a human writing it.
+    derived: bool = False
 
 
 @dataclass(frozen=True)
-class Mode:
-    """One mode of one tool."""
+class Row:
+    """One rendered row of a mode's parameter table."""
 
     name: str
-    purpose: str
-    description: str
-    params: tuple[Param, ...] = ()
-    examples: tuple[Example, ...] = ()
-    failures: tuple[Example, ...] = ()
-    never_fails: str = ""
+    type: str
+    required: bool
+    doc: str
+    default: str
+
+
+# --------------------------------------------------------------------------- #
+# The MCP servers are the source of truth
+# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
-class ToolDoc:
-    """One tool: intro, when to use it, and every mode."""
+class ToolSpec:
+    """What the MCP layer publishes for one tool."""
 
     name: str
-    tagline: str
-    intro: str
-    when: tuple[str, ...]
-    fn: Callable[..., dict[str, Any]]
-    modes: tuple[Mode, ...]
-    related: str
-    mode_key: str = "mode"
-    extra_modes: tuple[str, ...] = field(default=())
+    schema: dict[str, Any]
+    doc: str
+    fn: Callable[..., Any]
+    arg_model: Any
+
+
+@lru_cache(maxsize=1)
+def specs() -> dict[str, ToolSpec]:
+    """Every tool both MCP servers publish, keyed by tool name.
+
+    ``server._tool_manager`` is the registry behind the async ``server.list_tools()``; reading
+    it directly keeps the docs build synchronous. ``tests/test_toolref.py`` asserts the two
+    agree, so an SDK change cannot quietly desynchronise the page from the wire.
+    """
+    from ..external.mcp_server import server as external_server
+    from ..mcp_server import server as core_server
+
+    out: dict[str, ToolSpec] = {}
+    for server in (core_server, external_server):
+        for tool in server._tool_manager.list_tools():
+            out[tool.name] = ToolSpec(
+                name=tool.name,
+                schema=tool.parameters,
+                doc=inspect.cleandoc(tool.description or ""),
+                fn=tool.fn,
+                arg_model=tool.fn_metadata.arg_model,
+            )
+    return out
+
+
+def _type_name(prop: dict[str, Any]) -> str:
+    """The JSON type of one schema property, as the docs spell it."""
+    if "enum" in prop:
+        return " \\| ".join(f"`{v}`" for v in prop["enum"])
+    if "anyOf" in prop:
+        names = [n for n in (_type_name(x) for x in prop["anyOf"]) if n not in ("null", "any")]
+        return " \\| ".join(dict.fromkeys(names)) or "any"
+    kind = prop.get("type")
+    if kind == "array":
+        inner = _type_name(prop.get("items") or {})
+        return "array" if inner in ("any", "array") else f"{inner}[]"
+    return kind or "any"
+
+
+def _default_label(prop: dict[str, Any], param: Param) -> str:
+    value = prop.get("default")
+    if value is not None:
+        return f"`{value}`" if isinstance(value, str) else f"`{json.dumps(value)}`"
+    return param.default or "—"
+
+
+def rows(tool: ToolDoc, params: tuple[Param, ...], where: str) -> list[Row]:
+    """A parameter table: names and prose from here, everything else from the schema."""
+    schema = specs()[tool.name].schema
+    props, needed = schema.get("properties", {}), set(schema.get("required", ()))
+    out = []
+    for param in params:
+        prop = props.get(param.name)
+        if prop is None:  # a rename in the wrapper, or a typo here
+            raise KeyError(f"{where} documents '{param.name}', which the MCP tool does not accept")
+        out.append(Row(param.name, _type_name(prop), param.required or param.name in needed, param.doc, _default_label(prop, param)))
+    return out
 
 
 # --------------------------------------------------------------------------- #
-# Execution + rendering
+# The wrapper docstring is the source of truth for the mode list
 # --------------------------------------------------------------------------- #
 
+_IDENT = re.compile(r"[a-z_][a-z0-9_]*")
+_MODE_LINE = re.compile(r"^\s*mode:\s*(.*)$")
 
-def run_example(tool: ToolDoc, example: Example) -> dict[str, Any]:
-    """Call the real core function with the example's arguments."""
-    result = tool.fn(**example.args)
+
+@dataclass(frozen=True)
+class DocModes:
+    """The modes a wrapper docstring declares, in the order it declares them."""
+
+    order: tuple[str, ...]
+    #: A prose one-liner, for modes written as ``- name (args) - what it does``.
+    summary: Mapping[str, str]
+
+
+def _split_top(text: str, sep: str = "|") -> list[str]:
+    """Split on `sep`, ignoring separators nested inside brackets."""
+    out, depth, buf = [], 0, []
+    for ch in text:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        if ch == sep and depth == 0:
+            out.append("".join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    out.append("".join(buf))
+    return [x.strip() for x in out if x.strip()]
+
+
+def _find_top(text: str, needle: str) -> int:
+    depth = 0
+    for i, ch in enumerate(text):
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth = max(0, depth - 1)
+        elif depth == 0 and text.startswith(needle, i):
+            return i
+    return -1
+
+
+@lru_cache(maxsize=32)
+def docstring_modes(tool_name: str) -> DocModes:
+    """Parse the ``mode: a | b | c`` line and the ``- mode: …`` bullets out of a wrapper docstring."""
+    lines = specs()[tool_name].doc.split("\n")
+    order: list[str] = []
+    summary: dict[str, str] = {}
+
+    def note(name: str, prose: str = "") -> None:
+        if name not in order:
+            order.append(name)
+        if prose:
+            summary[name] = prose
+
+    for i, line in enumerate(lines):
+        m = _MODE_LINE.match(line)
+        if not m:
+            continue
+        decl, j = m.group(1).strip(), i + 1
+        while decl.endswith("|") and j < len(lines):  # the list may wrap onto the next line
+            decl, j = decl + " " + lines[j].strip(), j + 1
+        for item in _split_top(decl):
+            ident = _IDENT.match(item)
+            if ident:
+                note(ident.group(0))
+        break
+
+    for line in lines:
+        body = line.strip()
+        if not body.startswith("- "):
+            continue
+        body = body[2:].strip()
+        colon, dash = _find_top(body, ":"), _find_top(body, " - ")
+        cut = min(x for x in (colon, dash) if x >= 0) if (colon >= 0 or dash >= 0) else -1
+        head = body if cut < 0 else body[:cut]
+        # only the "name (args) - prose" form carries prose; "name: expr, var" lists arguments
+        prose = body[cut + 3 :].strip() if cut >= 0 and cut == dash else ""
+        for item in _split_top(head):
+            for name in item.split("(")[0].split("/"):
+                name = name.strip()
+                if _IDENT.fullmatch(name):
+                    note(name, prose)
+    return DocModes(tuple(order), summary)
+
+
+def purpose_of(tool: ToolDoc, mode: Mode) -> str:
+    """The one-liner for the mode index: the catalogue's where it says more, else the docstring's."""
+    return mode.purpose or docstring_modes(tool.name).summary.get(mode.name, "")
+
+
+# --------------------------------------------------------------------------- #
+# Execution - every response in the page is a real one
+# --------------------------------------------------------------------------- #
+
+_PYDANTIC_LINK = re.compile(r"^\s*For further information visit https://\S+$", re.M)
+
+
+def _protocol_error(tool_name: str, message: str) -> dict[str, Any]:
+    """What a client sees when a call never reaches the tool: an MCP error result, not the contract."""
+    return {"isError": True, "content": [{"type": "text", "text": f"Error executing tool {tool_name}: {message}"}]}
+
+
+def call_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Run one ``tools/call`` the way the server does: validate against the schema, then dispatch."""
+    spec = specs()[tool_name]
+    unknown = sorted(set(args) - set(spec.schema.get("properties", {})))
+    if unknown:
+        return _protocol_error(tool_name, f"unexpected keyword argument(s): {', '.join(unknown)}")
+    from pydantic import ValidationError
+
+    try:
+        validated = spec.arg_model.model_validate(args)
+    except ValidationError as exc:
+        return _protocol_error(tool_name, _PYDANTIC_LINK.sub("", str(exc)).strip())
+    result = spec.fn(**validated.model_dump_one_level())
     if isinstance(result, dict):
         result.pop("trace", None)  # a traceback is noise in a docs page
     return result
+
+
+def run_example(tool: ToolDoc, example: Example) -> dict[str, Any]:
+    """Call the real tool with the example's arguments."""
+    return call_tool(tool.name, example.args)
+
+
+def succeeded(response: dict[str, Any]) -> bool:
+    return response.get("ok") is True
+
+
+def _message(response: dict[str, Any]) -> str:
+    if "message" in response:
+        return str(response["message"])
+    return "".join(part.get("text", "") for part in response.get("content", []))
+
+
+def examples_of(tool: ToolDoc, mode: Mode) -> list[Example]:
+    return [
+        Example(caption=f["caption"], args=f["args"], volatile=bool(f.get("volatile")))
+        for f in tool.examples.get(mode.name, [])
+    ]
+
+
+_WRONG_TYPES: tuple[tuple[Any, str], ...] = (([], "array"), ({}, "object"), ("not-a-number", "string"), (7, "integer"))
+
+
+def _accepted_types(prop: dict[str, Any]) -> set[str]:
+    if "anyOf" in prop:
+        return {t for x in prop["anyOf"] for t in _accepted_types(x)}
+    kind = prop.get("type")
+    if kind == "number":
+        return {"number", "integer"}
+    return {kind} if kind else {"any"}
+
+
+def _wrong_typed(prop: dict[str, Any]) -> Any:
+    """A value the schema must reject, or ``None`` when the property accepts anything."""
+    accepted = _accepted_types(prop)
+    if "any" in accepted:
+        return None
+    return next((value for value, kind in _WRONG_TYPES if kind not in accepted), None)
+
+
+def derived_failures(tool: ToolDoc, mode: Mode, working: dict[str, Any] | None) -> list[Example]:
+    """Calls the generator makes on its own: no arguments, then each required one broken."""
+    schema = specs()[tool.name].schema
+    props, schema_required = schema.get("properties", {}), list(schema.get("required", ()))
+    probes = [Example("Called with nothing but the mode.", {"mode": mode.name}, derived=True)]
+    base = dict(working or {})
+    for name in schema_required:  # a schema rejection reads differently from a contract error
+        wrong = _wrong_typed(props.get(name, {}))
+        if wrong is not None and base:
+            probes.append(
+                Example(
+                    f"`{name}` given a value of the wrong type — the schema rejects the call before the tool runs.",
+                    {**base, name: wrong},
+                    derived=True,
+                )
+            )
+    for name in dict.fromkeys([p.name for p in mode.params if p.required] + schema_required):
+        if name in base and name != "mode":
+            probes.append(Example(f"`{name}` left out.", {k: v for k, v in base.items() if k != name}, derived=True))
+    return probes
+
+
+def failures_of(tool: ToolDoc, mode: Mode, ran: list[tuple[Example, dict[str, Any]]]) -> list[tuple[Example, dict[str, Any]]]:
+    """Every documented failure: the hand-written ones, then derived ones with a new message."""
+    out: list[tuple[Example, dict[str, Any]]] = []
+    seen: set[str] = set()
+    for example, response in ran:
+        if succeeded(response):
+            continue
+        key = _message(response)
+        if key not in seen:
+            seen.add(key)
+            out.append((example, response))
+    working = next((e.args for e, r in ran if succeeded(r)), None)
+    added = 0
+    for probe in derived_failures(tool, mode, working):
+        if added >= MAX_DERIVED_FAILURES:
+            break
+        response = call_tool(tool.name, probe.args)
+        key = _message(response)
+        if succeeded(response) or key in seen:
+            continue
+        seen.add(key)
+        out.append((probe, response))
+        added += 1
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Rendering
+# --------------------------------------------------------------------------- #
 
 
 def _json_block(payload: Any) -> str:
@@ -106,22 +428,21 @@ def _cell(value: str) -> str:
     return str(value).replace("|", "\\|").replace("\n", " ")
 
 
-def _params_table(params: tuple[Param, ...]) -> list[str]:
-    if not params:
+def _params_table(table: list[Row]) -> list[str]:
+    if not table:
         return ["This mode takes no parameters beyond `mode`.", ""]
     out = ["| name | type | required | meaning | default |", "| --- | --- | --- | --- | --- |"]
-    for p in params:
+    for row in table:
         out.append(
-            f"| `{_cell(p.name)}` | {_cell(p.type)} | {'yes' if p.required else 'no'} "
-            f"| {_cell(p.meaning)} | {_cell(p.default)} |"
+            f"| `{_cell(row.name)}` | {_cell(row.type)} | {'yes' if row.required else 'no'} "
+            f"| {_cell(row.doc)} | {_cell(row.default)} |"
         )
     out.append("")
     return out
 
 
-def _example_block(tool: ToolDoc, example: Example) -> list[str]:
+def _example_block(tool: ToolDoc, example: Example, response: dict[str, Any]) -> list[str]:
     request = {"name": tool.name, "arguments": example.args}
-    response = run_example(tool, example)
     out = [example.caption, "", _json_block(request), "", _json_block(response), ""]
     if example.volatile:
         out += ["*Time-dependent: the response above was captured when this page was built.*", ""]
@@ -131,14 +452,20 @@ def _example_block(tool: ToolDoc, example: Example) -> list[str]:
 def _mode_markdown(tool: ToolDoc, mode: Mode) -> list[str]:
     out = [f'<h2 id="{mode.name}">{mode.name}</h2>', "", mode.description, ""]
     out += ["### Parameters", ""]
-    out += _params_table(mode.params)
+    out += _params_table(rows(tool, mode.params, f"{tool.name}.{mode.name}"))
+    if tool.network:
+        out += ["### Examples", "", NETWORK_NOTE, ""]
+        return out
+    ran = [(example, run_example(tool, example)) for example in examples_of(tool, mode)]
     out += ["### Examples", ""]
-    for example in mode.examples:
-        out += _example_block(tool, example)
+    for example, response in ran:
+        if succeeded(response):
+            out += _example_block(tool, example, response)
     out += ["### Fails when", ""]
-    if mode.failures:
-        for example in mode.failures:
-            out += _example_block(tool, example)
+    failures = failures_of(tool, mode, ran)
+    if failures:
+        for example, response in failures:
+            out += _example_block(tool, example, response)
     else:
         out += [mode.never_fails or "No input reaches an error path in this mode.", ""]
     return out
@@ -151,25 +478,59 @@ CONTRACT_NOTE = (
     "When <code>needs.options</code> is present, pick one and call again.</div>"
 )
 
+NETWORK_NOTE = (
+    '<div class="callout">Network tool; examples are not executed when this page is built, so none are '
+    "shown. The parameters above come from the server's published schema and the modes from the tool's "
+    "own description — both are read from the running server, not transcribed.</div>"
+)
+
+_NETWORK_LEAD = (
+    "A network tool: it reaches the internet, so nothing below is executed when the page is built and no "
+    "responses are embedded. The modes and parameters *are* read from the running server: the "
+    "table for each mode is its published input schema, and the mode list is the tool's own "
+    "description."
+)
+
 _PAGE_LEAD = (
     "Each example below shows the `tools/call` request first and the exact response underneath.  "
     "Responses are produced by running the real tool when this page is built, so they cannot drift "
-    "from what the server returns."
+    "from what the server returns.  A failure that never reaches the tool — a missing or mistyped "
+    "argument — comes back as an MCP error result (`isError`) rather than the leftbrain contract; "
+    "those are shown verbatim, minus the pydantic documentation links."
 )
 
 
 def tool_markdown(tool: ToolDoc) -> str:
     parts = [f"# {tool.name}", "", tool.intro, "", "## When to use", ""]
     parts += [f"- {line}" for line in tool.when]
-    parts += ["", CONTRACT_NOTE, "", _PAGE_LEAD, "", "## Modes", ""]
+    parts += ["", CONTRACT_NOTE, "", _NETWORK_LEAD if tool.network else _PAGE_LEAD, ""]
+    if not tool.modes:  # a single-shape tool: no mode index, one parameter table
+        parts += ["## Parameters", ""]
+        parts += _params_table(rows(tool, tool.params, tool.name))
+        return "\n".join(parts + ["## Related tools", "", tool.related, ""])
+    parts += ["## Modes", ""]
     parts += ["| mode | what it does |", "| --- | --- |"]
     for mode in tool.modes:
-        parts.append(f"| [`{mode.name}`](#{mode.name}) | {_cell(mode.purpose)} |")
+        parts.append(f"| [`{mode.name}`](#{mode.name}) | {_cell(purpose_of(tool, mode))} |")
     parts.append("")
     for mode in tool.modes:
         parts += _mode_markdown(tool, mode)
     parts += ["## Related tools", "", tool.related, ""]
     return "\n".join(parts)
+
+
+def _index_entry(tool: ToolDoc, description: str) -> list[str]:
+    listed = " · ".join(f"[`{m.name}`](/docs/tools/{tool.name}#{m.name})" for m in tool.modes)
+    return [
+        f'<h2 id="{tool.name}"><a href="/docs/tools/{tool.name}">{tool.name}</a></h2>',
+        "",
+        description,
+        "",
+        f"**Modes:** {listed}" if listed else "",
+        "",
+        f"[Read the {tool.name} reference →](/docs/tools/{tool.name})",
+        "",
+    ]
 
 
 def index_markdown() -> str:
@@ -187,20 +548,17 @@ def index_markdown() -> str:
         "",
     ]
     described = {t.name: t for t in CATALOGUE}
-    for name, desc, modes in TOOLS:
-        doc = described.get(name)
-        parts.append(f'<h2 id="{name}"><a href="/docs/tools/{name}">{name}</a></h2>')
-        parts.append("")
-        parts.append(desc + ".")
-        parts.append("")
-        if doc is not None:
-            listed = " · ".join(f"[`{m.name}`](/docs/tools/{name}#{m.name})" for m in doc.modes)
-            parts.append(f"**Modes:** {listed}")
-        else:  # pragma: no cover - every tool is catalogued
-            parts.append(f"**Modes:** {modes.rstrip(' …')}")
-        parts.append("")
-        parts.append(f"[Read the {name} reference →](/docs/tools/{name})")
-        parts.append("")
+    for name, desc, _modes in TOOLS:
+        parts += _index_entry(described[name], desc + ".")
+    parts += [
+        "## Network tools",
+        "",
+        "Served from `/external/mcp` instead of `/mcp`. They reach the internet, so their answers are "
+        "as-of the moment of the call and their examples are not executed when this page is built.",
+        "",
+    ]
+    for tool in EXTERNAL_CATALOGUE:
+        parts += _index_entry(tool, specs()[tool.name].doc.split("\n")[0])
     return "\n".join(parts)
 
 
@@ -209,7 +567,7 @@ def index_page() -> tuple[str, str]:
     return "Tools", render_markdown(index_markdown())
 
 
-@lru_cache(maxsize=16)
+@lru_cache(maxsize=32)
 def tool_page(name: str) -> tuple[str, str] | None:
     tool = by_name(name)
     if tool is None:
@@ -218,11 +576,11 @@ def tool_page(name: str) -> tuple[str, str] | None:
 
 
 def by_name(name: str) -> ToolDoc | None:
-    return next((t for t in CATALOGUE if t.name == name), None)
+    return next((t for t in CATALOGUE + EXTERNAL_CATALOGUE if t.name == name), None)
 
 
 def tool_names() -> list[str]:
-    return [t.name for t in CATALOGUE]
+    return [t.name for t in CATALOGUE + EXTERNAL_CATALOGUE]
 
 
 # --------------------------------------------------------------------------- #
@@ -231,7 +589,6 @@ def tool_names() -> list[str]:
 
 MATH = ToolDoc(
     name="math",
-    tagline="Exact arithmetic and symbolic algebra",
     intro=(
         "`math` is SymPy behind the leftbrain contract. Answers come back in exact form *and* "
         "decimal form *and* LaTeX together, so the caller never rounds, re-derives or re-types "
@@ -245,12 +602,12 @@ MATH = ToolDoc(
         "Linear algebra (`matrix`) and exact descriptive statistics (`stats`).",
         "Not for dates or unit conversion: use `datetime` and `convert` instead.",
     ),
-    fn=mathx.math,
     related=(
         "[`numbers`](/docs/tools/numbers) for rounding rules, locale formatting and exact "
         "allocation · [`convert`](/docs/tools/convert) for units · [`scale`](/docs/tools/scale) "
         "for proportional scaling."
     ),
+    examples=mathx.EXAMPLES,
     modes=(
         Mode(
             name="eval",
@@ -263,44 +620,11 @@ MATH = ToolDoc(
                 "`denominator`; complex results add modulus and argument."
             ),
             params=(
-                Param("expr", "string", True, "The expression to evaluate."),
-                Param("angle", "`rad` \\| `deg`", False, "Mandatory whenever the expression contains trigonometry."),
-                Param("vars", "object", False, "Values substituted before evaluating, e.g. `{'a': 3}`."),
-                Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
-                Param("timeout", "number", False, "Seconds before the computation is abandoned.", "20"),
-            ),
-            examples=(
-                Example(
-                    "A percentage of an amount. The `%` reading is reported back in `assumptions`.",
-                    {"mode": "eval", "expr": "15% of 2400"},
-                ),
-                Example(
-                    "Trigonometry in degrees. The exact form survives; the decimal is there too.",
-                    {"mode": "eval", "expr": "sin(30) + cos(60)", "angle": "deg"},
-                ),
-                Example(
-                    "Substituting variables before evaluating.",
-                    {"mode": "eval", "expr": "sqrt(a^2 + b^2)", "vars": {"a": 3, "b": 4}},
-                ),
-                Example(
-                    "Complex arithmetic, described with modulus and argument.",
-                    {"mode": "eval", "expr": "(3 + 4i) * (1 - 2i)"},
-                ),
-            ),
-            failures=(
-                Example(
-                    "Trigonometry without `angle`. Degrees and radians differ by a factor of 57, so the tool refuses to pick one.",
-                    {"mode": "eval", "expr": "sin(30)"},
-                ),
-                Example(
-                    "An unknown function is rejected instead of being read as implicit multiplication.",
-                    {"mode": "eval", "expr": "foo(2) + 1"},
-                ),
-                Example(
-                    "Anything that looks like code execution is refused by the parser guard.",
-                    {"mode": "eval", "expr": "__import__(1)"},
-                ),
-                Example("`expr` is required.", {"mode": "eval"}),
+                Param("expr", "The expression to evaluate.", required=True),
+                Param("angle", "Mandatory whenever the expression contains trigonometry."),
+                Param("vars", "Values substituted before evaluating, e.g. `{'a': 3}`."),
+                Param("precision", "Significant digits in the decimal form.", default="15"),
+                Param("timeout", "Seconds before the computation is abandoned.", default="20"),
             ),
         ),
         Mode(
@@ -312,22 +636,10 @@ MATH = ToolDoc(
                 "`0.1 + 0.2`, or keeping a radical as a radical."
             ),
             params=(
-                Param("expr", "string", True, "The expression to evaluate."),
-                Param("angle", "`rad` \\| `deg`", False, "Mandatory whenever the expression contains trigonometry."),
-                Param("vars", "object", False, "Values substituted before evaluating."),
-                Param("precision", "integer", False, "Significant digits used internally.", "15"),
-            ),
-            examples=(
-                Example(
-                    "Float noise recovered as the rational the caller meant.",
-                    {"mode": "exact", "expr": "0.1 + 0.2"},
-                ),
-                Example("Fractions stay fractions.", {"mode": "exact", "expr": "1/3 + 1/6"}),
-                Example("A radical stays a radical.", {"mode": "exact", "expr": "sqrt(50)"}),
-            ),
-            failures=(
-                Example("An incomplete expression fails to parse.", {"mode": "exact", "expr": "2 +"}),
-                Example("`angle` is still mandatory for trigonometry.", {"mode": "exact", "expr": "tan(45)"}),
+                Param("expr", "The expression to evaluate.", required=True),
+                Param("angle", "Mandatory whenever the expression contains trigonometry."),
+                Param("vars", "Values substituted before evaluating."),
+                Param("precision", "Significant digits used internally.", default="15"),
             ),
         ),
         Mode(
@@ -339,17 +651,9 @@ MATH = ToolDoc(
                 "because a symbolic identity does not depend on the unit."
             ),
             params=(
-                Param("expr", "string", True, "The expression to simplify."),
-                Param("angle", "`rad` \\| `deg`", False, "Interpretation of trig arguments.", "`rad`"),
-                Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
-            ),
-            examples=(
-                Example("A removable factor cancels.", {"mode": "simplify", "expr": "(x^2 - 1)/(x - 1)"}),
-                Example("A Pythagorean identity collapses to 1.", {"mode": "simplify", "expr": "sin(x)^2 + cos(x)^2"}),
-            ),
-            failures=(
-                Example("`expr` is required.", {"mode": "simplify"}),
-                Example("A malformed operator sequence fails to parse.", {"mode": "simplify", "expr": "x^^2"}),
+                Param("expr", "The expression to simplify.", required=True),
+                Param("angle", "Interpretation of trig arguments.", default="`rad`"),
+                Param("precision", "Significant digits in the decimal form.", default="15"),
             ),
         ),
         Mode(
@@ -360,17 +664,9 @@ MATH = ToolDoc(
                 "use it to get a polynomial in standard form before comparing two expressions."
             ),
             params=(
-                Param("expr", "string", True, "The expression to expand."),
-                Param("angle", "`rad` \\| `deg`", False, "Interpretation of trig arguments.", "`rad`"),
-                Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
-            ),
-            examples=(
-                Example("A binomial cube.", {"mode": "expand", "expr": "(x + 1)^3"}),
-                Example("A difference of squares, expanded.", {"mode": "expand", "expr": "(a + b)*(a - b)"}),
-            ),
-            failures=(
-                Example("Unbalanced parentheses.", {"mode": "expand", "expr": "(x + 1"}),
-                Example("`expr` is required.", {"mode": "expand"}),
+                Param("expr", "The expression to expand.", required=True),
+                Param("angle", "Interpretation of trig arguments.", default="`rad`"),
+                Param("precision", "Significant digits in the decimal form.", default="15"),
             ),
         ),
         Mode(
@@ -381,17 +677,9 @@ MATH = ToolDoc(
                 "form in `value` and LaTeX; if nothing factors, the input comes back unchanged."
             ),
             params=(
-                Param("expr", "string", True, "The expression to factor."),
-                Param("angle", "`rad` \\| `deg`", False, "Interpretation of trig arguments.", "`rad`"),
-                Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
-            ),
-            examples=(
-                Example("A quadratic with integer roots.", {"mode": "factor", "expr": "x^2 - 5*x + 6"}),
-                Example("A difference of cubes.", {"mode": "factor", "expr": "a^3 - b^3"}),
-            ),
-            failures=(
-                Example("A statement separator is not allowed in an expression.", {"mode": "factor", "expr": "x; y"}),
-                Example("`expr` is required.", {"mode": "factor"}),
+                Param("expr", "The expression to factor.", required=True),
+                Param("angle", "Interpretation of trig arguments.", default="`rad`"),
+                Param("precision", "Significant digits in the decimal form.", default="15"),
             ),
         ),
         Mode(
@@ -405,28 +693,11 @@ MATH = ToolDoc(
                 "solutions — with no domain, variables are complex."
             ),
             params=(
-                Param("equations", "string[]", False, "The equations. A single string is accepted.", "—"),
-                Param("expr", "string", False, "Alternative to `equations` for one equation.", "—"),
-                Param("vars", "string[]", False, "Which unknowns to solve for. Required when there are more unknowns than equations."),
-                Param("domain", "`complex` \\| `real` \\| `integer` \\| `positive`", False, "Assumption applied to every unknown.", "`complex`"),
-                Param("precision", "integer", False, "Significant digits in the decimal forms.", "15"),
-            ),
-            examples=(
-                Example("A quadratic: both roots, exact and decimal.", {"mode": "solve", "equations": ["x^2 - 5*x + 6 = 0"]}),
-                Example("A linear system in two unknowns.", {"mode": "solve", "equations": ["x + y = 10", "x - y = 2"]}),
-                Example(
-                    "Restricting the domain to the reals — the complex roots are dropped and the empty result is flagged in `warnings`.",
-                    {"mode": "solve", "equations": ["x^2 + 1 = 0"], "domain": "real"},
-                ),
-                Example("An inequality returns a solution set, not a list of roots.", {"mode": "solve", "equations": ["x^2 - 4 > 0"], "vars": ["x"]}),
-            ),
-            failures=(
-                Example(
-                    "One equation, two unknowns: the tool asks which variable you want rather than picking alphabetically.",
-                    {"mode": "solve", "equations": ["x + y = 10"]},
-                ),
-                Example("Neither `equations` nor `expr` was given.", {"mode": "solve"}),
-                Example("An unknown domain.", {"mode": "solve", "equations": ["x = 1"], "domain": "quaternion"}),
+                Param("equations", "The equations. A single string is accepted.", default="—"),
+                Param("expr", "Alternative to `equations` for one equation.", default="—"),
+                Param("vars", "Which unknowns to solve for. Required when there are more unknowns than equations."),
+                Param("domain", "Assumption applied to every unknown.", default="`complex`"),
+                Param("precision", "Significant digits in the decimal forms.", default="15"),
             ),
         ),
         Mode(
@@ -438,20 +709,11 @@ MATH = ToolDoc(
                 "`var`, the tool refuses to guess and lists the candidates."
             ),
             params=(
-                Param("expr", "string", True, "The expression to differentiate."),
-                Param("var", "string", False, "The variable. Inferred when the expression has exactly one free symbol."),
-                Param("order", "integer", False, "How many times to differentiate.", "1"),
-                Param("at", "number \\| string", False, "Also evaluate the derivative at this point."),
-                Param("angle", "`rad` \\| `deg`", False, "Interpretation of trig arguments.", "`rad`"),
-            ),
-            examples=(
-                Example("A first derivative; `var` is inferred.", {"mode": "diff", "expr": "x^3 + 2*x"}),
-                Example("A second derivative, evaluated at a point.", {"mode": "diff", "expr": "x^3", "var": "x", "order": 2, "at": 4}),
-                Example("A partial derivative of a two-variable expression.", {"mode": "diff", "expr": "x^2*y + y^3", "var": "y"}),
-            ),
-            failures=(
-                Example("Two free symbols and no `var`: the tool lists them instead of choosing.", {"mode": "diff", "expr": "x*y"}),
-                Example("`expr` is required.", {"mode": "diff"}),
+                Param("expr", "The expression to differentiate.", required=True),
+                Param("var", "The variable. Inferred when the expression has exactly one free symbol."),
+                Param("order", "How many times to differentiate.", default="1"),
+                Param("at", "Also evaluate the derivative at this point."),
+                Param("angle", "Interpretation of trig arguments.", default="`rad`"),
             ),
         ),
         Mode(
@@ -464,19 +726,11 @@ MATH = ToolDoc(
                 "error, not a guess."
             ),
             params=(
-                Param("expr", "string", True, "The integrand."),
-                Param("var", "string", False, "The variable of integration. Inferred when unambiguous."),
-                Param("lower", "number \\| string", False, "Lower bound. Required together with `upper`."),
-                Param("upper", "number \\| string", False, "Upper bound. Required together with `lower`."),
-                Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
-            ),
-            examples=(
-                Example("An indefinite integral, returned with `+ C`.", {"mode": "integrate", "expr": "x^2", "var": "x"}),
-                Example("A definite integral with symbolic bounds.", {"mode": "integrate", "expr": "sin(x)", "var": "x", "lower": 0, "upper": "pi"}),
-            ),
-            failures=(
-                Example("Half a range is not a range.", {"mode": "integrate", "expr": "x^2", "var": "x", "lower": 0}),
-                Example("`expr` is required.", {"mode": "integrate"}),
+                Param("expr", "The integrand.", required=True),
+                Param("var", "The variable of integration. Inferred when unambiguous."),
+                Param("lower", "Lower bound. Required together with `upper`."),
+                Param("upper", "Upper bound. Required together with `lower`."),
+                Param("precision", "Significant digits in the decimal form.", default="15"),
             ),
         ),
         Mode(
@@ -488,22 +742,10 @@ MATH = ToolDoc(
                 "`exists: false` together with both one-sided limits. `point` accepts `oo` for infinity."
             ),
             params=(
-                Param("expr", "string", True, "The expression."),
-                Param("var", "string", False, "The variable. Inferred when unambiguous."),
-                Param("point", "number \\| string", False, "The point approached; `oo` for infinity.", "0"),
-                Param("side", "`+` \\| `-` \\| `left` \\| `right`", False, "One-sided limit.", "two-sided"),
-            ),
-            examples=(
-                Example("The classic removable singularity.", {"mode": "limit", "expr": "sin(x)/x", "var": "x", "point": 0}),
-                Example("A one-sided limit that diverges.", {"mode": "limit", "expr": "1/x", "var": "x", "point": 0, "side": "+"}),
-                Example(
-                    "A two-sided limit that does not exist: still `ok`, with both sides reported.",
-                    {"mode": "limit", "expr": "1/x", "var": "x", "point": 0},
-                ),
-            ),
-            failures=(
-                Example("An unrecognised `side`.", {"mode": "limit", "expr": "1/x", "var": "x", "point": 0, "side": "up"}),
-                Example("`expr` is required.", {"mode": "limit"}),
+                Param("expr", "The expression.", required=True),
+                Param("var", "The variable. Inferred when unambiguous."),
+                Param("point", "The point approached; `oo` for infinity.", default="0"),
+                Param("side", "One-sided limit.", default="two-sided"),
             ),
         ),
         Mode(
@@ -515,18 +757,10 @@ MATH = ToolDoc(
                 "use whichever it needs."
             ),
             params=(
-                Param("expr", "string", True, "The expression to expand."),
-                Param("var", "string", False, "The variable. Inferred when unambiguous."),
-                Param("at", "number \\| string", False, "Point to expand about.", "0"),
-                Param("order", "integer", False, "Order of the expansion.", "6"),
-            ),
-            examples=(
-                Example("The exponential series to fifth order.", {"mode": "series", "expr": "exp(x)", "var": "x", "order": 5}),
-                Example("A logarithm expanded about zero.", {"mode": "series", "expr": "log(1 + x)", "var": "x", "at": 0, "order": 4}),
-            ),
-            failures=(
-                Example("Two free symbols and no `var`.", {"mode": "series", "expr": "exp(x*y)", "order": 3}),
-                Example("`expr` is required.", {"mode": "series"}),
+                Param("expr", "The expression to expand.", required=True),
+                Param("var", "The variable. Inferred when unambiguous."),
+                Param("at", "Point to expand about.", default="0"),
+                Param("order", "Order of the expansion.", default="6"),
             ),
         ),
         Mode(
@@ -539,19 +773,10 @@ MATH = ToolDoc(
                 "classification of the equation."
             ),
             params=(
-                Param("equation", "string", True, "The differential equation, e.g. `y'' + y = 0`."),
-                Param("func", "string", False, "The unknown function, `y` or `y(x)`.", "`y(x)`"),
-                Param("ics", "object", False, "Initial conditions, e.g. `{'y(0)': 1, \"y'(0)\": 0}`."),
-                Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
-            ),
-            examples=(
-                Example("A first-order equation with a free constant.", {"mode": "ode", "equation": "y' = y", "func": "y(x)"}),
-                Example("A second-order equation pinned down by initial conditions.", {"mode": "ode", "equation": "y'' + y = 0", "func": "y(x)", "ics": {"y(0)": 1, "y'(0)": 0}}),
-            ),
-            failures=(
-                Example("`equation` is required.", {"mode": "ode"}),
-                Example("`func` must name a function, not an expression.", {"mode": "ode", "equation": "y' = y", "func": "2x"}),
-                Example("Initial-condition keys must look like `y(0)` or `y'(0)`.", {"mode": "ode", "equation": "y' = y", "func": "y(x)", "ics": {"y0": 1}}),
+                Param("equation", "The differential equation, e.g. `y'' + y = 0`.", required=True),
+                Param("func", "The unknown function, `y` or `y(x)`.", default="`y(x)`"),
+                Param("ics", "Initial conditions, e.g. `{'y(0)': 1, \"y'(0)\": 0}`."),
+                Param("precision", "Significant digits in the decimal form.", default="15"),
             ),
         ),
         Mode(
@@ -564,25 +789,12 @@ MATH = ToolDoc(
                 "expressions, and everything stays exact — no floating-point drift in a determinant."
             ),
             params=(
-                Param("op", "string", False, "The operation.", "`det`"),
-                Param("A", "number[][] \\| string", True, "The matrix."),
-                Param("B", "number[][]", False, "Second matrix, for `mul`, `add`, `sub`."),
-                Param("b", "number[]", False, "Right-hand side, for `op: solve`."),
-                Param("n", "integer", False, "Exponent, for `op: pow`.", "2"),
-                Param("precision", "integer", False, "Significant digits in the decimal forms.", "15"),
-            ),
-            examples=(
-                Example("A determinant, exactly.", {"mode": "matrix", "op": "det", "A": [[1, 2], [3, 4]]}),
-                Example("An inverse, as exact rationals.", {"mode": "matrix", "op": "inv", "A": [[4, 7], [2, 6]]}),
-                Example("Eigenvalues, eigenvectors and the characteristic polynomial.", {"mode": "matrix", "op": "eig", "A": [[2, 1], [1, 2]]}),
-                Example("Solving `A·x = b`.", {"mode": "matrix", "op": "solve", "A": [[2, 1], [1, 3]], "b": [5, 10]}),
-            ),
-            failures=(
-                Example("A determinant needs a square matrix.", {"mode": "matrix", "op": "det", "A": [[1, 2, 3], [4, 5, 6]]}),
-                Example("A singular matrix has no inverse.", {"mode": "matrix", "op": "inv", "A": [[1, 2], [2, 4]]}),
-                Example("Inner dimensions must agree for multiplication.", {"mode": "matrix", "op": "mul", "A": [[1, 2], [3, 4]], "B": [[1, 2, 3]]}),
-                Example("An unknown operation lists the valid ones.", {"mode": "matrix", "op": "eigenfrobnicate", "A": [[1, 0], [0, 1]]}),
-                Example("`A` is required.", {"mode": "matrix", "op": "det"}),
+                Param("op", "The operation.", default="`det`"),
+                Param("A", "The matrix.", required=True),
+                Param("B", "Second matrix, for `mul`, `add`, `sub`."),
+                Param("b", "Right-hand side, for `op: solve`."),
+                Param("n", "Exponent, for `op: pow`.", default="2"),
+                Param("precision", "Significant digits in the decimal forms.", default="15"),
             ),
         ),
         Mode(
@@ -597,24 +809,13 @@ MATH = ToolDoc(
                 "spread so nobody has to guess which one was used."
             ),
             params=(
-                Param("op", "string", False, "The statistic to compute.", "`describe`"),
-                Param("data", "number[]", True, "The sample."),
-                Param("y", "number[]", False, "Second series, for `corr`, `covariance`, `regress`."),
-                Param("weights", "number[]", False, "Weights, for `weighted_mean`."),
-                Param("percentile", "number", False, "0..100, for `op: percentile`."),
-                Param("value", "number", False, "The observation, for `op: zscore`."),
-                Param("predict", "number", False, "An x-value to predict, for `op: regress`."),
-            ),
-            examples=(
-                Example("A full description, with sample and population spread side by side.", {"mode": "stats", "op": "describe", "data": [2, 4, 4, 4, 5, 5, 7, 9]}),
-                Example("Least-squares regression with a prediction.", {"mode": "stats", "op": "regress", "data": [1, 2, 3, 4], "y": [2, 4, 6, 9], "predict": 5}),
-                Example("A percentile, with the interpolation rule stated.", {"mode": "stats", "op": "percentile", "data": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "percentile": 90}),
-            ),
-            failures=(
-                Example("An empty sample.", {"mode": "stats", "op": "describe", "data": []}),
-                Example("A sample standard deviation needs at least two points.", {"mode": "stats", "op": "stdev", "data": [5]}),
-                Example("An unknown statistic lists the valid ones.", {"mode": "stats", "op": "vibe", "data": [1, 2, 3]}),
-                Example("Paired series must be the same length.", {"mode": "stats", "op": "corr", "data": [1, 2, 3], "y": [1, 2]}),
+                Param("op", "The statistic to compute.", default="`describe`"),
+                Param("data", "The sample.", required=True),
+                Param("y", "Second series, for `corr`, `covariance`, `regress`."),
+                Param("weights", "Weights, for `weighted_mean`."),
+                Param("percentile", "0..100, for `op: percentile`."),
+                Param("value", "The observation, for `op: zscore`."),
+                Param("predict", "An x-value to predict, for `op: regress`."),
             ),
         ),
         Mode(
@@ -626,21 +827,11 @@ MATH = ToolDoc(
                 "presentation change, not a computation — the value is unchanged."
             ),
             params=(
-                Param("expr", "string", True, "The value to re-present."),
-                Param("form", "string", False, "Target form.", "`decimal`"),
-                Param("significant", "integer", False, "Significant digits, for `form: scientific`.", "6"),
-                Param("tolerance", "number", False, "Rounding tolerance, for `form: fraction`."),
-                Param("precision", "integer", False, "Significant digits in the decimal forms.", "15"),
-            ),
-            examples=(
-                Example("A complex number in polar form, with the phasor notation spelled out.", {"mode": "convert_form", "expr": "3 + 4i", "form": "polar"}),
-                Example("A decimal recovered as an exact fraction.", {"mode": "convert_form", "expr": "0.375", "form": "fraction"}),
-                Example("Scientific notation to three significant figures.", {"mode": "convert_form", "expr": "0.000123456", "form": "scientific", "significant": 3}),
-            ),
-            failures=(
-                Example("Scientific notation is undefined for a complex number.", {"mode": "convert_form", "expr": "3 + 4i", "form": "scientific"}),
-                Example("An unknown target form.", {"mode": "convert_form", "expr": "2", "form": "binary"}),
-                Example("`expr` is required.", {"mode": "convert_form", "form": "polar"}),
+                Param("expr", "The value to re-present.", required=True),
+                Param("form", "Target form.", default="`decimal`"),
+                Param("significant", "Significant digits, for `form: scientific`.", default="6"),
+                Param("tolerance", "Rounding tolerance, for `form: fraction`."),
+                Param("precision", "Significant digits in the decimal forms.", default="15"),
             ),
         ),
         Mode(
@@ -652,19 +843,10 @@ MATH = ToolDoc(
                 "and counted in `warnings` rather than silently returned as nulls."
             ),
             params=(
-                Param("expr", "string", True, "The function to sample."),
-                Param("var", "string", False, "The variable. Inferred when unambiguous."),
-                Param("range", "[number, number]", False, "Start and end of the sampled interval.", "`[-10, 10]`"),
-                Param("n", "integer", False, "Number of samples, 2..10000.", "50"),
-            ),
-            examples=(
-                Example("Five points of a parabola.", {"mode": "plot_points", "expr": "x^2", "var": "x", "range": [-2, 2], "n": 5}),
-                Example("A pole at zero: the undefined sample is skipped and reported.", {"mode": "plot_points", "expr": "1/x", "var": "x", "range": [-1, 1], "n": 5}),
-            ),
-            failures=(
-                Example("`range` must have exactly two entries.", {"mode": "plot_points", "expr": "x^2", "range": [0]}),
-                Example("One point is not a plot.", {"mode": "plot_points", "expr": "x^2", "n": 1}),
-                Example("`expr` is required.", {"mode": "plot_points"}),
+                Param("expr", "The function to sample.", required=True),
+                Param("var", "The variable. Inferred when unambiguous."),
+                Param("range", "Start and end of the sampled interval.", default="`[-10, 10]`"),
+                Param("n", "Number of samples, 2..10000.", default="50"),
             ),
         ),
     ),
@@ -677,7 +859,6 @@ MATH = ToolDoc(
 
 DATETIME = ToolDoc(
     name="datetime",
-    tagline="Dates, durations, time zones, business days",
     intro=(
         "A model has no clock and no calendar. `datetime` supplies both, and refuses the two "
         "inputs that silently produce wrong answers everywhere else: timezone abbreviations "
@@ -693,16 +874,15 @@ DATETIME = ToolDoc(
         "Schedules: `recurrence` for RRULEs and phrases, `cron_next` for cron expressions.",
         "Ages, fiscal periods, overlaps and timesheet totals.",
     ),
-    fn=datetimex.datetime_tool,
     related=(
         "[`holidays`](/docs/tools/holidays) for the calendars behind `region` · "
         "[`geo_offline`](/docs/tools/geo_offline) to turn a city name into an IANA zone before "
         "converting · [`numbers`](/docs/tools/numbers) for formatting the durations you get back."
     ),
+    examples=datetimex.EXAMPLES,
     modes=(
         Mode(
             name="now",
-            purpose="The current instant in a given zone.",
             description=(
                 "Returns the current instant with its ISO string, date, weekday, time, UTC offset, "
                 "zone, unix timestamp, DST flag, ISO week and day of year. With no `tz` the answer is "
@@ -710,16 +890,7 @@ DATETIME = ToolDoc(
                 "calls; everything else can be pinned by passing explicit dates."
             ),
             params=(
-                Param("tz", "string", False, "IANA zone name, a fixed `UTC+05:30` offset, or `local`.", "`UTC`"),
-            ),
-            examples=(
-                Example("The current instant in a named zone.", {"mode": "now", "tz": "Asia/Kolkata"}, volatile=True),
-                Example("No zone: UTC, with the assumption recorded.", {"mode": "now"}, volatile=True),
-                Example("A fixed offset works too, but carries no daylight-saving rules.", {"mode": "now", "tz": "UTC+05:30"}, volatile=True),
-            ),
-            failures=(
-                Example("`IST` is Indian, Israeli and Irish Standard Time. The tool lists the candidates instead of picking one.", {"mode": "now", "tz": "IST"}),
-                Example("An unknown zone name.", {"mode": "now", "tz": "Mars/Olympus"}),
+                Param("tz", "IANA zone name, a fixed `UTC+05:30` offset, or `local`.", default="`UTC`"),
             ),
         ),
         Mode(
@@ -732,21 +903,10 @@ DATETIME = ToolDoc(
                 "moved. A bare date is refused: midnight in which zone?"
             ),
             params=(
-                Param("value", "string", False, "The instant to convert. `now` or omitted uses the current instant.", "`now`"),
-                Param("from_tz", "string", False, "Zone of `value` when it carries no offset."),
-                Param("to_tz", "string \\| string[]", True, "Target zone, or a list of them."),
-                Param("locale", "string", False, "Country code used to read numeric dates, e.g. `IN`."),
-            ),
-            examples=(
-                Example("A New York meeting time in Indian Standard Time.", {"mode": "convert_tz", "value": "2025-03-09T09:30:00", "from_tz": "America/New_York", "to_tz": "Asia/Kolkata"}),
-                Example("One instant fanned out to a whole team, each with its own day shift.", {"mode": "convert_tz", "value": "2025-11-04T18:00:00", "from_tz": "Europe/London", "to_tz": ["Asia/Kolkata", "America/Los_Angeles", "Australia/Sydney"]}),
-                Example("An offset already in the string needs no `from_tz`.", {"mode": "convert_tz", "value": "2025-06-01T10:00:00+05:30", "to_tz": "UTC"}),
-            ),
-            failures=(
-                Example("A date with no time cannot be converted — midnight where?", {"mode": "convert_tz", "value": "2025-06-01", "from_tz": "UTC", "to_tz": "Asia/Tokyo"}),
-                Example("A naive timestamp with no `from_tz`.", {"mode": "convert_tz", "value": "2025-06-01T10:00:00", "to_tz": "Asia/Tokyo"}),
-                Example("An abbreviation as the source zone.", {"mode": "convert_tz", "value": "2025-06-01T10:00:00", "from_tz": "IST", "to_tz": "UTC"}),
-                Example("`to_tz` is required.", {"mode": "convert_tz", "value": "2025-06-01T10:00:00+00:00"}),
+                Param("value", "The instant to convert. `now` or omitted uses the current instant.", default="`now`"),
+                Param("from_tz", "Zone of `value` when it carries no offset."),
+                Param("to_tz", "Target zone, or a list of them.", required=True),
+                Param("locale", "Country code used to read numeric dates, e.g. `IN`."),
             ),
         ),
         Mode(
@@ -760,24 +920,10 @@ DATETIME = ToolDoc(
                 "which order to read, and the refusal spells out both readings as ISO dates."
             ),
             params=(
-                Param("value", "string \\| number", True, "The date to parse."),
-                Param("tz", "string", False, "Zone attached to a naive result."),
-                Param("locale", "string", False, "Country code deciding DD/MM vs MM/DD, e.g. `IN`, `US`."),
-                Param("ref_date", "string", False, "Anchor for relative phrases.", "now"),
-            ),
-            examples=(
-                Example("An ISO date. `date_only` says no time was supplied.", {"mode": "parse", "value": "2025-03-04"}),
-                Example("The same numeric date read two ways — first the Indian reading.", {"mode": "parse", "value": "03/04/2025", "locale": "IN"}),
-                Example("…and the US reading of exactly the same string.", {"mode": "parse", "value": "03/04/2025", "locale": "US"}),
-                Example("A relative phrase anchored to an explicit reference date.", {"mode": "parse", "value": "next friday 5pm", "ref_date": "2025-08-26T10:00:00", "tz": "Asia/Kolkata"}),
-                Example("A unix timestamp in milliseconds is detected and reported.", {"mode": "parse", "value": 1755180000000}),
-            ),
-            failures=(
-                Example("`03/04/2025` with no locale: both readings are returned in `needs.options` with their ISO dates, so the caller can pick.", {"mode": "parse", "value": "03/04/2025"}),
-                Example("Text that is not a date at all.", {"mode": "parse", "value": "sometime next quarter-ish"}),
-                Example("A date that does not exist.", {"mode": "parse", "value": "31/02/2025"}),
-                Example("An unknown locale code.", {"mode": "parse", "value": "03/04/2025", "locale": "XX"}),
-                Example("`value` is required.", {"mode": "parse"}),
+                Param("value", "The date to parse.", required=True),
+                Param("tz", "Zone attached to a naive result."),
+                Param("locale", "Country code deciding DD/MM vs MM/DD, e.g. `IN`, `US`."),
+                Param("ref_date", "Anchor for relative phrases.", default="now"),
             ),
         ),
         Mode(
@@ -791,26 +937,15 @@ DATETIME = ToolDoc(
                 "— when `region` is given — public holidays, listing each one skipped."
             ),
             params=(
-                Param("value", "string", False, "Starting date.", "`now`"),
-                Param("amount", "number", True, "How much to add; negative subtracts."),
-                Param("unit", "string", True, "`seconds`, `minutes`, `hours`, `days`, `weeks`, `fortnights`, `months`, `quarters`, `years`, `business_days`."),
-                Param("region", "string", False, "ISO country code whose public holidays to skip, for `business_days`."),
-                Param("subdiv", "string", False, "State/province code for regional holidays."),
-                Param("weekend", "string[]", False, "Which weekdays count as weekend.", "`[saturday, sunday]`"),
-                Param("extra_holidays", "string[] \\| object[]", False, "Extra non-working dates."),
-                Param("tz", "string", False, "Zone applied to `value`."),
-                Param("locale", "string", False, "Country code for reading numeric dates."),
-            ),
-            examples=(
-                Example("Month arithmetic that clamps, with the clamp reported in `warnings`.", {"mode": "add", "value": "2025-01-31", "amount": 1, "unit": "months"}),
-                Example("Three business days in India, listing the public holiday it stepped over.", {"mode": "add", "value": "2025-08-13", "amount": 3, "unit": "business_days", "region": "IN"}),
-                Example("Elapsed hours across a US DST spring-forward: the wall clock jumps, the elapsed time does not.", {"mode": "add", "value": "2025-03-09T00:30:00", "tz": "America/New_York", "amount": 3, "unit": "hours"}),
-                Example("Subtracting, with a negative amount.", {"mode": "add", "value": "2025-08-26", "amount": -2, "unit": "weeks"}),
-            ),
-            failures=(
-                Example("`amount` and `unit` are both required.", {"mode": "add", "value": "2025-08-26", "amount": 3}),
-                Example("An unknown unit.", {"mode": "add", "value": "2025-08-26", "amount": 3, "unit": "fortnite"}),
-                Example("Fractional months have no defined meaning.", {"mode": "add", "value": "2025-08-26", "amount": 1.5, "unit": "months"}),
+                Param("value", "Starting date.", default="`now`"),
+                Param("amount", "How much to add; negative subtracts.", required=True),
+                Param("unit", "`seconds`, `minutes`, `hours`, `days`, `weeks`, `fortnights`, `months`, `quarters`, `years`, `business_days`.", required=True),
+                Param("region", "ISO country code whose public holidays to skip, for `business_days`."),
+                Param("subdiv", "State/province code for regional holidays."),
+                Param("weekend", "Which weekdays count as weekend.", default="`[saturday, sunday]`"),
+                Param("extra_holidays", "Extra non-working dates."),
+                Param("tz", "Zone applied to `value`."),
+                Param("locale", "Country code for reading numeric dates."),
             ),
         ),
         Mode(
@@ -823,23 +958,13 @@ DATETIME = ToolDoc(
                 "`unit: business_days` (with an optional `region`) to count working days instead."
             ),
             params=(
-                Param("start", "string", True, "Start instant."),
-                Param("end", "string", False, "End instant.", "`now`"),
-                Param("unit", "string", False, "Report one unit in `value`; `business_days` counts working days.", "`auto`"),
-                Param("region", "string", False, "ISO country code for holidays, with `business_days`."),
-                Param("weekend", "string[]", False, "Which weekdays are non-working.", "`[saturday, sunday]`"),
-                Param("tz", "string", False, "Zone applied to both sides."),
-                Param("locale", "string", False, "Country code for reading numeric dates."),
-            ),
-            examples=(
-                Example("Calendar breakdown and totals between two dates.", {"mode": "diff", "start": "2025-01-01", "end": "2025-03-15"}),
-                Example("Working days between the same two dates, excluding Indian public holidays.", {"mode": "diff", "start": "2025-01-01", "end": "2025-03-15", "unit": "business_days", "region": "IN"}),
-                Example("A backwards range: `sign` is −1 and `direction` says so in words.", {"mode": "diff", "start": "2025-03-15T18:00:00", "end": "2025-03-15T09:30:00"}),
-            ),
-            failures=(
-                Example("`start` is required.", {"mode": "diff", "end": "2025-01-01"}),
-                Example("An unknown unit.", {"mode": "diff", "start": "2025-01-01", "end": "2025-02-01", "unit": "moons"}),
-                Example("An ambiguous numeric date on either side is refused, exactly as in `parse`.", {"mode": "diff", "start": "01/02/2025", "end": "2025-03-01"}),
+                Param("start", "Start instant.", required=True),
+                Param("end", "End instant.", default="`now`"),
+                Param("unit", "Report one unit in `value`; `business_days` counts working days.", default="`auto`"),
+                Param("region", "ISO country code for holidays, with `business_days`."),
+                Param("weekend", "Which weekdays are non-working.", default="`[saturday, sunday]`"),
+                Param("tz", "Zone applied to both sides."),
+                Param("locale", "Country code for reading numeric dates."),
             ),
         ),
         Mode(
@@ -851,17 +976,9 @@ DATETIME = ToolDoc(
                 "flag, quarter, month name and week of month. One call instead of six derivations."
             ),
             params=(
-                Param("value", "string", False, "The date.", "`today`"),
-                Param("tz", "string", False, "Zone applied to `value`."),
-                Param("locale", "string", False, "Country code for reading numeric dates."),
-            ),
-            examples=(
-                Example("A public holiday that happens to fall on a Friday.", {"mode": "weekday", "value": "2025-08-15"}),
-                Example("A leap day, with `is_leap_year` and `days_in_month` confirming it.", {"mode": "weekday", "value": "2024-02-29"}),
-            ),
-            failures=(
-                Example("A date that does not exist in that month.", {"mode": "weekday", "value": "31/02/2025"}),
-                Example("An ambiguous numeric date.", {"mode": "weekday", "value": "03/04/2025"}),
+                Param("value", "The date.", default="`today`"),
+                Param("tz", "Zone applied to `value`."),
+                Param("locale", "Country code for reading numeric dates."),
             ),
         ),
         Mode(
@@ -874,22 +991,11 @@ DATETIME = ToolDoc(
                 "silently clamped date."
             ),
             params=(
-                Param("year", "integer", False, "Year. Taken from `value`, or today, when omitted."),
-                Param("month", "integer \\| string", False, "Month number or name."),
-                Param("weekday", "string \\| integer", True, "Weekday name, abbreviation, or Monday-zero index."),
-                Param("n", "integer \\| string", False, "Which one: 1..5, −1..−5, or `first`/`last`.", "1"),
-                Param("value", "string", False, "Date whose year/month to use when `year`/`month` are omitted."),
-            ),
-            examples=(
-                Example("US Thanksgiving 2025: the fourth Thursday of November.", {"mode": "nth_weekday", "year": 2025, "month": 11, "weekday": "thursday", "n": 4}),
-                Example("The last Friday of February 2025, counting backwards.", {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": -1}),
-                Example("Ordinal words work too, and the month can be a name.", {"mode": "nth_weekday", "year": 2025, "month": "September", "weekday": "monday", "n": "first"}),
-            ),
-            failures=(
-                Example("February 2025 has only four Fridays.", {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": 5}),
-                Example("`weekday` is required.", {"mode": "nth_weekday", "year": 2025, "month": 2}),
-                Example("`n` cannot be zero.", {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": 0}),
-                Example("An unknown weekday name.", {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "sunsday"}),
+                Param("year", "Year. Taken from `value`, or today, when omitted."),
+                Param("month", "Month number or name."),
+                Param("weekday", "Weekday name, abbreviation, or Monday-zero index.", required=True),
+                Param("n", "Which one: 1..5, −1..−5, or `first`/`last`.", default="1"),
+                Param("value", "Date whose year/month to use when `year`/`month` are omitted."),
             ),
         ),
         Mode(
@@ -903,24 +1009,14 @@ DATETIME = ToolDoc(
                 "every working date."
             ),
             params=(
-                Param("start", "string", True, "Start of the range."),
-                Param("end", "string", True, "End of the range."),
-                Param("region", "string", False, "ISO country code whose public holidays to exclude."),
-                Param("subdiv", "string", False, "State/province code for regional holidays."),
-                Param("weekend", "string[]", False, "Non-working weekdays.", "`[saturday, sunday]`"),
-                Param("extra_holidays", "string[] \\| object[]", False, "Extra non-working dates, e.g. a company shutdown."),
-                Param("include_start", "boolean", False, "Count the start date.", "`true`"),
-                Param("include_end", "boolean", False, "Count the end date.", "`true`"),
-            ),
-            examples=(
-                Example("Working days in an Indian August, with the Independence Day holiday named.", {"mode": "business_days", "start": "2025-08-11", "end": "2025-08-22", "region": "IN"}),
-                Example("A Friday/Saturday weekend, as used across the Gulf.", {"mode": "business_days", "start": "2025-08-11", "end": "2025-08-22", "weekend": ["friday", "saturday"], "region": "AE"}),
-                Example("Regional holidays via `subdiv`, plus a company shutdown day of your own.", {"mode": "business_days", "start": "2025-10-01", "end": "2025-10-10", "region": "IN", "subdiv": "WB", "extra_holidays": ["2025-10-06"]}),
-            ),
-            failures=(
-                Example("Both ends are required.", {"mode": "business_days", "start": "2025-08-01"}),
-                Example("An unknown weekday in `weekend`.", {"mode": "business_days", "start": "2025-08-01", "end": "2025-08-10", "weekend": ["funday"]}),
-                Example("An unsupported holiday region.", {"mode": "business_days", "start": "2025-08-01", "end": "2025-08-10", "region": "XX"}),
+                Param("start", "Start of the range.", required=True),
+                Param("end", "End of the range.", required=True),
+                Param("region", "ISO country code whose public holidays to exclude."),
+                Param("subdiv", "State/province code for regional holidays."),
+                Param("weekend", "Non-working weekdays.", default="`[saturday, sunday]`"),
+                Param("extra_holidays", "Extra non-working dates, e.g. a company shutdown."),
+                Param("include_start", "Count the start date.", default="`true`"),
+                Param("include_end", "Count the end date.", default="`true`"),
             ),
         ),
         Mode(
@@ -933,20 +1029,10 @@ DATETIME = ToolDoc(
                 "must agree about whether they carry a timezone."
             ),
             params=(
-                Param("a", "object", True, "First interval, `{start, end}`."),
-                Param("b", "object", True, "Second interval, `{start, end}`."),
-                Param("tz", "string", False, "Zone applied to naive endpoints."),
-                Param("locale", "string", False, "Country code for reading numeric dates."),
-            ),
-            examples=(
-                Example("Two meetings that collide, with the colliding window returned.", {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:30:00"}, "b": {"start": "2025-08-26T10:00:00", "end": "2025-08-26T11:00:00"}}),
-                Example("Two that do not, with the gap between them.", {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:00:00"}, "b": {"start": "2025-08-26T14:00:00", "end": "2025-08-26T15:00:00"}}),
-                Example("Containment is named, not just detected.", {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T18:00:00"}, "b": {"start": "2025-08-26T11:00:00", "end": "2025-08-26T12:00:00"}}),
-            ),
-            failures=(
-                Example("An interval must be an object with `start` and `end`.", {"mode": "overlap", "a": "2025-08-26", "b": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:00:00"}}),
-                Example("An interval that ends before it starts.", {"mode": "overlap", "a": {"start": "2025-08-26T12:00:00", "end": "2025-08-26T09:00:00"}, "b": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:00:00"}}),
-                Example("One side aware, the other naive.", {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00+05:30", "end": "2025-08-26T10:00:00+05:30"}, "b": {"start": "2025-08-26T09:30:00", "end": "2025-08-26T10:30:00"}}),
+                Param("a", "First interval, `{start, end}`.", required=True),
+                Param("b", "Second interval, `{start, end}`.", required=True),
+                Param("tz", "Zone applied to naive endpoints."),
+                Param("locale", "Country code for reading numeric dates."),
             ),
         ),
         Mode(
@@ -959,18 +1045,9 @@ DATETIME = ToolDoc(
                 "`warnings` so double-counting is never silent."
             ),
             params=(
-                Param("ranges", "object[]", True, "Intervals, each `{start, end}` with an optional `label`."),
-                Param("tz", "string", False, "Zone applied to naive endpoints."),
-                Param("locale", "string", False, "Country code for reading numeric dates."),
-            ),
-            examples=(
-                Example("Three labelled work sessions, totalled.", {"mode": "duration_sum", "ranges": [{"label": "morning", "start": "2025-08-26T09:15:00", "end": "2025-08-26T12:00:00"}, {"label": "afternoon", "start": "2025-08-26T13:00:00", "end": "2025-08-26T17:30:00"}, {"label": "evening", "start": "2025-08-26T20:00:00", "end": "2025-08-26T21:45:00"}]}),
-                Example("Two sessions that overlap: the total still adds them, and `warnings` names the double count.", {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T09:00:00", "end": "2025-08-26T11:00:00"}, {"start": "2025-08-26T10:30:00", "end": "2025-08-26T12:00:00"}]}),
-            ),
-            failures=(
-                Example("`ranges` is required and must be a non-empty list.", {"mode": "duration_sum"}),
-                Example("Every entry needs both a `start` and an `end`.", {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T09:00:00"}]}),
-                Example("An interval that runs backwards.", {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T11:00:00", "end": "2025-08-26T09:00:00"}]}),
+                Param("ranges", "Intervals, each `{start, end}` with an optional `label`.", required=True),
+                Param("tz", "Zone applied to naive endpoints."),
+                Param("locale", "Country code for reading numeric dates."),
             ),
         ),
         Mode(
@@ -983,23 +1060,12 @@ DATETIME = ToolDoc(
                 "stops at `limit` and says so in `warnings`. The RRULE actually used is echoed back."
             ),
             params=(
-                Param("rule", "string", True, "RRULE string or a recognised phrase."),
-                Param("start", "string", False, "First candidate date (DTSTART).", "`today`"),
-                Param("count", "integer", False, "Stop after this many occurrences."),
-                Param("until", "string", False, "Stop at this date."),
-                Param("limit", "integer", False, "Hard cap on returned occurrences, max 1000.", "100"),
-                Param("dates_only", "boolean", False, "Return dates rather than full timestamps.", "`true`"),
-            ),
-            examples=(
-                Example("A phrase turned into an RRULE and expanded.", {"mode": "recurrence", "rule": "every 2nd tuesday", "start": "2025-01-01", "count": 5}),
-                Example("A raw RRULE for a three-day-a-week standup.", {"mode": "recurrence", "rule": "FREQ=WEEKLY;BYDAY=MO,WE,FR", "start": "2025-01-01", "count": 6}),
-                Example("Month ends, bounded by `until`.", {"mode": "recurrence", "rule": "month end", "start": "2025-01-01", "until": "2025-06-30"}),
-            ),
-            failures=(
-                Example("A phrase the converter does not recognise — it asks for an RRULE rather than guessing.", {"mode": "recurrence", "rule": "every blue moon", "start": "2025-01-01"}),
-                Example("`rule` is required.", {"mode": "recurrence", "start": "2025-01-01"}),
-                Example("`limit` is capped at 1000.", {"mode": "recurrence", "rule": "every day", "start": "2025-01-01", "limit": 5000}),
-                Example("A malformed RRULE.", {"mode": "recurrence", "rule": "FREQ=FORTNIGHTLY", "start": "2025-01-01", "count": 3}),
+                Param("rule", "RRULE string or a recognised phrase.", required=True),
+                Param("start", "First candidate date (DTSTART).", default="`today`"),
+                Param("count", "Stop after this many occurrences."),
+                Param("until", "Stop at this date."),
+                Param("limit", "Hard cap on returned occurrences, max 1000.", default="100"),
+                Param("dates_only", "Return dates rather than full timestamps.", default="`true`"),
             ),
         ),
         Mode(
@@ -1012,20 +1078,10 @@ DATETIME = ToolDoc(
                 "— the one everybody gets wrong — is applied and stated in `assumptions`."
             ),
             params=(
-                Param("expr", "string", True, "Cron expression or `@`-alias."),
-                Param("tz", "string", False, "Zone the schedule runs in.", "`UTC`"),
-                Param("start", "string", False, "Start searching after this instant.", "now"),
-                Param("n", "integer", False, "How many fire times to return, 1..500.", "5"),
-            ),
-            examples=(
-                Example("Weekday mornings in Kolkata.", {"mode": "cron_next", "expr": "0 9 * * 1-5", "tz": "Asia/Kolkata", "start": "2025-08-15T00:00:00", "n": 3}),
-                Example("An alias, and a step field.", {"mode": "cron_next", "expr": "@monthly", "start": "2025-01-15T00:00:00", "n": 3}),
-                Example("Every 15 minutes during office hours.", {"mode": "cron_next", "expr": "*/15 9-10 * * *", "start": "2025-08-15T09:00:00", "n": 4}),
-            ),
-            failures=(
-                Example("A cron expression must have five fields.", {"mode": "cron_next", "expr": "0 9 * *"}),
-                Example("A value outside its field’s range.", {"mode": "cron_next", "expr": "99 9 * * *"}),
-                Example("`expr` is required.", {"mode": "cron_next"}),
+                Param("expr", "Cron expression or `@`-alias.", required=True),
+                Param("tz", "Zone the schedule runs in.", default="`UTC`"),
+                Param("start", "Start searching after this instant.", default="now"),
+                Param("n", "How many fire times to return, 1..500.", default="5"),
             ),
         ),
         Mode(
@@ -1038,17 +1094,9 @@ DATETIME = ToolDoc(
                 "`assumptions` rather than assumed."
             ),
             params=(
-                Param("dob", "string", True, "Date of birth."),
-                Param("on", "string", False, "Date to compute the age on.", "`today`"),
-                Param("locale", "string", False, "Country code for reading numeric dates."),
-            ),
-            examples=(
-                Example("An age on a fixed date.", {"mode": "age", "dob": "1990-02-14", "on": "2025-08-26"}),
-                Example("A leap-day birthday in a non-leap year.", {"mode": "age", "dob": "2000-02-29", "on": "2025-03-01"}),
-            ),
-            failures=(
-                Example("`dob` is required.", {"mode": "age", "on": "2025-08-26"}),
-                Example("The reference date precedes the birth date.", {"mode": "age", "dob": "2025-08-26", "on": "1990-01-01"}),
+                Param("dob", "Date of birth.", required=True),
+                Param("on", "Date to compute the age on.", default="`today`"),
+                Param("locale", "Country code for reading numeric dates."),
             ),
         ),
         Mode(
@@ -1061,19 +1109,10 @@ DATETIME = ToolDoc(
                 "its bounds, the day of the fiscal year and the days remaining."
             ),
             params=(
-                Param("value", "string", False, "The date to place.", "`today`"),
-                Param("region", "string", False, "ISO country code selecting a known FY convention."),
-                Param("fy_start_month", "integer", False, "First month of the fiscal year, 1..12.", "1 (calendar year)"),
-                Param("tz", "string", False, "Zone applied to `value`."),
-            ),
-            examples=(
-                Example("India: an April-to-March fiscal year.", {"mode": "fiscal", "value": "2025-08-26", "region": "IN"}),
-                Example("The US federal year, which starts in October and is labelled by its end.", {"mode": "fiscal", "value": "2025-08-26", "region": "US"}),
-                Example("An explicit start month for a company that does not follow its country.", {"mode": "fiscal", "value": "2025-08-26", "fy_start_month": 7}),
-            ),
-            failures=(
-                Example("`fy_start_month` must be a real month.", {"mode": "fiscal", "value": "2025-08-26", "fy_start_month": 13}),
-                Example("An unparseable date.", {"mode": "fiscal", "value": "the third quarter"}),
+                Param("value", "The date to place.", default="`today`"),
+                Param("region", "ISO country code selecting a known FY convention."),
+                Param("fy_start_month", "First month of the fiscal year, 1..12.", default="1 (calendar year)"),
+                Param("tz", "Zone applied to `value`."),
             ),
         ),
     ),
@@ -1086,7 +1125,6 @@ DATETIME = ToolDoc(
 
 SCALE = ToolDoc(
     name="scale",
-    tagline="Scale numbers and recipes proportionally",
     intro=(
         "One quantity changes and everything tied to it has to change with it: a recipe for 4 "
         "becomes a recipe for 7, a price per kilogram becomes a price per 250 g, three workers "
@@ -1100,13 +1138,12 @@ SCALE = ToolDoc(
         "Inverse proportion — more workers, fewer days — with `mode: inverse`.",
         "Any “hold the ratios constant” calculation across several line items at once.",
     ),
-    fn=scale_mod.scale,
     related=(
         "[`convert`](/docs/tools/convert) when only the unit changes · "
         "[`numbers`](/docs/tools/numbers) `allocate` when a total must be split so the parts sum "
         "exactly · [`math`](/docs/tools/math) for anything that is not a proportion."
     ),
-    extra_modes=("linear", "inverse"),
+    examples=scale_mod.EXAMPLES,
     modes=(
         Mode(
             name="linear",
@@ -1121,36 +1158,14 @@ SCALE = ToolDoc(
                 "warning."
             ),
             params=(
-                Param("from_qty", "number \\| string", True, "The quantity you have. Not required if `factor` is given."),
-                Param("to_qty", "number \\| string", False, "The quantity you want.", "1, if `to_unit` is given"),
-                Param("from_unit", "string", False, "Unit of `from_qty`."),
-                Param("to_unit", "string", False, "Unit of `to_qty`; the conversion is folded into the factor."),
-                Param("factor", "number \\| string", False, "Use this factor instead of a ratio."),
-                Param("entities", "object[] \\| object", False, "Things to scale: `{name, qty, unit?, integer?}`, or a `{name: qty}` map."),
-                Param("precision", "integer", False, "Decimal places in the `value` fields.", "6"),
-                Param("assume", "string", False, "Pass `common` to resolve ambiguous units to their usual reading."),
-            ),
-            examples=(
-                Example(
-                    "A recipe for 4 rescaled to 7 servings. Note the mixed numbers and the egg rounded up.",
-                    {"mode": "linear", "from_qty": 4, "to_qty": 7, "entities": [{"name": "flour", "qty": 2, "unit": "cups"}, {"name": "butter", "qty": 150, "unit": "g"}, {"name": "eggs", "qty": 2, "integer": True}]},
-                ),
-                Example(
-                    "A price per kilogram restated per 250 g: the unit change becomes the factor.",
-                    {"mode": "linear", "from_qty": 1, "from_unit": "kg", "to_qty": 250, "to_unit": "g", "entities": [{"name": "price", "qty": 480}]},
-                ),
-                Example(
-                    "An explicit factor, with entities given as a plain map.",
-                    {"mode": "linear", "factor": 1.15, "entities": {"salary": 62000, "bonus": 8000}},
-                ),
-            ),
-            failures=(
-                Example("`from_qty` (or `factor`) is required.", {"mode": "linear", "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]}),
-                Example("A zero base has no factor.", {"mode": "linear", "from_qty": 0, "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]}),
-                Example("Every entity needs a `qty`.", {"mode": "linear", "from_qty": 4, "to_qty": 7, "entities": [{"name": "flour"}]}),
-                Example("Units that cannot be related to each other.", {"mode": "linear", "from_qty": 1, "from_unit": "kg", "to_qty": 1, "to_unit": "liter", "entities": [{"name": "price", "qty": 480}]}),
-                Example("An ambiguous unit is refused here exactly as in `convert`.", {"mode": "linear", "from_qty": 1, "from_unit": "oz", "to_qty": 100, "to_unit": "g", "entities": [{"name": "price", "qty": 480}]}),
-                Example("`mode` must be `linear` or `inverse`.", {"mode": "quadratic", "from_qty": 4, "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]}),
+                Param("from_qty", "The quantity you have. Not required if `factor` is given.", required=True),
+                Param("to_qty", "The quantity you want.", default="1, if `to_unit` is given"),
+                Param("from_unit", "Unit of `from_qty`."),
+                Param("to_unit", "Unit of `to_qty`; the conversion is folded into the factor."),
+                Param("factor", "Use this factor instead of a ratio."),
+                Param("entities", "Things to scale: `{name, qty, unit?, integer?}`, or a `{name: qty}` map."),
+                Param("precision", "Decimal places in the `value` fields.", default="6"),
+                Param("assume", "Pass `common` to resolve ambiguous units to their usual reading."),
             ),
         ),
         Mode(
@@ -1163,21 +1178,12 @@ SCALE = ToolDoc(
                 "here, because a percentage change of an inverse relationship invites misreading."
             ),
             params=(
-                Param("from_qty", "number \\| string", True, "The quantity you have."),
-                Param("to_qty", "number \\| string", True, "The quantity you want."),
-                Param("entities", "object[] \\| object", False, "Things that move inversely: `{name, qty, unit?, integer?}`."),
-                Param("from_unit", "string", False, "Unit of `from_qty`."),
-                Param("to_unit", "string", False, "Unit of `to_qty`."),
-                Param("precision", "integer", False, "Decimal places in the `value` fields.", "6"),
-            ),
-            examples=(
-                Example("Three workers take five days; twelve workers take a quarter of that.", {"mode": "inverse", "from_qty": 3, "to_qty": 12, "entities": [{"name": "days", "qty": 5}]}),
-                Example("Doubling the line speed shortens every downstream time.", {"mode": "inverse", "from_qty": 2, "to_qty": 5, "entities": {"hours_per_batch": 6, "operators_hours": 18}}),
-            ),
-            failures=(
-                Example("An inverse relationship cannot target zero.", {"mode": "inverse", "from_qty": 3, "to_qty": 0, "entities": [{"name": "days", "qty": 5}]}),
-                Example("Quantities must be numbers.", {"mode": "inverse", "from_qty": "a few", "to_qty": 12, "entities": [{"name": "days", "qty": 5}]}),
-                Example("`to_qty` is required when no `factor` is given.", {"mode": "inverse", "from_qty": 3, "entities": [{"name": "days", "qty": 5}]}),
+                Param("from_qty", "The quantity you have.", required=True),
+                Param("to_qty", "The quantity you want.", required=True),
+                Param("entities", "Things that move inversely: `{name, qty, unit?, integer?}`."),
+                Param("from_unit", "Unit of `from_qty`."),
+                Param("to_unit", "Unit of `to_qty`."),
+                Param("precision", "Decimal places in the `value` fields.", default="6"),
             ),
         ),
     ),
@@ -1190,7 +1196,6 @@ SCALE = ToolDoc(
 
 CONVERT = ToolDoc(
     name="convert",
-    tagline="Units and currencies, with the ambiguities refused",
     intro=(
         "Unit conversion on top of Pint, with one rule the rest of the world skips: a unit with two "
         "meanings is never guessed. `ton` (metric, short, long), `gallon` (US, imperial), `oz` (mass "
@@ -1204,12 +1209,12 @@ CONVERT = ToolDoc(
         "Currency, which needs a rate you supply — this tool never invents an exchange rate.",
         "Indian land units (bigha, katha, cent, ground, guntha, ankanam) and lakh/crore scaling.",
     ),
-    fn=convert_mod.convert,
     related=(
         "[`scale`](/docs/tools/scale) when a unit change has to ripple through several line items · "
         "[`numbers`](/docs/tools/numbers) `format` to present the result for a locale · "
         "the `fx_rate` tool in `leftbrain-external` for live exchange rates."
     ),
+    examples=convert_mod.EXAMPLES,
     modes=(
         Mode(
             name="units",
@@ -1223,27 +1228,11 @@ CONVERT = ToolDoc(
                 "of a “month”."
             ),
             params=(
-                Param("value", "number \\| string", False, "The quantity to convert.", "1"),
-                Param("from_unit", "string", True, "Source unit."),
-                Param("to_unit", "string", True, "Target unit."),
-                Param("assume", "string", False, "`common` resolves an ambiguous unit to its usual reading instead of failing."),
-                Param("precision", "integer", False, "Significant digits in the result.", "10"),
-            ),
-            examples=(
-                Example("Kilometres to miles, with the statute-mile assumption stated and the exact factor returned.", {"mode": "units", "value": 5, "from_unit": "km", "to_unit": "miles"}),
-                Example("Square feet to square metres — `sqft` is understood as an alias.", {"mode": "units", "value": 1500, "from_unit": "sqft", "to_unit": "sqm"}),
-                Example("Decimal to binary bytes, spelled out so the 7% difference is not a surprise.", {"mode": "units", "value": 1, "from_unit": "gigabyte", "to_unit": "gibibyte"}),
-                Example("An ambiguous unit resolved on purpose with `assume`, and the reading recorded.", {"mode": "units", "value": 1, "from_unit": "ton", "to_unit": "kg", "assume": "common"}),
-                Example("An Indian land unit, defined in the registry.", {"mode": "units", "value": 1, "from_unit": "bigha", "to_unit": "sqft"}),
-            ),
-            failures=(
-                Example("`ton` is three different masses. The options come back in `needs.options`.", {"mode": "units", "value": 1, "from_unit": "ton", "to_unit": "kg"}),
-                Example("`gallon` is US or imperial — a 20% difference.", {"mode": "units", "value": 1, "from_unit": "gallon", "to_unit": "liter"}),
-                Example("`oz` is a mass or a volume depending on what is being measured.", {"mode": "units", "value": 8, "from_unit": "oz", "to_unit": "g"}),
-                Example("`GB` may be decimal bytes, binary bytes or bits.", {"mode": "units", "value": 1, "from_unit": "GB", "to_unit": "MB"}),
-                Example("Dimensions that do not relate.", {"mode": "units", "value": 5, "from_unit": "km", "to_unit": "kg"}),
-                Example("An unknown unit.", {"mode": "units", "value": 5, "from_unit": "blorg", "to_unit": "km"}),
-                Example("`to_unit` is required.", {"mode": "units", "value": 5, "from_unit": "km"}),
+                Param("value", "The quantity to convert.", default="1"),
+                Param("from_unit", "Source unit.", required=True),
+                Param("to_unit", "Target unit.", required=True),
+                Param("assume", "`common` resolves an ambiguous unit to its usual reading instead of failing."),
+                Param("precision", "Significant digits in the result.", default="10"),
             ),
         ),
         Mode(
@@ -1257,20 +1246,11 @@ CONVERT = ToolDoc(
                 "resolve."
             ),
             params=(
-                Param("value", "number \\| string", False, "The temperature.", "1"),
-                Param("from_unit", "string", True, "Source scale: `C`, `F`, `K`, `degR`…"),
-                Param("to_unit", "string", True, "Target scale."),
-                Param("delta", "boolean", False, "Treat the value as a difference, not a reading.", "`false`"),
-                Param("precision", "integer", False, "Significant digits in the result.", "10"),
-            ),
-            examples=(
-                Example("An absolute reading.", {"mode": "temperature", "value": 100, "from_unit": "C", "to_unit": "F"}),
-                Example("The same number as a difference — a different answer, and the tool says which it used.", {"mode": "temperature", "value": 100, "from_unit": "C", "to_unit": "F", "delta": True}),
-                Example("Body temperature into kelvin.", {"mode": "temperature", "value": 98.6, "from_unit": "F", "to_unit": "K"}),
-            ),
-            failures=(
-                Example("A temperature cannot become a length.", {"mode": "temperature", "value": 100, "from_unit": "C", "to_unit": "km"}),
-                Example("`from_unit` is required.", {"mode": "temperature", "value": 100, "to_unit": "F"}),
+                Param("value", "The temperature.", default="1"),
+                Param("from_unit", "Source scale: `C`, `F`, `K`, `degR`…", required=True),
+                Param("to_unit", "Target scale.", required=True),
+                Param("delta", "Treat the value as a difference, not a reading.", default="`false`"),
+                Param("precision", "Significant digits in the result.", default="10"),
             ),
         ),
         Mode(
@@ -1285,24 +1265,14 @@ CONVERT = ToolDoc(
                 "error."
             ),
             params=(
-                Param("value", "number \\| string", False, "The amount.", "1"),
-                Param("from_unit", "string", True, "Source ISO 4217 code, e.g. `USD`."),
-                Param("to_unit", "string", True, "Target ISO 4217 code."),
-                Param("rate", "number", False, "Direct rate: 1 `from_unit` = `rate` `to_unit`."),
-                Param("rates", "object", False, "Rate table keyed by currency code."),
-                Param("base", "string", False, "Base currency of the `rates` table."),
-                Param("decimals", "integer", False, "Decimal places in the rounded value.", "2"),
-                Param("date", "string", False, "Echoed back as `as_of`; the tool does not use it to look anything up."),
-            ),
-            examples=(
-                Example("A direct rate.", {"mode": "currency", "value": 100, "from_unit": "USD", "to_unit": "INR", "rate": 83.42}),
-                Example("A rate table with a base currency — the cross rate is derived.", {"mode": "currency", "value": 250, "from_unit": "EUR", "to_unit": "INR", "rates": {"USD": 1, "EUR": 0.92, "INR": 83.42}, "base": "USD"}),
-                Example("A zero-decimal currency.", {"mode": "currency", "value": 100, "from_unit": "USD", "to_unit": "JPY", "rate": 147.2, "decimals": 0}),
-            ),
-            failures=(
-                Example("No rate and no table: the tool refuses to invent one and says where to get it.", {"mode": "currency", "value": 100, "from_unit": "USD", "to_unit": "INR"}),
-                Example("Currency codes must be three letters.", {"mode": "currency", "value": 100, "from_unit": "DOLLAR", "to_unit": "INR", "rate": 83.42}),
-                Example("A rate table that does not cover both sides.", {"mode": "currency", "value": 100, "from_unit": "AUD", "to_unit": "INR", "rates": {"USD": 1, "EUR": 0.92}}),
+                Param("value", "The amount.", default="1"),
+                Param("from_unit", "Source ISO 4217 code, e.g. `USD`.", required=True),
+                Param("to_unit", "Target ISO 4217 code.", required=True),
+                Param("rate", "Direct rate: 1 `from_unit` = `rate` `to_unit`."),
+                Param("rates", "Rate table keyed by currency code."),
+                Param("base", "Base currency of the `rates` table."),
+                Param("decimals", "Decimal places in the rounded value.", default="2"),
+                Param("date", "Echoed back as `as_of`; the tool does not use it to look anything up."),
             ),
         ),
         Mode(
@@ -1316,20 +1286,12 @@ CONVERT = ToolDoc(
                 "which path you get."
             ),
             params=(
-                Param("value", "number \\| string", False, "The quantity or amount.", "1"),
-                Param("from_unit", "string", True, "Source unit or currency code."),
-                Param("to_unit", "string", True, "Target unit or currency code."),
-                Param("rate", "number", False, "Rate, when the arguments resolve to a currency conversion."),
-                Param("rates", "object", False, "Rate table, as in `currency`."),
-                Param("assume", "string", False, "`common`, as in `units`."),
-            ),
-            examples=(
-                Example("Two unit names: the unit path.", {"mode": "auto", "value": 10, "from_unit": "km", "to_unit": "mi"}),
-                Example("Two ISO codes and a rate: the currency path.", {"mode": "auto", "value": 100, "from_unit": "USD", "to_unit": "INR", "rate": 83.42}),
-            ),
-            failures=(
-                Example("Detected as currency, but with no rate supplied.", {"mode": "auto", "value": 100, "from_unit": "USD", "to_unit": "INR"}),
-                Example("Detected as units, and still refused when ambiguous.", {"mode": "auto", "value": 1, "from_unit": "ton", "to_unit": "kg"}),
+                Param("value", "The quantity or amount.", default="1"),
+                Param("from_unit", "Source unit or currency code.", required=True),
+                Param("to_unit", "Target unit or currency code.", required=True),
+                Param("rate", "Rate, when the arguments resolve to a currency conversion."),
+                Param("rates", "Rate table, as in `currency`."),
+                Param("assume", "`common`, as in `units`."),
             ),
         ),
     ),
@@ -1342,7 +1304,6 @@ CONVERT = ToolDoc(
 
 HOLIDAYS = ToolDoc(
     name="holidays",
-    tagline="Public holidays by country and region",
     intro=(
         "Public holiday calendars for 150-plus countries, offline. A model's holiday knowledge is "
         "stale and hallucinates regional ones; this dataset is generated from published rules, so "
@@ -1356,12 +1317,12 @@ HOLIDAYS = ToolDoc(
         "Checking whether one specific date is a working day.",
         "Feeding `region`/`subdiv` into `datetime`'s `business_days` and `add`.",
     ),
-    fn=holidays_.holidays,
     related=(
         "[`datetime`](/docs/tools/datetime) `business_days` and `add` consume the same `region` and "
         "`subdiv` · [`geo_offline`](/docs/tools/geo_offline) `country` to resolve a country name to "
         "its ISO code."
     ),
+    examples=holidays_.EXAMPLES,
     modes=(
         Mode(
             name="list",
@@ -1373,22 +1334,12 @@ HOLIDAYS = ToolDoc(
                 "holiday list."
             ),
             params=(
-                Param("region", "string", True, "ISO country code (`IN`, `US`, `GB`); `UK` is accepted as `GB`."),
-                Param("year", "integer", False, "The year.", "current year"),
-                Param("years", "integer[]", False, "Several years at once."),
-                Param("month", "integer", False, "Filter the list to one month; long weekends still cover the year."),
-                Param("subdiv", "string", False, "State or province code for regional holidays."),
-                Param("categories", "string[]", False, "Holiday categories, where the country's calendar defines them."),
-            ),
-            examples=(
-                Example("India, one month, with the year's long weekends alongside.", {"mode": "list", "region": "IN", "year": 2025, "month": 8}),
-                Example("The US, November.", {"mode": "list", "region": "US", "year": 2025, "month": 11}),
-                Example("West Bengal's regional holidays, which the national list does not contain.", {"mode": "list", "region": "IN", "year": 2025, "month": 10, "subdiv": "WB"}),
-            ),
-            failures=(
-                Example("`region` is required.", {"mode": "list", "year": 2025}),
-                Example("An unsupported country code.", {"mode": "list", "region": "XX", "year": 2025}),
-                Example("An unknown subdivision — the valid codes come back in the message.", {"mode": "list", "region": "IN", "year": 2025, "subdiv": "ZZ"}),
+                Param("region", "ISO country code (`IN`, `US`, `GB`); `UK` is accepted as `GB`.", required=True),
+                Param("year", "The year.", default="current year"),
+                Param("years", "Several years at once."),
+                Param("month", "Filter the list to one month; long weekends still cover the year."),
+                Param("subdiv", "State or province code for regional holidays."),
+                Param("categories", "Holiday categories, where the country's calendar defines them."),
             ),
         ),
         Mode(
@@ -1400,20 +1351,10 @@ HOLIDAYS = ToolDoc(
                 "an ambiguous numeric date is refused here too."
             ),
             params=(
-                Param("region", "string", True, "ISO country code."),
-                Param("date", "string", False, "The date to check.", "`today`"),
-                Param("subdiv", "string", False, "State or province code."),
-                Param("locale", "string", False, "Country code deciding DD/MM vs MM/DD in `date`."),
-            ),
-            examples=(
-                Example("A national holiday.", {"mode": "check", "region": "IN", "date": "2025-08-15"}),
-                Example("The next day, which is not.", {"mode": "check", "region": "IN", "date": "2025-08-16"}),
-                Example("A date that is only a holiday in one state.", {"mode": "check", "region": "IN", "date": "2025-10-20", "subdiv": "WB"}),
-            ),
-            failures=(
-                Example("An ambiguous numeric date, refused exactly as `datetime` refuses it.", {"mode": "check", "region": "IN", "date": "03/04/2025"}),
-                Example("An unparseable date.", {"mode": "check", "region": "IN", "date": "diwali"}),
-                Example("`region` is required.", {"mode": "check", "date": "2025-08-15"}),
+                Param("region", "ISO country code.", required=True),
+                Param("date", "The date to check.", default="`today`"),
+                Param("subdiv", "State or province code."),
+                Param("locale", "Country code deciding DD/MM vs MM/DD in `date`."),
             ),
         ),
         Mode(
@@ -1425,18 +1366,10 @@ HOLIDAYS = ToolDoc(
                 "December still returns January's holidays."
             ),
             params=(
-                Param("region", "string", True, "ISO country code."),
-                Param("date", "string", False, "Start looking from here.", "`today`"),
-                Param("n", "integer", False, "How many holidays to return.", "5"),
-                Param("subdiv", "string", False, "State or province code."),
-            ),
-            examples=(
-                Example("The next three Indian holidays after a fixed date.", {"mode": "next", "region": "IN", "date": "2025-08-01", "n": 3}),
-                Example("The same question for the UK, crossing into the following year.", {"mode": "next", "region": "GB", "date": "2025-12-20", "n": 3}),
-            ),
-            failures=(
-                Example("`region` is required.", {"mode": "next", "date": "2025-08-01"}),
-                Example("An unsupported region.", {"mode": "next", "region": "Atlantis", "date": "2025-08-01"}),
+                Param("region", "ISO country code.", required=True),
+                Param("date", "Start looking from here.", default="`today`"),
+                Param("n", "How many holidays to return.", default="5"),
+                Param("subdiv", "State or province code."),
             ),
         ),
         Mode(
@@ -1448,10 +1381,6 @@ HOLIDAYS = ToolDoc(
                 "below is trimmed for length; the call returns all of them."
             ),
             params=(),
-            examples=(
-                Example("Every supported country code.", {"mode": "countries"}),
-            ),
-            failures=(),
             never_fails="This mode takes no parameters and always succeeds.",
         ),
         Mode(
@@ -1463,15 +1392,7 @@ HOLIDAYS = ToolDoc(
                 "holidays?”, not an error."
             ),
             params=(
-                Param("region", "string", True, "ISO country code."),
-            ),
-            examples=(
-                Example("India's state codes.", {"mode": "subdivisions", "region": "IN"}),
-                Example("The UK's four nations.", {"mode": "subdivisions", "region": "GB"}),
-            ),
-            failures=(
-                Example("`region` is required.", {"mode": "subdivisions"}),
-                Example("An unsupported region.", {"mode": "subdivisions", "region": "XX"}),
+                Param("region", "ISO country code.", required=True),
             ),
         ),
     ),
@@ -1484,7 +1405,6 @@ HOLIDAYS = ToolDoc(
 
 NUMBERS = ToolDoc(
     name="numbers",
-    tagline="Compare, round, format and allocate exactly",
     intro=(
         "Everything numeric that models get wrong for reasons that are not arithmetic: comparing "
         "`9.11` with `9.9` as decimals rather than version strings, rounding with a *stated* rule "
@@ -1499,12 +1419,12 @@ NUMBERS = ToolDoc(
         "Splitting a total across parts or weights so the shares reconcile to the cent.",
         "Reading messy human numbers, and spelling amounts out in words for documents.",
     ),
-    fn=numbers_mod.numbers,
     related=(
         "[`math`](/docs/tools/math) for the arithmetic itself · "
         "[`convert`](/docs/tools/convert) for units and currency conversion · "
         "[`collections`](/docs/tools/collections) `aggregate` for sums across records."
     ),
+    examples=numbers_mod.EXAMPLES,
     modes=(
         Mode(
             name="compare",
@@ -1516,19 +1436,9 @@ NUMBERS = ToolDoc(
                 "comparison and version-number instinct both get it wrong."
             ),
             params=(
-                Param("values", "any[]", True, "Two or more values. Strings, numbers, `₹1.2 Cr`, `2.5k`, `12%`, `(500)`."),
-                Param("a", "any", False, "First value, as an alternative to `values`."),
-                Param("b", "any", False, "Second value, as an alternative to `values`."),
-            ),
-            examples=(
-                Example("The canonical case.", {"mode": "compare", "values": ["9.11", "9.9"]}),
-                Example("Mixed human notation, all reduced to decimals before ordering.", {"mode": "compare", "values": ["1.2 Cr", "₹15,00,000", "2.5k", "0.03 bn"]}),
-                Example("Two values give a relation, a difference and a percentage change.", {"mode": "compare", "a": "1,250.50", "b": "1,499.99"}),
-            ),
-            failures=(
-                Example("Comparison needs at least two values.", {"mode": "compare", "values": ["9.11"]}),
-                Example("A value that is not a number.", {"mode": "compare", "values": ["nine point one", "9.9"]}),
-                Example("Neither `values` nor `a`/`b`.", {"mode": "compare"}),
+                Param("values", "Two or more values. Strings, numbers, `₹1.2 Cr`, `2.5k`, `12%`, `(500)`.", required=True),
+                Param("a", "First value, as an alternative to `values`."),
+                Param("b", "Second value, as an alternative to `values`."),
             ),
         ),
         Mode(
@@ -1542,23 +1452,11 @@ NUMBERS = ToolDoc(
                 "which is why 2.5 and 0.5 disagree between systems."
             ),
             params=(
-                Param("value", "number \\| string", True, "The value to round."),
-                Param("decimals", "integer", False, "Decimal places.", "0"),
-                Param("significant", "integer", False, "Round to this many significant figures instead."),
-                Param("nearest", "number \\| string", False, "Round to the nearest multiple of this."),
-                Param("rounding", "string", False, "Tie-break rule.", "`half_up`"),
-            ),
-            examples=(
-                Example("Half-up: the rule most humans mean.", {"mode": "round", "value": "2.5", "decimals": 0}),
-                Example("Bankers' rounding on the same value gives a different answer.", {"mode": "round", "value": "2.5", "decimals": 0, "rounding": "half_even"}),
-                Example("Three significant figures.", {"mode": "round", "value": "1234.5678", "significant": 3}),
-                Example("Cash rounding to the nearest five cents.", {"mode": "round", "value": "12.327", "nearest": "0.05"}),
-            ),
-            failures=(
-                Example("An unknown rounding rule lists the valid ones.", {"mode": "round", "value": "2.5", "rounding": "cosmic"}),
-                Example("Zero significant figures is meaningless.", {"mode": "round", "value": "2.5", "significant": 0}),
-                Example("A step must be positive.", {"mode": "round", "value": "2.5", "nearest": 0}),
-                Example("An unparseable value.", {"mode": "round", "value": "two and a half"}),
+                Param("value", "The value to round.", required=True),
+                Param("decimals", "Decimal places.", default="0"),
+                Param("significant", "Round to this many significant figures instead."),
+                Param("nearest", "Round to the nearest multiple of this."),
+                Param("rounding", "Tie-break rule.", default="`half_up`"),
             ),
         ),
         Mode(
@@ -1571,23 +1469,12 @@ NUMBERS = ToolDoc(
                 "`12M` elsewhere. `accounting: true` wraps negatives in parentheses."
             ),
             params=(
-                Param("value", "number \\| string", True, "The value to format."),
-                Param("locale", "string", False, "`en_IN`, `en_US`, `de_DE`, `fr_FR`, `de_CH`, `ja_JP`…", "`en_US`"),
-                Param("style", "`number` \\| `currency` \\| `percent` \\| `compact`", False, "Presentation style.", "`number`"),
-                Param("currency", "string", False, "ISO code, for `style: currency` or `compact`."),
-                Param("decimals", "integer", False, "Decimal places.", "style-dependent"),
-                Param("accounting", "boolean", False, "Show negatives in parentheses.", "`false`"),
-            ),
-            examples=(
-                Example("Indian digit grouping — two-digit groups above the thousand.", {"mode": "format", "value": 12345678.9, "locale": "en_IN"}),
-                Example("The same number for Germany, where the separators swap.", {"mode": "format", "value": 12345678.9, "locale": "de_DE"}),
-                Example("Currency, with the symbol and the right number of decimals.", {"mode": "format", "value": "1234567.891", "locale": "en_IN", "style": "currency", "currency": "INR"}),
-                Example("Compact Indian notation.", {"mode": "format", "value": 12345678, "locale": "en_IN", "style": "compact", "currency": "INR"}),
-                Example("A percentage, and an accounting-style negative.", {"mode": "format", "value": "-0.0725", "style": "percent", "accounting": True}),
-            ),
-            failures=(
-                Example("An unsupported locale.", {"mode": "format", "value": 1234.5, "locale": "xx_YY"}),
-                Example("An unparseable value.", {"mode": "format", "value": "lots"}),
+                Param("value", "The value to format.", required=True),
+                Param("locale", "`en_IN`, `en_US`, `de_DE`, `fr_FR`, `de_CH`, `ja_JP`…", default="`en_US`"),
+                Param("style", "Presentation style.", default="`number`"),
+                Param("currency", "ISO code, for `style: currency` or `compact`."),
+                Param("decimals", "Decimal places.", default="style-dependent"),
+                Param("accounting", "Show negatives in parentheses.", default="`false`"),
             ),
         ),
         Mode(
@@ -1602,27 +1489,13 @@ NUMBERS = ToolDoc(
                 "adjusted, so the arithmetic is auditable."
             ),
             params=(
-                Param("total", "number \\| string", True, "The amount to divide."),
-                Param("parts", "integer", False, "Split equally into this many parts."),
-                Param("weights", "number[] \\| object", False, "Proportional weights, or a `{label: weight}` map."),
-                Param("percentages", "number[]", False, "Weights that must sum to 100."),
-                Param("labels", "string[]", False, "Names for the parts."),
-                Param("decimals", "integer", False, "Minor-unit precision.", "2"),
-                Param("method", "`largest_remainder` \\| `first` \\| `last`", False, "Where leftover units go.", "`largest_remainder`"),
-            ),
-            examples=(
-                Example("100 split three ways: two parts get 33.33, one gets 33.34, and the total is exact.", {"mode": "allocate", "total": 100, "parts": 3}),
-                Example("A labelled weighted split.", {"mode": "allocate", "total": "10000", "weights": {"alice": 3, "bob": 2, "carol": 1}}),
-                Example("Percentages, validated to sum to 100.", {"mode": "allocate", "total": "1250.75", "percentages": [50, 30, 20], "labels": ["rent", "food", "savings"]}),
-                Example("The same split with the remainder forced onto the first part instead.", {"mode": "allocate", "total": 100, "parts": 3, "method": "first"}),
-            ),
-            failures=(
-                Example("Percentages that do not add to 100.", {"mode": "allocate", "total": 100, "percentages": [50, 30, 10]}),
-                Example("Neither `weights` nor `parts`.", {"mode": "allocate", "total": 100}),
-                Example("Labels that do not match the weights.", {"mode": "allocate", "total": 100, "weights": [1, 2, 3], "labels": ["a", "b"]}),
-                Example("A negative weight.", {"mode": "allocate", "total": 100, "weights": [3, -1]}),
-                Example("Weights that are all zero.", {"mode": "allocate", "total": 100, "weights": [0, 0]}),
-                Example("An unknown distribution method.", {"mode": "allocate", "total": 100, "parts": 3, "method": "random"}),
+                Param("total", "The amount to divide.", required=True),
+                Param("parts", "Split equally into this many parts."),
+                Param("weights", "Proportional weights, or a `{label: weight}` map."),
+                Param("percentages", "Weights that must sum to 100."),
+                Param("labels", "Names for the parts."),
+                Param("decimals", "Minor-unit precision.", default="2"),
+                Param("method", "Where leftover units go.", default="`largest_remainder`"),
             ),
         ),
         Mode(
@@ -1635,24 +1508,12 @@ NUMBERS = ToolDoc(
                 "capped at 10 000 terms."
             ),
             params=(
-                Param("kind", "string", False, "`arithmetic`, `geometric`, `range`, `fibonacci`, `primes`, `squares`.", "`arithmetic`"),
-                Param("start", "number \\| string", False, "First term.", "0 (1 for geometric)"),
-                Param("step", "number \\| string", False, "Common difference, for `arithmetic` and `range`.", "1"),
-                Param("ratio", "number \\| string", False, "Common ratio, for `geometric`.", "2"),
-                Param("end", "number \\| string", False, "Last value, for `arithmetic` and `range`."),
-                Param("n", "integer", False, "Number of terms, 1..10000."),
-            ),
-            examples=(
-                Example("An arithmetic sequence by count.", {"mode": "sequence", "kind": "arithmetic", "start": 100, "step": 25, "n": 6}),
-                Example("A range defined by its endpoints, with a fractional step.", {"mode": "sequence", "kind": "range", "start": "0", "end": "2", "step": "0.5"}),
-                Example("Fibonacci, exact.", {"mode": "sequence", "kind": "fibonacci", "n": 12}),
-                Example("A geometric sequence — compound growth without float drift.", {"mode": "sequence", "kind": "geometric", "start": "1000", "ratio": "1.08", "n": 5}),
-            ),
-            failures=(
-                Example("An unknown kind.", {"mode": "sequence", "kind": "harmonic", "n": 5}),
-                Example("An arithmetic sequence needs `n` or `end`.", {"mode": "sequence", "kind": "arithmetic", "start": 1, "step": 2}),
-                Example("A zero step never reaches the end.", {"mode": "sequence", "kind": "arithmetic", "start": 1, "step": 0, "end": 10}),
-                Example("The term cap is 10 000.", {"mode": "sequence", "kind": "fibonacci", "n": 20000}),
+                Param("kind", "`arithmetic`, `geometric`, `range`, `fibonacci`, `primes`, `squares`.", default="`arithmetic`"),
+                Param("start", "First term.", default="0 (1 for geometric)"),
+                Param("step", "Common difference, for `arithmetic` and `range`.", default="1"),
+                Param("ratio", "Common ratio, for `geometric`.", default="2"),
+                Param("end", "Last value, for `arithmetic` and `range`."),
+                Param("n", "Number of terms, 1..10000."),
             ),
         ),
         Mode(
@@ -1665,18 +1526,8 @@ NUMBERS = ToolDoc(
                 "interpretation lands in `assumptions`. Pass `values` to parse a batch in one call."
             ),
             params=(
-                Param("value", "any", False, "One value to parse."),
-                Param("values", "any[]", False, "Several values; the result becomes a list."),
-            ),
-            examples=(
-                Example("An Indian crore amount with a currency symbol.", {"mode": "parse", "value": "₹1.2 Cr"}),
-                Example("A batch, each with its reading explained.", {"mode": "parse", "values": ["(500)", "12%", "1,23,456.78", "2.5k", "1234,56"]}),
-            ),
-            failures=(
-                Example("Words are not numbers.", {"mode": "parse", "value": "twelve"}),
-                Example("Separators that cannot be reconciled.", {"mode": "parse", "value": "1,23.45.6"}),
-                Example("An unknown magnitude suffix.", {"mode": "parse", "value": "5 zillion"}),
-                Example("`value` is required.", {"mode": "parse"}),
+                Param("value", "One value to parse."),
+                Param("values", "Several values; the result becomes a list."),
             ),
         ),
         Mode(
@@ -1689,20 +1540,10 @@ NUMBERS = ToolDoc(
                 "rounding of those minor units is stated in `assumptions`."
             ),
             params=(
-                Param("value", "number \\| string", True, "The amount."),
-                Param("system", "`international` \\| `indian`", False, "Numbering system.", "`international`"),
-                Param("currency", "string", False, "ISO code; switches to the currency phrasing."),
-                Param("suffix_only", "boolean", False, "Append “only”, as invoices do.", "`true`"),
-            ),
-            examples=(
-                Example("International grouping.", {"mode": "to_words", "value": 1234567, "system": "international"}),
-                Example("The same number in the Indian system.", {"mode": "to_words", "value": 1234567, "system": "indian"}),
-                Example("Invoice phrasing with minor units.", {"mode": "to_words", "value": "125430.75", "system": "indian", "currency": "INR"}),
-                Example("A negative with a fractional part.", {"mode": "to_words", "value": "-42.5"}),
-            ),
-            failures=(
-                Example("An unknown numbering system.", {"mode": "to_words", "value": 1234, "system": "roman"}),
-                Example("An unparseable value.", {"mode": "to_words", "value": "a lot"}),
+                Param("value", "The amount.", required=True),
+                Param("system", "Numbering system.", default="`international`"),
+                Param("currency", "ISO code; switches to the currency phrasing."),
+                Param("suffix_only", "Append “only”, as invoices do.", default="`true`"),
             ),
         ),
     ),
@@ -1713,16 +1554,8 @@ NUMBERS = ToolDoc(
 # text
 # --------------------------------------------------------------------------- #
 
-_LOG_A = "2025-08-26 09:00 INFO started\n2025-08-26 09:05 WARN retrying\n2025-08-26 09:06 INFO ready"
-_LOG_B = "2025-08-26 09:00 INFO started\n2025-08-26 09:05 ERROR timed out\n2025-08-26 09:06 INFO ready\n2025-08-26 09:07 INFO done"
-_CONTACT = (
-    "Ping ops@example.com or billing@mailinator.com, docs at https://leftbrain.dev/docs, "
-    "invoice ₹1,25,000 due 2025-09-15, GST 19ABCDE1234F1ZX, call +91 98765 43210. #urgent @sayantan"
-)
-
 TEXT = ToolDoc(
     name="text",
-    tagline="Count, match, diff and reshape text by codepoint",
     intro=(
         "Text operations a tokeniser cannot do. Counts are by Unicode codepoint, so the “how many r "
         "in strawberry” class of question is answered by counting rather than by guessing, and an "
@@ -1736,12 +1569,12 @@ TEXT = ToolDoc(
         "Sorting strings in natural order (`file2` before `file10`) or removing near-duplicates.",
         "Pulling emails, URLs, money, dates, PAN/GSTIN and other entities out of free text.",
     ),
-    fn=text_mod.text,
     related=(
         "[`collections`](/docs/tools/collections) for the same operations over records rather than "
         "strings · [`validate`](/docs/tools/validate) to check the identifiers `extract` finds · "
         "[`encode`](/docs/tools/encode) for hashing and encoding the text itself."
     ),
+    examples=text_mod.EXAMPLES,
     modes=(
         Mode(
             name="count",
@@ -1754,22 +1587,11 @@ TEXT = ToolDoc(
                 "string, optionally overlapping."
             ),
             params=(
-                Param("text", "string", True, "The text to measure."),
-                Param("what", "string", False, "`all`, `occurrences`, or the name of one statistic.", "`all`"),
-                Param("substring", "string", False, "The needle, for `what: occurrences`."),
-                Param("case_sensitive", "boolean", False, "Match case when counting occurrences.", "`true`"),
-                Param("overlapping", "boolean", False, "Count overlapping matches.", "`false`"),
-            ),
-            examples=(
-                Example("How many `r` in strawberry — counted, with positions.", {"mode": "count", "text": "strawberry", "what": "occurrences", "substring": "r"}),
-                Example("Codepoints versus bytes: a family emoji is one glyph, seven codepoints and 25 bytes.", {"mode": "count", "text": "Café 👨‍👩‍👧‍👦"}),
-                Example("Overlapping matches, which a plain `count()` misses.", {"mode": "count", "text": "aaaa", "what": "occurrences", "substring": "aa", "overlapping": True}),
-                Example("Just one statistic.", {"mode": "count", "text": _LOG_A, "what": "lines"}),
-            ),
-            failures=(
-                Example("`text` is required.", {"mode": "count"}),
-                Example("An unknown statistic lists the valid ones.", {"mode": "count", "text": "abc", "what": "vowels"}),
-                Example("Counting occurrences needs a `substring`.", {"mode": "count", "text": "abc", "what": "occurrences"}),
+                Param("text", "The text to measure.", required=True),
+                Param("what", "`all`, `occurrences`, or the name of one statistic.", default="`all`"),
+                Param("substring", "The needle, for `what: occurrences`."),
+                Param("case_sensitive", "Match case when counting occurrences.", default="`true`"),
+                Param("overlapping", "Count overlapping matches.", default="`false`"),
             ),
         ),
         Mode(
@@ -1782,20 +1604,10 @@ TEXT = ToolDoc(
                 "and the cap is reported in `warnings`."
             ),
             params=(
-                Param("text", "string", True, "The text to search."),
-                Param("pattern", "string", True, "A Python regular expression."),
-                Param("flags", "string", False, "Any of `imsxua`."),
-                Param("limit", "integer", False, "Maximum matches returned.", "1000"),
-            ),
-            examples=(
-                Example("Every four-digit run in a line.", {"mode": "regex_match", "text": "Order 1234 shipped 2025-08-26 to PIN 560001", "pattern": "\\d{4}"}),
-                Example("Named groups come back separately.", {"mode": "regex_match", "text": "2025-08-26", "pattern": "(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})"}),
-                Example("Case-insensitive matching with a flag.", {"mode": "regex_match", "text": "Error: ERROR while erroring", "pattern": "error", "flags": "i"}),
-            ),
-            failures=(
-                Example("A pattern that does not compile, with the position of the problem.", {"mode": "regex_match", "text": "abc", "pattern": "([a-z"}),
-                Example("An unknown flag letter.", {"mode": "regex_match", "text": "abc", "pattern": "a", "flags": "z"}),
-                Example("`pattern` is required.", {"mode": "regex_match", "text": "abc"}),
+                Param("text", "The text to search.", required=True),
+                Param("pattern", "A Python regular expression.", required=True),
+                Param("flags", "Any of `imsxua`."),
+                Param("limit", "Maximum matches returned.", default="1000"),
             ),
         ),
         Mode(
@@ -1807,21 +1619,11 @@ TEXT = ToolDoc(
                 "named references work in the replacement; `count` limits how many are replaced."
             ),
             params=(
-                Param("text", "string", True, "The text to transform."),
-                Param("pattern", "string", True, "A Python regular expression."),
-                Param("replacement", "string", True, "Replacement, with `\\1`-style backreferences."),
-                Param("flags", "string", False, "Any of `imsxua`."),
-                Param("count", "integer", False, "Replace at most this many; 0 means all.", "0"),
-            ),
-            examples=(
-                Example("Masking digits.", {"mode": "regex_replace", "text": "call 98765 43210 now", "pattern": "\\d", "replacement": "#"}),
-                Example("Reordering with backreferences.", {"mode": "regex_replace", "text": "2025-08-26", "pattern": "(\\d{4})-(\\d{2})-(\\d{2})", "replacement": "\\3/\\2/\\1"}),
-                Example("Only the first two, and the count proves it.", {"mode": "regex_replace", "text": "a a a a", "pattern": "a", "replacement": "b", "count": 2}),
-            ),
-            failures=(
-                Example("`replacement` is required — an empty string is fine, but it must be given.", {"mode": "regex_replace", "text": "abc", "pattern": "a"}),
-                Example("A backreference to a group that does not exist.", {"mode": "regex_replace", "text": "abc", "pattern": "a", "replacement": "\\9"}),
-                Example("A pattern that does not compile.", {"mode": "regex_replace", "text": "abc", "pattern": "a(", "replacement": "x"}),
+                Param("text", "The text to transform.", required=True),
+                Param("pattern", "A Python regular expression.", required=True),
+                Param("replacement", "Replacement, with `\\1`-style backreferences.", required=True),
+                Param("flags", "Any of `imsxua`."),
+                Param("count", "Replace at most this many; 0 means all.", default="0"),
             ),
         ),
         Mode(
@@ -1834,17 +1636,9 @@ TEXT = ToolDoc(
                 "two documents differ."
             ),
             params=(
-                Param("a", "string", True, "The original text."),
-                Param("b", "string", True, "The changed text."),
-                Param("granularity", "`line` \\| `word` \\| `char`", False, "Unit of comparison.", "`line`"),
-            ),
-            examples=(
-                Example("A line diff, with the unified patch included.", {"mode": "diff", "a": _LOG_A, "b": _LOG_B}),
-                Example("A word-level diff of a single sentence.", {"mode": "diff", "a": "the quick brown fox", "b": "the quiet brown dog", "granularity": "word"}),
-            ),
-            failures=(
-                Example("An unknown granularity.", {"mode": "diff", "a": "x", "b": "y", "granularity": "sentence"}),
-                Example("Both sides are required.", {"mode": "diff", "a": "x"}),
+                Param("a", "The original text.", required=True),
+                Param("b", "The changed text.", required=True),
+                Param("granularity", "Unit of comparison.", default="`line`"),
             ),
         ),
         Mode(
@@ -1857,19 +1651,11 @@ TEXT = ToolDoc(
                 "whether the input was already sorted."
             ),
             params=(
-                Param("items", "any[]", True, "The list to sort."),
-                Param("key", "string", False, "Field to sort on, when the items are objects."),
-                Param("order", "`asc` \\| `desc`", False, "Sort direction.", "`asc`"),
-                Param("natural", "boolean", False, "Digit runs compare numerically.", "`true`"),
-                Param("case_insensitive", "boolean", False, "Fold case before comparing.", "`true`"),
-            ),
-            examples=(
-                Example("Natural ordering: `file2` before `file10`.", {"mode": "sort", "items": ["file10.txt", "file2.txt", "File1.txt", "file20.txt"]}),
-                Example("Sorting objects by a field, descending.", {"mode": "sort", "items": [{"n": "b", "v": 2}, {"n": "a", "v": 10}, {"n": "c", "v": 7}], "key": "v", "order": "desc"}),
-                Example("Turning natural ordering off gives plain lexicographic order.", {"mode": "sort", "items": ["file10.txt", "file2.txt"], "natural": False}),
-            ),
-            failures=(
-                Example("`items` must be a list.", {"mode": "sort", "items": "a,b,c"}),
+                Param("items", "The list to sort.", required=True),
+                Param("key", "Field to sort on, when the items are objects."),
+                Param("order", "Sort direction.", default="`asc`"),
+                Param("natural", "Digit runs compare numerically.", default="`true`"),
+                Param("case_insensitive", "Fold case before comparing.", default="`true`"),
             ),
             never_fails="",
         ),
@@ -1883,17 +1669,10 @@ TEXT = ToolDoc(
                 "`key` dedupes objects on one field."
             ),
             params=(
-                Param("items", "any[]", True, "The list to dedupe."),
-                Param("key", "string", False, "Field to compare, when the items are objects."),
-                Param("case_insensitive", "boolean", False, "Fold case before comparing.", "`false`"),
-                Param("normalize_whitespace", "boolean", False, "Collapse runs of whitespace before comparing.", "`true`"),
-            ),
-            examples=(
-                Example("Case and whitespace variations collapsed, with each duplicate traced back.", {"mode": "dedupe", "items": ["Apple", "  apple ", "APPLE", "banana", "banana"], "case_insensitive": True}),
-                Example("Deduping records on one field.", {"mode": "dedupe", "items": [{"id": 1, "n": "a"}, {"id": 2, "n": "b"}, {"id": 1, "n": "c"}], "key": "id"}),
-            ),
-            failures=(
-                Example("`items` must be a list.", {"mode": "dedupe", "items": {"a": 1}}),
+                Param("items", "The list to dedupe.", required=True),
+                Param("key", "Field to compare, when the items are objects."),
+                Param("case_insensitive", "Fold case before comparing.", default="`false`"),
+                Param("normalize_whitespace", "Collapse runs of whitespace before comparing.", default="`true`"),
             ),
         ),
         Mode(
@@ -1907,17 +1686,9 @@ TEXT = ToolDoc(
                 "trusting it."
             ),
             params=(
-                Param("text", "string", True, "The text to scan."),
-                Param("what", "string \\| string[]", False, "One kind, a list of kinds, or `all`.", "`all`"),
-                Param("unique", "boolean", False, "Collapse repeated hits.", "`true`"),
-            ),
-            examples=(
-                Example("A few specific kinds.", {"mode": "extract", "text": _CONTACT, "what": ["emails", "urls", "money"]}),
-                Example("Everything the library knows about, in one pass.", {"mode": "extract", "text": _CONTACT}),
-            ),
-            failures=(
-                Example("An unknown kind lists the valid ones.", {"mode": "extract", "text": "abc", "what": "vehicles"}),
-                Example("`text` is required.", {"mode": "extract", "what": "emails"}),
+                Param("text", "The text to scan.", required=True),
+                Param("what", "One kind, a list of kinds, or `all`.", default="`all`"),
+                Param("unique", "Collapse repeated hits.", default="`true`"),
             ),
         ),
         Mode(
@@ -1929,18 +1700,10 @@ TEXT = ToolDoc(
                 "case-insensitive by default; results stop at 200 hits."
             ),
             params=(
-                Param("text", "string", True, "The text to search."),
-                Param("substring", "string", True, "The string to find."),
-                Param("case_sensitive", "boolean", False, "Match case.", "`false`"),
-                Param("context", "integer", False, "Characters of context on each side.", "40"),
-            ),
-            examples=(
-                Example("Case-insensitive search with line numbers.", {"mode": "find", "text": _LOG_B, "substring": "info", "context": 12}),
-                Example("The same search, case-sensitive, finds fewer.", {"mode": "find", "text": _LOG_B, "substring": "info", "case_sensitive": True}),
-            ),
-            failures=(
-                Example("`substring` is required.", {"mode": "find", "text": "abc"}),
-                Example("`text` is required.", {"mode": "find", "substring": "abc"}),
+                Param("text", "The text to search.", required=True),
+                Param("substring", "The string to find.", required=True),
+                Param("case_sensitive", "Match case.", default="`false`"),
+                Param("context", "Characters of context on each side.", default="40"),
             ),
         ),
     ),
@@ -1951,17 +1714,8 @@ TEXT = ToolDoc(
 # collections
 # --------------------------------------------------------------------------- #
 
-_ORDERS = [
-    {"id": "A-1", "region": "north", "amount": "1200.50", "rep": {"name": "Asha"}},
-    {"id": "A-2", "region": "south", "amount": "890.00", "rep": {"name": "Bo"}},
-    {"id": "A-3", "region": "north", "amount": "430.25", "rep": {"name": "Asha"}},
-    {"id": "A-4", "region": "east", "amount": "2100.00", "rep": {"name": "Chen"}},
-    {"id": "A-5", "region": "south", "amount": "75.75", "rep": {"name": "Bo"}},
-]
-
 COLLECTIONS = ToolDoc(
     name="collections",
-    tagline="Set logic, grouping and reshaping over lists and records",
     intro=(
         "Exact list and record logic — the operations a model starts quietly dropping items from "
         "somewhere past twenty entries. Compare two lists and get both differences named, group "
@@ -1976,12 +1730,12 @@ COLLECTIONS = ToolDoc(
         "Reshaping JSON: flatten for a spreadsheet, unflatten from a form payload.",
         "Pagination and chunking before handing work to another system.",
     ),
-    fn=collections_.collections,
     related=(
         "[`text`](/docs/tools/text) `sort`/`dedupe` for plain strings · "
         "[`numbers`](/docs/tools/numbers) for formatting the aggregates · "
         "[`validate`](/docs/tools/validate) `assert` to check the records themselves."
     ),
+    examples=collections_.EXAMPLES,
     modes=(
         Mode(
             name="set_ops",
@@ -1994,20 +1748,11 @@ COLLECTIONS = ToolDoc(
                 "collapsed, and that is stated in `assumptions`."
             ),
             params=(
-                Param("a", "any[]", True, "First list."),
-                Param("b", "any[]", True, "Second list."),
-                Param("op", "`compare` \\| `union` \\| `intersection` \\| `difference` \\| `symmetric_difference`", False, "Which result to highlight.", "`compare`"),
-                Param("key", "string", False, "Dotted path to compare on, for objects."),
-                Param("case_insensitive", "boolean", False, "Fold case on string comparisons.", "`false`"),
-            ),
-            examples=(
-                Example("Two lists of SKUs: both directions of difference at once.", {"mode": "set_ops", "a": ["A1", "B2", "C3", "D4"], "b": ["B2", "D4", "E5"]}),
-                Example("A union, with the duplicate collapse reported.", {"mode": "set_ops", "a": ["x", "y", "y"], "b": ["y", "z"], "op": "union"}),
-                Example("Comparing records on one field rather than whole objects.", {"mode": "set_ops", "a": [{"sku": "A1", "qty": 2}, {"sku": "B2", "qty": 1}], "b": [{"sku": "B2", "qty": 9}], "op": "difference", "key": "sku"}),
-            ),
-            failures=(
-                Example("Both sides must be lists.", {"mode": "set_ops", "a": ["x"], "b": "y"}),
-                Example("An unknown operation.", {"mode": "set_ops", "a": ["x"], "b": ["y"], "op": "xor"}),
+                Param("a", "First list.", required=True),
+                Param("b", "Second list.", required=True),
+                Param("op", "Which result to highlight.", default="`compare`"),
+                Param("key", "Dotted path to compare on, for objects."),
+                Param("case_insensitive", "Fold case on string comparisons.", default="`false`"),
             ),
         ),
         Mode(
@@ -2020,20 +1765,11 @@ COLLECTIONS = ToolDoc(
                 "not drift. Members are included unless `include_items` is false."
             ),
             params=(
-                Param("items", "object[]", True, "The records."),
-                Param("key", "string", True, "Dotted path to group on."),
-                Param("agg_field", "string", False, "Dotted path the aggregates are computed over."),
-                Param("agg", "string \\| string[]", False, "Which aggregates to compute.", "`[count]`"),
-                Param("include_items", "boolean", False, "Include each group's members.", "`true`"),
-            ),
-            examples=(
-                Example("Sales by region, with an exact decimal sum and average.", {"mode": "group_by", "items": _ORDERS, "key": "region", "agg_field": "amount", "agg": ["sum", "avg", "count"], "include_items": False}),
-                Example("Grouping on a nested path, keeping the members.", {"mode": "group_by", "items": _ORDERS, "key": "rep.name", "include_items": True}),
-            ),
-            failures=(
-                Example("`key` is required.", {"mode": "group_by", "items": _ORDERS}),
-                Example("`items` must be a list.", {"mode": "group_by", "items": {"a": 1}, "key": "a"}),
-                Example("An unknown aggregate.", {"mode": "group_by", "items": _ORDERS, "key": "region", "agg_field": "amount", "agg": ["median"]}),
+                Param("items", "The records.", required=True),
+                Param("key", "Dotted path to group on.", required=True),
+                Param("agg_field", "Dotted path the aggregates are computed over."),
+                Param("agg", "Which aggregates to compute.", default="`[count]`"),
+                Param("include_items", "Include each group's members.", default="`true`"),
             ),
         ),
         Mode(
@@ -2046,17 +1782,9 @@ COLLECTIONS = ToolDoc(
                 "stated in `assumptions`. Omit `field` to aggregate the items themselves."
             ),
             params=(
-                Param("items", "any[]", True, "The records or values."),
-                Param("field", "string", False, "Dotted path to aggregate; omit to use the items themselves."),
-                Param("ops", "string \\| string[]", False, "Which aggregates to compute.", "`[count, sum, avg, min, max]`"),
-            ),
-            examples=(
-                Example("Totals across a field.", {"mode": "aggregate", "items": _ORDERS, "field": "amount"}),
-                Example("Distinct values of a field.", {"mode": "aggregate", "items": _ORDERS, "field": "region", "ops": ["count", "count_distinct", "list"]}),
-            ),
-            failures=(
-                Example("`items` must be a list.", {"mode": "aggregate", "items": "1,2,3"}),
-                Example("An unknown aggregate.", {"mode": "aggregate", "items": _ORDERS, "field": "amount", "ops": ["stdev"]}),
+                Param("items", "The records or values.", required=True),
+                Param("field", "Dotted path to aggregate; omit to use the items themselves."),
+                Param("ops", "Which aggregates to compute.", default="`[count, sum, avg, min, max]`"),
             ),
         ),
         Mode(
@@ -2068,18 +1796,10 @@ COLLECTIONS = ToolDoc(
                 "`short_names` uses the last path segment as the key."
             ),
             params=(
-                Param("items", "object[]", True, "The records."),
-                Param("fields", "string \\| string[]", True, "Dotted paths to keep."),
-                Param("rename", "object", False, "Map of path to output name."),
-                Param("short_names", "boolean", False, "Use the last path segment as the key.", "`false`"),
-            ),
-            examples=(
-                Example("Flattening a nested field into a table-shaped row.", {"mode": "pick_fields", "items": _ORDERS, "fields": ["id", "rep.name", "amount"], "short_names": True}),
-                Example("Renaming as you project; a missing path becomes null.", {"mode": "pick_fields", "items": _ORDERS, "fields": ["id", "rep.email"], "rename": {"rep.email": "contact"}}),
-            ),
-            failures=(
-                Example("`fields` is required.", {"mode": "pick_fields", "items": _ORDERS}),
-                Example("`items` must be a list.", {"mode": "pick_fields", "items": {"id": 1}, "fields": ["id"]}),
+                Param("items", "The records.", required=True),
+                Param("fields", "Dotted paths to keep.", required=True),
+                Param("rename", "Map of path to output name."),
+                Param("short_names", "Use the last path segment as the key.", default="`false`"),
             ),
         ),
         Mode(
@@ -2092,19 +1812,10 @@ COLLECTIONS = ToolDoc(
                 "the joining character."
             ),
             params=(
-                Param("data", "object \\| any[]", True, "The structure to flatten."),
-                Param("depth", "integer", False, "Maximum levels to descend.", "unlimited"),
-                Param("separator", "string", False, "Key separator.", "`.`"),
-                Param("flatten_lists", "boolean", False, "Index into lists as well as objects.", "`true`"),
-            ),
-            examples=(
-                Example("A nested object flattened to dotted keys.", {"mode": "flatten", "data": {"order": {"id": "A-1", "rep": {"name": "Asha"}}, "tags": ["rush", "gift"]}}),
-                Example("Limiting the depth leaves deeper structures intact.", {"mode": "flatten", "data": {"order": {"id": "A-1", "rep": {"name": "Asha"}}}, "depth": 2}),
-                Example("A list of lists, flattened.", {"mode": "flatten", "data": [1, [2, [3, 4]], 5]}),
-            ),
-            failures=(
-                Example("`data` must be a list or an object.", {"mode": "flatten", "data": "a.b.c"}),
-                Example("`data` is required.", {"mode": "flatten"}),
+                Param("data", "The structure to flatten.", required=True),
+                Param("depth", "Maximum levels to descend.", default="unlimited"),
+                Param("separator", "Key separator.", default="`.`"),
+                Param("flatten_lists", "Index into lists as well as objects.", default="`true`"),
             ),
         ),
         Mode(
@@ -2116,16 +1827,8 @@ COLLECTIONS = ToolDoc(
                 "nulls rather than shifting entries."
             ),
             params=(
-                Param("data", "object", True, "A flat object with dotted keys."),
-                Param("separator", "string", False, "Key separator.", "`.`"),
-            ),
-            examples=(
-                Example("Dotted keys back into a nested object.", {"mode": "unflatten", "data": {"order.id": "A-1", "order.rep.name": "Asha", "order.total": 1200.5}}),
-                Example("Bracketed indices rebuild arrays.", {"mode": "unflatten", "data": {"items[0].sku": "A1", "items[1].sku": "B2", "items[1].qty": 3}}),
-            ),
-            failures=(
-                Example("`data` must be a flat object.", {"mode": "unflatten", "data": ["a.b"]}),
-                Example("`data` is required.", {"mode": "unflatten"}),
+                Param("data", "A flat object with dotted keys.", required=True),
+                Param("separator", "Key separator.", default="`.`"),
             ),
         ),
         Mode(
@@ -2138,18 +1841,9 @@ COLLECTIONS = ToolDoc(
                 "happened."
             ),
             params=(
-                Param("items", "any[]", True, "The full list."),
-                Param("page", "integer", False, "1-based page number.", "1"),
-                Param("per_page", "integer", False, "Items per page.", "20"),
-            ),
-            examples=(
-                Example("The middle page of five items, three to a page.", {"mode": "paginate", "items": _ORDERS, "page": 2, "per_page": 3}),
-                Example("A page past the end: empty, and the flags explain it.", {"mode": "paginate", "items": _ORDERS, "page": 9, "per_page": 3}),
-            ),
-            failures=(
-                Example("Page numbers start at 1.", {"mode": "paginate", "items": _ORDERS, "page": 0}),
-                Example("`per_page` must be at least 1.", {"mode": "paginate", "items": _ORDERS, "per_page": 0}),
-                Example("`items` must be a list.", {"mode": "paginate", "items": "abc"}),
+                Param("items", "The full list.", required=True),
+                Param("page", "1-based page number.", default="1"),
+                Param("per_page", "Items per page.", default="20"),
             ),
         ),
         Mode(
@@ -2161,16 +1855,9 @@ COLLECTIONS = ToolDoc(
                 "record; `case_insensitive` folds case on strings."
             ),
             params=(
-                Param("items", "any[]", True, "The list to inspect."),
-                Param("key", "string", False, "Dotted path to compare, for objects."),
-                Param("case_insensitive", "boolean", False, "Fold case on string comparisons.", "`false`"),
-            ),
-            examples=(
-                Example("Repeated addresses, matched without regard to case.", {"mode": "find_duplicates", "items": ["a@x.com", "b@x.com", "A@X.com", "c@x.com", "b@x.com"], "case_insensitive": True}),
-                Example("Duplicate records on one field.", {"mode": "find_duplicates", "items": _ORDERS, "key": "rep.name"}),
-            ),
-            failures=(
-                Example("`items` must be a list.", {"mode": "find_duplicates", "items": "abc"}),
+                Param("items", "The list to inspect.", required=True),
+                Param("key", "Dotted path to compare, for objects."),
+                Param("case_insensitive", "Fold case on string comparisons.", default="`false`"),
             ),
         ),
         Mode(
@@ -2183,18 +1870,10 @@ COLLECTIONS = ToolDoc(
                 "case-insensitively. `changed` says whether the order actually moved."
             ),
             params=(
-                Param("items", "object[]", True, "The records."),
-                Param("keys", "object[] \\| string[]", False, "Sort keys: `{field, order}` or bare field names."),
-                Param("key", "string", False, "A single sort field, as a shorthand for `keys`."),
-                Param("order", "`asc` \\| `desc`", False, "Direction for the `key` shorthand.", "`asc`"),
-            ),
-            examples=(
-                Example("Region ascending, then amount descending within each region.", {"mode": "sort_by", "items": _ORDERS, "keys": [{"field": "region"}, {"field": "amount", "order": "desc"}]}),
-                Example("The single-key shorthand.", {"mode": "sort_by", "items": _ORDERS, "key": "amount", "order": "desc"}),
-            ),
-            failures=(
-                Example("Sort keys are required.", {"mode": "sort_by", "items": _ORDERS}),
-                Example("`items` must be a list.", {"mode": "sort_by", "items": "abc", "key": "id"}),
+                Param("items", "The records.", required=True),
+                Param("keys", "Sort keys: `{field, order}` or bare field names."),
+                Param("key", "A single sort field, as a shorthand for `keys`."),
+                Param("order", "Direction for the `key` shorthand.", default="`asc`"),
             ),
         ),
         Mode(
@@ -2206,17 +1885,9 @@ COLLECTIONS = ToolDoc(
                 "their sizes, which is what a batching loop actually needs."
             ),
             params=(
-                Param("items", "any[]", True, "The list to split."),
-                Param("size", "integer", False, "Maximum items per chunk."),
-                Param("n", "integer", False, "Number of chunks; sizes differ by at most 1."),
-            ),
-            examples=(
-                Example("Fixed-size batches.", {"mode": "chunk", "items": [1, 2, 3, 4, 5, 6, 7], "size": 3}),
-                Example("A fixed number of near-equal chunks.", {"mode": "chunk", "items": [1, 2, 3, 4, 5, 6, 7], "n": 3}),
-            ),
-            failures=(
-                Example("One of `size` or `n` is required.", {"mode": "chunk", "items": [1, 2, 3]}),
-                Example("`items` must be a list.", {"mode": "chunk", "items": "abc", "size": 2}),
+                Param("items", "The list to split.", required=True),
+                Param("size", "Maximum items per chunk."),
+                Param("n", "Number of chunks; sizes differ by at most 1."),
             ),
         ),
     ),
@@ -2227,34 +1898,8 @@ COLLECTIONS = ToolDoc(
 # validate
 # --------------------------------------------------------------------------- #
 
-_LEAVE_DOC = {
-    "employee": {"id": "E-19", "email": "asha@example.com"},
-    "leave": {"type": "casual", "days": 3, "start": "2025-09-01"},
-    "approvals": ["manager"],
-}
-_LEAVE_SCHEMA = {
-    "type": "object",
-    "required": ["employee", "leave"],
-    "properties": {
-        "employee": {
-            "type": "object",
-            "required": ["id", "email"],
-            "properties": {"id": {"type": "string"}, "email": {"type": "string", "format": "email"}},
-        },
-        "leave": {
-            "type": "object",
-            "required": ["type", "days"],
-            "properties": {
-                "type": {"enum": ["casual", "sick", "earned"]},
-                "days": {"type": "integer", "minimum": 1, "maximum": 2},
-            },
-        },
-    },
-}
-
 VALIDATE = ToolDoc(
     name="validate",
-    tagline="Check instead of judge",
     intro=(
         "The objective replacement for an LLM judge. `assert` evaluates a list of "
         "`{path, op, value}` rules over a JSON document and returns pass/fail per rule, the actual "
@@ -2270,12 +1915,12 @@ VALIDATE = ToolDoc(
         "Checking an email, URL, phone number or IP without a network round trip.",
         "Inspecting SQL before execution: what it writes, which tables, whether it has a WHERE.",
     ),
-    fn=validate_mod.validate,
     related=(
         "[`text`](/docs/tools/text) `extract` to find identifiers before checking them · "
         "[`collections`](/docs/tools/collections) to reshape a document into the paths your rules "
         "expect · [`encode`](/docs/tools/encode) `jwt_decode` for token claims."
     ),
+    examples=validate_mod.EXAMPLES,
     modes=(
         Mode(
             name="json_schema",
@@ -2288,16 +1933,8 @@ VALIDATE = ToolDoc(
                 "schema that is itself malformed *is* an error."
             ),
             params=(
-                Param("schema", "object", True, "The JSON Schema."),
-                Param("data", "any", False, "The document to validate."),
-            ),
-            examples=(
-                Example("A document that fails two constraints, each located by path.", {"mode": "json_schema", "schema": _LEAVE_SCHEMA, "data": _LEAVE_DOC}),
-                Example("The same schema against a document that passes.", {"mode": "json_schema", "schema": _LEAVE_SCHEMA, "data": {"employee": {"id": "E-19", "email": "asha@example.com"}, "leave": {"type": "sick", "days": 2}}}),
-            ),
-            failures=(
-                Example("`schema` is required.", {"mode": "json_schema", "data": {"a": 1}}),
-                Example("A schema that is not a valid schema.", {"mode": "json_schema", "schema": {"type": "nonsense"}, "data": {}}),
+                Param("schema", "The JSON Schema.", required=True),
+                Param("data", "The document to validate."),
             ),
         ),
         Mode(
@@ -2316,19 +1953,8 @@ VALIDATE = ToolDoc(
                 "weighted `score`."
             ),
             params=(
-                Param("data", "any", False, "The document the rules are evaluated against."),
-                Param("rules", "object[] \\| object", True, "The rules: `{path, op, value, id?, message?, weight?}`."),
-            ),
-            examples=(
-                Example("A policy check that fails one rule, with a score and a human message.", {"mode": "assert", "data": _LEAVE_DOC, "rules": [{"id": "days", "path": "leave.days", "op": "lte", "value": 2, "message": "casual leave is capped at 2 days", "weight": 3}, {"id": "type", "path": "leave.type", "op": "in", "value": ["casual", "sick", "earned"]}, {"id": "email", "path": "employee.email", "op": "is_email"}, {"id": "start", "path": "leave.start", "op": "after", "value": "2025-08-31"}]}),
-                Example("String numbers compared as numbers, and a list checked for uniqueness.", {"mode": "assert", "data": {"total": "1200.50", "skus": ["A1", "B2", "A1"]}, "rules": [{"path": "total", "op": "gt", "value": 1000}, {"path": "skus", "op": "unique"}, {"path": "skus", "op": "len_eq", "value": 3}]}),
-                Example("`each` applies a sub-rule to every element of a list.", {"mode": "assert", "data": {"lines": [{"qty": 2}, {"qty": 0}]}, "rules": [{"path": "lines", "op": "each", "value": {"path": "qty", "op": "gt", "value": 0}}]}),
-            ),
-            failures=(
-                Example("`rules` is required and must be non-empty.", {"mode": "assert", "data": _LEAVE_DOC}),
-                Example("An unknown operator.", {"mode": "assert", "data": {"a": 1}, "rules": [{"path": "a", "op": "frobnicate", "value": 1}]}),
-                Example("`between` needs a two-element range.", {"mode": "assert", "data": {"a": 1}, "rules": [{"path": "a", "op": "between", "value": 5}]}),
-                Example("An unknown type name.", {"mode": "assert", "data": {"a": 1}, "rules": [{"path": "a", "op": "type", "value": "decimal"}]}),
+                Param("data", "The document the rules are evaluated against."),
+                Param("rules", "The rules: `{path, op, value, id?, message?, weight?}`.", required=True),
             ),
         ),
         Mode(
@@ -2343,20 +1969,8 @@ VALIDATE = ToolDoc(
                 "missing value is an error. Card numbers come back masked, never echoed in full."
             ),
             params=(
-                Param("kind", "string", True, "Which scheme to check against."),
-                Param("value", "string", True, "The identifier."),
-            ),
-            examples=(
-                Example("A card number that passes Luhn, with its brand detected and the value masked.", {"mode": "id", "kind": "card", "value": "4111 1111 1111 1111"}),
-                Example("One digit changed: the same call, `valid: false`.", {"mode": "id", "kind": "card", "value": "4111 1111 1111 1112"}),
-                Example("An IBAN, checked by mod-97 and by its country's expected length.", {"mode": "id", "kind": "iban", "value": "GB82 WEST 1234 5698 7654 32"}),
-                Example("A GSTIN, whose check character is recomputed and whose embedded PAN is returned.", {"mode": "id", "kind": "gstin", "value": "19ABCDE1234F1ZX"}),
-                Example("A PAN, with the holder type decoded from its fourth character.", {"mode": "id", "kind": "pan", "value": "ABCDE1234F"}),
-                Example("An Aadhaar number verified by the Verhoeff algorithm and returned masked.", {"mode": "id", "kind": "aadhaar", "value": "2345 6789 0124"}),
-            ),
-            failures=(
-                Example("An unknown scheme lists the supported ones.", {"mode": "id", "kind": "passport", "value": "X1234567"}),
-                Example("`value` is required.", {"mode": "id", "kind": "card"}),
+                Param("kind", "Which scheme to check against.", required=True),
+                Param("value", "The identifier.", required=True),
             ),
         ),
         Mode(
@@ -2370,14 +1984,8 @@ VALIDATE = ToolDoc(
                 "this mode never returns `ok: false`."
             ),
             params=(
-                Param("value", "string", True, "The address to check."),
+                Param("value", "The address to check.", required=True),
             ),
-            examples=(
-                Example("A normal address, normalised.", {"mode": "email", "value": "Asha.Roy@Example.COM"}),
-                Example("A disposable domain, flagged but still syntactically valid.", {"mode": "email", "value": "throwaway@mailinator.com"}),
-                Example("A malformed address: a successful call with `valid: false` and a reason.", {"mode": "email", "value": "asha@@example..com"}),
-            ),
-            failures=(),
             never_fails=(
                 "Nothing makes this mode return `ok: false`. A missing or malformed address is "
                 "reported as `valid: false` with a `reason`, because “this address is invalid” is the "
@@ -2394,14 +2002,8 @@ VALIDATE = ToolDoc(
                 "this is syntax only and never returns `ok: false`."
             ),
             params=(
-                Param("value", "string", True, "The URL to check."),
+                Param("value", "The URL to check.", required=True),
             ),
-            examples=(
-                Example("A full URL, decomposed.", {"mode": "url", "value": "https://leftbrain.dev:8443/docs/tools?q=math#eval"}),
-                Example("A missing scheme is reported, not repaired.", {"mode": "url", "value": "leftbrain.dev/docs"}),
-                Example("An IP literal host is detected as one.", {"mode": "url", "value": "http://192.168.1.10:8080/health"}),
-            ),
-            failures=(),
             never_fails=(
                 "Nothing makes this mode return `ok: false`. An unusable URL comes back as "
                 "`valid: false` with a `reason`."
@@ -2419,17 +2021,8 @@ VALIDATE = ToolDoc(
                 "error; a missing or unsupported `region` is."
             ),
             params=(
-                Param("value", "string", True, "The number, in any punctuation."),
-                Param("region", "string", False, "ISO country code, required for national numbers."),
-            ),
-            examples=(
-                Example("An E.164 number: the region is inferred, not asked for.", {"mode": "phone", "value": "+91 98765 43210"}),
-                Example("A national number with an explicit region and a trunk prefix.", {"mode": "phone", "value": "098765 43210", "region": "IN"}),
-                Example("A number that does not match its region's pattern.", {"mode": "phone", "value": "12345 67890", "region": "IN"}),
-            ),
-            failures=(
-                Example("A national number with no region: the tool asks rather than assuming a country.", {"mode": "phone", "value": "9876543210"}),
-                Example("An unsupported region.", {"mode": "phone", "value": "9876543210", "region": "ZZ"}),
+                Param("value", "The number, in any punctuation.", required=True),
+                Param("region", "ISO country code, required for national numbers."),
             ),
         ),
         Mode(
@@ -2442,15 +2035,8 @@ VALIDATE = ToolDoc(
                 "last addresses. Never returns `ok: false`."
             ),
             params=(
-                Param("value", "string", True, "An IP address or CIDR network."),
+                Param("value", "An IP address or CIDR network.", required=True),
             ),
-            examples=(
-                Example("A private IPv4 address.", {"mode": "ip", "value": "192.168.1.10"}),
-                Example("A CIDR network, with its size and bounds.", {"mode": "ip", "value": "10.0.0.0/24"}),
-                Example("IPv6, compressed and exploded.", {"mode": "ip", "value": "2001:db8::1"}),
-                Example("Something that is not an address at all.", {"mode": "ip", "value": "300.1.1.1"}),
-            ),
-            failures=(),
             never_fails=(
                 "Nothing makes this mode return `ok: false`. An unparseable value comes back as "
                 "`valid: false` with the parser's reason."
@@ -2467,17 +2053,8 @@ VALIDATE = ToolDoc(
                 "successful call reporting `valid: false` — that is the answer you wanted."
             ),
             params=(
-                Param("sql", "string", True, "One or more SQL statements."),
-                Param("dialect", "string", False, "sqlglot dialect, e.g. `postgres`, `mysql`, `snowflake`.", "generic"),
-            ),
-            examples=(
-                Example("A read-only query: tables, columns and `read_only: true`.", {"mode": "sql_parse", "sql": "SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.total > 100 LIMIT 50"}),
-                Example("An unbounded DELETE, flagged in `warnings` before it runs.", {"mode": "sql_parse", "sql": "DELETE FROM sessions"}),
-                Example("Invalid SQL: a successful call that says the SQL is invalid.", {"mode": "sql_parse", "sql": "SELCT * FROM t WHERE"}),
-            ),
-            failures=(
-                Example("`sql` is required.", {"mode": "sql_parse"}),
-                Example("An unknown dialect.", {"mode": "sql_parse", "sql": "SELECT 1", "dialect": "klingon"}),
+                Param("sql", "One or more SQL statements.", required=True),
+                Param("dialect", "sqlglot dialect, e.g. `postgres`, `mysql`, `snowflake`.", default="generic"),
             ),
         ),
         Mode(
@@ -2490,14 +2067,7 @@ VALIDATE = ToolDoc(
                 "`valid: false`, not an error."
             ),
             params=(
-                Param("pattern", "string", True, "The regular expression to compile."),
-            ),
-            examples=(
-                Example("A valid pattern with named groups.", {"mode": "regex", "pattern": "(?P<year>\\d{4})-(?P<month>\\d{2})"}),
-                Example("An invalid pattern, with the failure position.", {"mode": "regex", "pattern": "([a-z"}),
-            ),
-            failures=(
-                Example("`pattern` is required.", {"mode": "regex"}),
+                Param("pattern", "The regular expression to compile.", required=True),
             ),
         ),
     ),
@@ -2510,7 +2080,6 @@ VALIDATE = ToolDoc(
 
 RANDOM = ToolDoc(
     name="random",
-    tagline="Real randomness, seeded when you want it back",
     intro=(
         "A language model cannot produce randomness; asked for a “random” number it returns the same "
         "few. This tool draws from the operating system's entropy — or, when you pass a `seed`, from "
@@ -2524,12 +2093,12 @@ RANDOM = ToolDoc(
         "Anything that must be reproducible later: pass a `seed` and record it.",
         "Never for cryptographic keys you intend to keep — generate those where they will live.",
     ),
-    fn=random_.random_tool,
     related=(
         "[`encode`](/docs/tools/encode) to hash or encode what you generate · "
         "[`collections`](/docs/tools/collections) `chunk` for deterministic batching, when you want "
         "splitting without randomness."
     ),
+    examples=random_.EXAMPLES,
     modes=(
         Mode(
             name="uuid",
@@ -2541,17 +2110,9 @@ RANDOM = ToolDoc(
                 "are never affected by `seed`."
             ),
             params=(
-                Param("n", "integer", False, "How many to generate, 1..10000.", "1"),
-                Param("version", "`4` \\| `7`", False, "4 is random; 7 is time-ordered.", "4"),
-                Param("format", "`canonical` \\| `hex` \\| `upper`", False, "Output form.", "`canonical`"),
-            ),
-            examples=(
-                Example("One v4 UUID.", {"mode": "uuid"}, volatile=True),
-                Example("Three time-ordered v7 UUIDs in bare hex — note the shared prefix.", {"mode": "uuid", "version": 7, "n": 3, "format": "hex"}, volatile=True),
-            ),
-            failures=(
-                Example("Only versions 4 and 7 are offered.", {"mode": "uuid", "version": 5}),
-                Example("`n` must be at least 1.", {"mode": "uuid", "n": 0}),
+                Param("n", "How many to generate, 1..10000.", default="1"),
+                Param("version", "4 is random; 7 is time-ordered.", default="4"),
+                Param("format", "Output form.", default="`canonical`"),
             ),
         ),
         Mode(
@@ -2564,21 +2125,11 @@ RANDOM = ToolDoc(
                 "without one it comes from system entropy."
             ),
             params=(
-                Param("min", "integer", False, "Lower bound, inclusive.", "1"),
-                Param("max", "integer", False, "Upper bound, inclusive.", "100"),
-                Param("n", "integer", False, "How many to draw, 1..10000.", "1"),
-                Param("unique", "boolean", False, "Draw without replacement.", "`false`"),
-                Param("seed", "string \\| integer", False, "Makes the draw reproducible."),
-            ),
-            examples=(
-                Example("Five dice rolls, seeded — this exact list comes back every time.", {"mode": "int", "min": 1, "max": 6, "n": 5, "seed": "demo"}),
-                Example("Six distinct numbers from 1 to 49, seeded.", {"mode": "int", "min": 1, "max": 49, "n": 6, "unique": True, "seed": "lotto-2025"}),
-                Example("Unseeded: a fresh draw from system entropy every call.", {"mode": "int", "min": 1, "max": 100}, volatile=True),
-            ),
-            failures=(
-                Example("The range must not be inverted.", {"mode": "int", "min": 10, "max": 1}),
-                Example("Too few values in the range to draw that many distinct ones.", {"mode": "int", "min": 1, "max": 3, "n": 5, "unique": True}),
-                Example("`n` is capped at 10 000.", {"mode": "int", "min": 1, "max": 10, "n": 999999}),
+                Param("min", "Lower bound, inclusive.", default="1"),
+                Param("max", "Upper bound, inclusive.", default="100"),
+                Param("n", "How many to draw, 1..10000.", default="1"),
+                Param("unique", "Draw without replacement.", default="`false`"),
+                Param("seed", "Makes the draw reproducible."),
             ),
         ),
         Mode(
@@ -2590,19 +2141,11 @@ RANDOM = ToolDoc(
                 "afterwards."
             ),
             params=(
-                Param("min", "number", False, "Lower bound.", "0.0"),
-                Param("max", "number", False, "Upper bound.", "1.0"),
-                Param("n", "integer", False, "How many to draw, 1..10000.", "1"),
-                Param("decimals", "integer", False, "Round each value to this many places."),
-                Param("seed", "string \\| integer", False, "Makes the draw reproducible."),
-            ),
-            examples=(
-                Example("Four seeded prices, rounded as they are drawn.", {"mode": "float", "min": 10, "max": 20, "n": 4, "decimals": 2, "seed": "demo"}),
-                Example("A single seeded value, unrounded.", {"mode": "float", "seed": "demo"}),
-            ),
-            failures=(
-                Example("The range must not be inverted.", {"mode": "float", "min": 5, "max": 1}),
-                Example("`n` must be at least 1.", {"mode": "float", "n": 0}),
+                Param("min", "Lower bound.", default="0.0"),
+                Param("max", "Upper bound.", default="1.0"),
+                Param("n", "How many to draw, 1..10000.", default="1"),
+                Param("decimals", "Round each value to this many places."),
+                Param("seed", "Makes the draw reproducible."),
             ),
         ),
         Mode(
@@ -2615,20 +2158,11 @@ RANDOM = ToolDoc(
                 "weighting and the replacement rule are reported in `assumptions`."
             ),
             params=(
-                Param("items", "any[]", True, "The pool to pick from."),
-                Param("n", "integer", False, "How many to pick.", "1"),
-                Param("unique", "boolean", False, "Pick without replacement.", "`true`"),
-                Param("weights", "number[]", False, "Relative weights, one per item."),
-                Param("seed", "string \\| integer", False, "Makes the pick reproducible."),
-            ),
-            examples=(
-                Example("Two winners from a list, seeded.", {"mode": "pick", "items": ["asha", "bo", "chen", "dev", "eve"], "n": 2, "seed": "raffle-1"}),
-                Example("A weighted draw with replacement.", {"mode": "pick", "items": ["gold", "silver", "bronze"], "weights": [1, 3, 6], "n": 5, "unique": False, "seed": "loot"}),
-            ),
-            failures=(
-                Example("The pool must be a non-empty list.", {"mode": "pick", "items": []}),
-                Example("Weights must line up with items.", {"mode": "pick", "items": ["a", "b", "c"], "weights": [1, 2]}),
-                Example("You cannot draw more unique items than exist.", {"mode": "pick", "items": ["a", "b"], "n": 5}),
+                Param("items", "The pool to pick from.", required=True),
+                Param("n", "How many to pick.", default="1"),
+                Param("unique", "Pick without replacement.", default="`true`"),
+                Param("weights", "Relative weights, one per item."),
+                Param("seed", "Makes the pick reproducible."),
             ),
         ),
         Mode(
@@ -2640,15 +2174,8 @@ RANDOM = ToolDoc(
                 "auditable."
             ),
             params=(
-                Param("items", "any[]", True, "The list to shuffle."),
-                Param("seed", "string \\| integer", False, "Makes the shuffle reproducible."),
-            ),
-            examples=(
-                Example("A seeded shuffle.", {"mode": "shuffle", "items": ["a", "b", "c", "d", "e"], "seed": "demo"}),
-                Example("A different seed, a different order — from the same input.", {"mode": "shuffle", "items": ["a", "b", "c", "d", "e"], "seed": "other"}),
-            ),
-            failures=(
-                Example("`items` must be a list.", {"mode": "shuffle", "items": "abcde"}),
+                Param("items", "The list to shuffle.", required=True),
+                Param("seed", "Makes the shuffle reproducible."),
             ),
         ),
         Mode(
@@ -2662,19 +2189,9 @@ RANDOM = ToolDoc(
                 "ignored here — a reproducible secret is not a secret — and every response says so."
             ),
             params=(
-                Param("kind", "string", False, "Alphabet or token type.", "`urlsafe`"),
-                Param("length", "integer", False, "Characters (or bytes for `kind: bytes`), 1..4096.", "32"),
-                Param("n", "integer", False, "How many tokens.", "1"),
-            ),
-            examples=(
-                Example("A URL-safe API token.", {"mode": "token", "kind": "urlsafe", "length": 32}, volatile=True),
-                Example("A password with all four character classes guaranteed.", {"mode": "token", "kind": "password", "length": 16}, volatile=True),
-                Example("A six-digit OTP.", {"mode": "token", "kind": "otp", "length": 6}, volatile=True),
-                Example("Human-readable codes with no confusable characters.", {"mode": "token", "kind": "readable", "length": 8, "n": 3}, volatile=True),
-            ),
-            failures=(
-                Example("An unknown alphabet lists the valid ones.", {"mode": "token", "kind": "runes"}),
-                Example("`length` must be between 1 and 4096.", {"mode": "token", "kind": "hex", "length": 0}),
+                Param("kind", "Alphabet or token type.", default="`urlsafe`"),
+                Param("length", "Characters (or bytes for `kind: bytes`), 1..4096.", default="32"),
+                Param("n", "How many tokens.", default="1"),
             ),
         ),
         Mode(
@@ -2686,17 +2203,9 @@ RANDOM = ToolDoc(
                 "for a reproducible run."
             ),
             params=(
-                Param("p", "number", False, "Probability of `true`, 0..1.", "0.5"),
-                Param("n", "integer", False, "How many flips, 1..10000.", "1"),
-                Param("seed", "string \\| integer", False, "Makes the run reproducible."),
-            ),
-            examples=(
-                Example("Ten seeded flips at 30%, with the count of trues.", {"mode": "bool", "p": 0.3, "n": 10, "seed": "demo"}),
-                Example("A single seeded fair flip.", {"mode": "bool", "seed": "demo"}),
-            ),
-            failures=(
-                Example("A probability outside 0..1.", {"mode": "bool", "p": 1.5}),
-                Example("`n` must be at least 1.", {"mode": "bool", "n": 0}),
+                Param("p", "Probability of `true`, 0..1.", default="0.5"),
+                Param("n", "How many flips, 1..10000.", default="1"),
+                Param("seed", "Makes the run reproducible."),
             ),
         ),
         Mode(
@@ -2709,18 +2218,10 @@ RANDOM = ToolDoc(
                 "assignment is reproducible for anyone auditing the experiment."
             ),
             params=(
-                Param("items", "any[]", True, "The population."),
-                Param("k", "integer", False, "Sample size, when not splitting into groups.", "1"),
-                Param("groups", "integer \\| string[]", False, "Number of groups, or their names."),
-                Param("seed", "string \\| integer", False, "Makes the assignment reproducible."),
-            ),
-            examples=(
-                Example("A seeded sample of three.", {"mode": "sample", "items": ["u1", "u2", "u3", "u4", "u5", "u6", "u7"], "k": 3, "seed": "audit-2025"}),
-                Example("A named A/B/C split, balanced to within one.", {"mode": "sample", "items": ["u1", "u2", "u3", "u4", "u5", "u6", "u7"], "groups": ["control", "variant_a", "variant_b"], "seed": "exp-42"}),
-            ),
-            failures=(
-                Example("`k` cannot exceed the population.", {"mode": "sample", "items": ["a", "b"], "k": 5}),
-                Example("The population must be a non-empty list.", {"mode": "sample", "items": [], "k": 1}),
+                Param("items", "The population.", required=True),
+                Param("k", "Sample size, when not splitting into groups.", default="1"),
+                Param("groups", "Number of groups, or their names."),
+                Param("seed", "Makes the assignment reproducible."),
             ),
         ),
     ),
@@ -2733,7 +2234,6 @@ RANDOM = ToolDoc(
 
 GEO = ToolDoc(
     name="geo_offline",
-    tagline="Time zones, distances and bearings, fully offline",
     intro=(
         "Built on the tzdata tables that ship with Python plus a curated alias list for cities that "
         "are not zone names — Mumbai, Bengaluru, Manchester, Silicon Valley. No network, no API key, "
@@ -2747,11 +2247,11 @@ GEO = ToolDoc(
         "Listing every zone a country spans — the thing that makes “what time is it in the US?” unanswerable.",
         "Not for driving distance, geocoding or address lookup; this dataset has none of those.",
     ),
-    fn=geo_offline.geo_offline,
     related=(
         "[`datetime`](/docs/tools/datetime) `convert_tz` consumes the zone names this returns · "
         "[`convert`](/docs/tools/convert) to restate a distance in other units."
     ),
+    examples=geo_offline.EXAMPLES,
     modes=(
         Mode(
             name="tz_for_place",
@@ -2764,18 +2264,8 @@ GEO = ToolDoc(
                 "all instead."
             ),
             params=(
-                Param("place", "string", True, "City, country or IANA zone name."),
-                Param("all", "boolean", False, "Return every matching zone instead of refusing an ambiguous one.", "`false`"),
-            ),
-            examples=(
-                Example("A city alias resolved to its zone.", {"mode": "tz_for_place", "place": "Mumbai"}, volatile=True),
-                Example("An exact zone name passes straight through.", {"mode": "tz_for_place", "place": "Europe/Berlin"}, volatile=True),
-                Example("A country that spans several zones, with `all` set.", {"mode": "tz_for_place", "place": "Portugal", "all": True}, volatile=True),
-            ),
-            failures=(
-                Example("A country spanning many zones, without `all`: the candidates come back in `needs.options`.", {"mode": "tz_for_place", "place": "Australia"}),
-                Example("A place the dataset does not know.", {"mode": "tz_for_place", "place": "Atlantis"}),
-                Example("`place` is required.", {"mode": "tz_for_place"}),
+                Param("place", "City, country or IANA zone name.", required=True),
+                Param("all", "Return every matching zone instead of refusing an ambiguous one.", default="`false`"),
             ),
         ),
         Mode(
@@ -2788,17 +2278,9 @@ GEO = ToolDoc(
                 "a border you should verify with a shapefile-based service."
             ),
             params=(
-                Param("lat", "number", True, "Latitude in decimal degrees."),
-                Param("lon", "number", True, "Longitude in decimal degrees."),
-                Param("point", "object \\| number[] \\| string", False, "Alternative to `lat`/`lon`: `{lat, lon}`, `[lat, lon]` or `\"lat,lon\"`."),
-            ),
-            examples=(
-                Example("Coordinates in eastern India.", {"mode": "tz_for_coords", "lat": 22.5726, "lon": 88.3639}, volatile=True),
-                Example("Coordinates in New York.", {"mode": "tz_for_coords", "lat": 40.7128, "lon": -74.006}, volatile=True),
-            ),
-            failures=(
-                Example("Coordinates are required.", {"mode": "tz_for_coords"}),
-                Example("Coordinates must be numbers.", {"mode": "tz_for_coords", "lat": "north", "lon": 88.36}),
+                Param("lat", "Latitude in decimal degrees.", required=True),
+                Param("lon", "Longitude in decimal degrees.", required=True),
+                Param("point", "Alternative to `lat`/`lon`: `{lat, lon}`, `[lat, lon]` or `\"lat,lon\"`."),
             ),
         ),
         Mode(
@@ -2812,18 +2294,8 @@ GEO = ToolDoc(
                 "is straight-line distance, never driving distance."
             ),
             params=(
-                Param("origin", "object \\| number[] \\| string", True, "Origin: coordinates or a place name."),
-                Param("destination", "object \\| number[] \\| string", True, "Destination: coordinates or a place name."),
-            ),
-            examples=(
-                Example("Mumbai to Delhi, by coordinates.", {"mode": "distance", "origin": [19.076, 72.8777], "destination": [28.6139, 77.209]}),
-                Example("Coordinates as strings, Bengaluru to Chennai.", {"mode": "distance", "origin": "12.9716,77.5946", "destination": "13.0827,80.2707"}),
-                Example("Place names, with the approximation stated in `assumptions`.", {"mode": "distance", "origin": "Kolkata", "destination": "London"}),
-            ),
-            failures=(
-                Example("A place name that spans several zones is not specific enough to be a point.", {"mode": "distance", "origin": "Australia", "destination": "Kolkata"}),
-                Example("An unknown place.", {"mode": "distance", "origin": "Atlantis", "destination": "Kolkata"}),
-                Example("`destination` is required.", {"mode": "distance", "origin": [19.076, 72.8777]}),
+                Param("origin", "Origin: coordinates or a place name.", required=True),
+                Param("destination", "Destination: coordinates or a place name.", required=True),
             ),
         ),
         Mode(
@@ -2835,15 +2307,7 @@ GEO = ToolDoc(
                 "“what time is it there?” has one answer."
             ),
             params=(
-                Param("country", "string", True, "ISO code, country name, or a common alias like `UK` or `USA`."),
-            ),
-            examples=(
-                Example("A single-zone country.", {"mode": "country", "country": "IN"}, volatile=True),
-                Example("A country resolved by name, spanning two zones.", {"mode": "country", "country": "New Zealand"}, volatile=True),
-            ),
-            failures=(
-                Example("An unknown country.", {"mode": "country", "country": "Freedonia"}),
-                Example("`country` is required.", {"mode": "country"}),
+                Param("country", "ISO code, country name, or a common alias like `UK` or `USA`.", required=True),
             ),
         ),
         Mode(
@@ -2855,16 +2319,7 @@ GEO = ToolDoc(
                 "are accepted — abbreviations are refused here as everywhere else."
             ),
             params=(
-                Param("zone", "string", True, "An IANA zone name, e.g. `Asia/Kolkata`."),
-            ),
-            examples=(
-                Example("A zone with no daylight saving.", {"mode": "zone_info", "zone": "Asia/Kolkata"}, volatile=True),
-                Example("A zone that does observe it.", {"mode": "zone_info", "zone": "America/New_York"}, volatile=True),
-            ),
-            failures=(
-                Example("A zone name that does not exist.", {"mode": "zone_info", "zone": "Asia/Gotham"}),
-                Example("An abbreviation is not a zone name.", {"mode": "zone_info", "zone": "IST"}),
-                Example("`zone` is required.", {"mode": "zone_info"}),
+                Param("zone", "An IANA zone name, e.g. `Asia/Kolkata`.", required=True),
             ),
         ),
     ),
@@ -2883,7 +2338,6 @@ _JWT = (
 
 ENCODE = ToolDoc(
     name="encode",
-    tagline="Hashes, HMACs, checksums and encodings",
     intro=(
         "Models hallucinate hashes with complete confidence — a plausible-looking 64 hex characters "
         "that is not the SHA-256 of anything. This tool computes them. Hashes, HMACs with constant-"
@@ -2896,12 +2350,12 @@ ENCODE = ToolDoc(
         "Inspecting a JWT's claims without a library (the signature is *not* verified).",
         "Validating, pretty-printing or minifying JSON, with the exact error position when it fails.",
     ),
-    fn=encode_mod.encode,
     related=(
         "[`validate`](/docs/tools/validate) for checksum-verified identifiers and JSON Schema · "
         "[`text`](/docs/tools/text) for counting and transforming the text itself · "
         "[`random`](/docs/tools/random) for the secrets you are about to hash."
     ),
+    examples=encode_mod.EXAMPLES,
     modes=(
         Mode(
             name="hash",
@@ -2915,22 +2369,11 @@ ENCODE = ToolDoc(
                 "hash reproducible."
             ),
             params=(
-                Param("text", "string \\| any", False, "The input. Non-strings become compact sorted JSON."),
-                Param("algo", "string", False, "Digest algorithm.", "`sha256`"),
-                Param("encoding", "string", False, "Text encoding before hashing.", "`utf-8`"),
-                Param("bytes_base64", "string", False, "Raw bytes as Base64, instead of `text`."),
-                Param("bytes_hex", "string", False, "Raw bytes as hex, instead of `text`."),
-            ),
-            examples=(
-                Example("SHA-256 of a string, in hex and Base64.", {"mode": "hash", "text": "hello world"}),
-                Example("A different algorithm on the same input.", {"mode": "hash", "text": "hello world", "algo": "md5"}),
-                Example("Hashing an object — serialised deterministically, and it says so.", {"mode": "hash", "text": {"b": 2, "a": 1}}),
-                Example("Hashing raw bytes given as hex.", {"mode": "hash", "bytes_hex": "deadbeef", "algo": "sha1"}),
-            ),
-            failures=(
-                Example("An unknown algorithm lists the supported ones.", {"mode": "hash", "text": "hello", "algo": "sha999"}),
-                Example("Some input is required.", {"mode": "hash", "algo": "sha256"}),
-                Example("`bytes_hex` must actually be hex.", {"mode": "hash", "bytes_hex": "zzzz"}),
+                Param("text", "The input. Non-strings become compact sorted JSON."),
+                Param("algo", "Digest algorithm.", default="`sha256`"),
+                Param("encoding", "Text encoding before hashing.", default="`utf-8`"),
+                Param("bytes_base64", "Raw bytes as Base64, instead of `text`."),
+                Param("bytes_hex", "Raw bytes as hex, instead of `text`."),
             ),
         ),
         Mode(
@@ -2942,21 +2385,11 @@ ENCODE = ToolDoc(
                 "correct way to verify a webhook signature. The key is never echoed back."
             ),
             params=(
-                Param("key", "string", True, "The secret key."),
-                Param("text", "string \\| any", False, "The message."),
-                Param("algo", "string", False, "Digest algorithm.", "`sha256`"),
-                Param("expected", "string", False, "A signature to compare against, in hex or Base64."),
-                Param("key_base64", "boolean", False, "Decode `key` from Base64 first.", "`false`"),
-            ),
-            examples=(
-                Example("An HMAC-SHA256 signature.", {"mode": "hmac", "key": "s3cret", "text": "payload-1"}),
-                Example("Verifying a signature: `matches` is computed in constant time.", {"mode": "hmac", "key": "s3cret", "text": "payload-1", "expected": "874582d507bf2715cab202a7b899745887fba3a1935da6699029a96c6a82e770"}),
-                Example("A different digest algorithm.", {"mode": "hmac", "key": "s3cret", "text": "payload-1", "algo": "sha512"}),
-            ),
-            failures=(
-                Example("`key` is required.", {"mode": "hmac", "text": "payload-1"}),
-                Example("An unknown algorithm.", {"mode": "hmac", "key": "s3cret", "text": "x", "algo": "sha999"}),
-                Example("Some message is required.", {"mode": "hmac", "key": "s3cret"}),
+                Param("key", "The secret key.", required=True),
+                Param("text", "The message."),
+                Param("algo", "Digest algorithm.", default="`sha256`"),
+                Param("expected", "A signature to compare against, in hex or Base64."),
+                Param("key_base64", "Decode `key` from Base64 first.", default="`false`"),
             ),
         ),
         Mode(
@@ -2968,17 +2401,9 @@ ENCODE = ToolDoc(
                 "against tampering; use `hash` or `hmac` for that."
             ),
             params=(
-                Param("text", "string \\| any", False, "The input."),
-                Param("algo", "`crc32` \\| `adler32`", False, "Checksum algorithm.", "`crc32`"),
-                Param("bytes_hex", "string", False, "Raw bytes as hex, instead of `text`."),
-            ),
-            examples=(
-                Example("CRC32 of a string.", {"mode": "checksum", "text": "hello world"}),
-                Example("Adler-32 of the same input.", {"mode": "checksum", "text": "hello world", "algo": "adler32"}),
-            ),
-            failures=(
-                Example("Only CRC32 and Adler-32 are checksums here.", {"mode": "checksum", "text": "hello", "algo": "md5"}),
-                Example("Some input is required.", {"mode": "checksum", "algo": "crc32"}),
+                Param("text", "The input."),
+                Param("algo", "Checksum algorithm.", default="`crc32`"),
+                Param("bytes_hex", "Raw bytes as hex, instead of `text`."),
             ),
         ),
         Mode(
@@ -2991,20 +2416,10 @@ ENCODE = ToolDoc(
                 "returns hex with a warning rather than mangling them."
             ),
             params=(
-                Param("action", "`encode` \\| `decode`", False, "Direction.", "`encode`"),
-                Param("text", "string \\| any", True, "The text to encode, or the Base64 to decode."),
-                Param("urlsafe", "boolean", False, "Use the `-_` alphabet.", "`false`"),
-                Param("strip_padding", "boolean", False, "Drop trailing `=` when encoding.", "`false`"),
-            ),
-            examples=(
-                Example("Encoding.", {"mode": "base64", "action": "encode", "text": "leftbrain ✓"}),
-                Example("Decoding the same string back.", {"mode": "base64", "action": "decode", "text": "bGVmdGJyYWluIOKckw=="}),
-                Example("URL-safe and unpadded, for a query string.", {"mode": "base64", "action": "encode", "text": "sub?a=1&b=2", "urlsafe": True, "strip_padding": True}),
-                Example("Decoding bytes that are not UTF-8: hex, with a warning, instead of mojibake.", {"mode": "base64", "action": "decode", "text": "3q2+7w=="}),
-            ),
-            failures=(
-                Example("An unknown action.", {"mode": "base64", "action": "flip", "text": "abc"}),
-                Example("Input that is not valid Base64.", {"mode": "base64", "action": "decode", "text": "a"}),
+                Param("action", "Direction.", default="`encode`"),
+                Param("text", "The text to encode, or the Base64 to decode.", required=True),
+                Param("urlsafe", "Use the `-_` alphabet.", default="`false`"),
+                Param("strip_padding", "Drop trailing `=` when encoding.", default="`false`"),
             ),
         ),
         Mode(
@@ -3017,17 +2432,8 @@ ENCODE = ToolDoc(
                 "other than `encode` is treated as a decode rather than rejected."
             ),
             params=(
-                Param("action", "`encode` \\| `decode`", False, "Direction.", "`encode`"),
-                Param("text", "string \\| any", True, "The text to encode, or the hex to decode."),
-            ),
-            examples=(
-                Example("Encoding.", {"mode": "hex", "action": "encode", "text": "leftbrain"}),
-                Example("Decoding, with separators tolerated.", {"mode": "hex", "action": "decode", "text": "6c 65 66 74 62 72 61 69 6e"}),
-            ),
-            failures=(
-                Example("Input that is not hex.", {"mode": "hex", "action": "decode", "text": "zzzz"}),
-                Example("An odd number of hex digits.", {"mode": "hex", "action": "decode", "text": "abc"}),
-                Example("Some input is required.", {"mode": "hex", "action": "encode"}),
+                Param("action", "Direction.", default="`encode`"),
+                Param("text", "The text to encode, or the hex to decode.", required=True),
             ),
         ),
         Mode(
@@ -3039,18 +2445,10 @@ ENCODE = ToolDoc(
                 "where spaces become `+` and `/` is escaped. `safe` overrides which characters survive."
             ),
             params=(
-                Param("action", "`encode` \\| `decode`", False, "Direction.", "`encode`"),
-                Param("text", "string", True, "The string to encode or decode."),
-                Param("plus", "boolean", False, "Form encoding: spaces become `+`.", "`false`"),
-                Param("safe", "string", False, "Characters left unescaped.", "`/` for encode"),
-            ),
-            examples=(
-                Example("Path-style encoding: the slash survives.", {"mode": "url", "action": "encode", "text": "reports/Q3 2025/summary&final.pdf"}),
-                Example("Form-style encoding of the same string.", {"mode": "url", "action": "encode", "text": "reports/Q3 2025/summary&final.pdf", "plus": True}),
-                Example("Decoding.", {"mode": "url", "action": "decode", "text": "q%3Dleft%20brain%26page%3D2"}),
-            ),
-            failures=(
-                Example("An unknown action.", {"mode": "url", "action": "flip", "text": "abc"}),
+                Param("action", "Direction.", default="`encode`"),
+                Param("text", "The string to encode or decode.", required=True),
+                Param("plus", "Form encoding: spaces become `+`.", default="`false`"),
+                Param("safe", "Characters left unescaped.", default="`/` for encode"),
             ),
         ),
         Mode(
@@ -3063,16 +2461,9 @@ ENCODE = ToolDoc(
                 "render as markup."
             ),
             params=(
-                Param("action", "`escape` \\| `unescape`", False, "Direction.", "`escape`"),
-                Param("text", "string", True, "The string to escape or unescape."),
-                Param("quote", "boolean", False, "Also escape quotes.", "`true`"),
-            ),
-            examples=(
-                Example("Escaping markup and quotes.", {"mode": "html", "action": "escape", "text": "<b class=\"x\">Tom & Jerry</b>"}),
-                Example("Unescaping entities, named and numeric.", {"mode": "html", "action": "unescape", "text": "caf&eacute; &amp; cr&#232;me"}),
-            ),
-            failures=(
-                Example("An unknown action.", {"mode": "html", "action": "flip", "text": "abc"}),
+                Param("action", "Direction.", default="`escape`"),
+                Param("text", "The string to escape or unescape.", required=True),
+                Param("quote", "Also escape quotes.", default="`true`"),
             ),
         ),
         Mode(
@@ -3085,15 +2476,7 @@ ENCODE = ToolDoc(
                 "input until something else checks the signature."
             ),
             params=(
-                Param("token", "string", True, "The JWT."),
-            ),
-            examples=(
-                Example("An expired token: claims decoded, timestamps rendered, signature untouched.", {"mode": "jwt_decode", "token": _JWT}),
-            ),
-            failures=(
-                Example("A JWT has three dot-separated parts.", {"mode": "jwt_decode", "token": "abc"}),
-                Example("Three parts, but not Base64url JSON.", {"mode": "jwt_decode", "token": "a.b.c"}),
-                Example("`token` is required.", {"mode": "jwt_decode"}),
+                Param("token", "The JWT.", required=True),
             ),
         ),
         Mode(
@@ -3106,20 +2489,11 @@ ENCODE = ToolDoc(
                 "a value into indented or compact text, optionally with sorted keys."
             ),
             params=(
-                Param("action", "`parse` \\| `format` \\| `minify`", False, "What to do.", "`parse`"),
-                Param("text", "string", False, "The JSON text, for `parse`."),
-                Param("data", "any", False, "The value to serialise, for `format` and `minify`."),
-                Param("indent", "integer", False, "Indent width, for `format`.", "2"),
-                Param("sort_keys", "boolean", False, "Sort object keys on output.", "`false`"),
-            ),
-            examples=(
-                Example("Valid JSON, parsed.", {"mode": "json", "action": "parse", "text": "{\"a\": 1, \"b\": [2, 3]}"}),
-                Example("Invalid JSON: the error is located to line and column.", {"mode": "json", "action": "parse", "text": "{\"a\": 1,}"}),
-                Example("Pretty-printing with sorted keys.", {"mode": "json", "action": "format", "data": {"b": 2, "a": 1}, "sort_keys": True}),
-                Example("Minifying.", {"mode": "json", "action": "minify", "data": {"a": 1, "b": [2, 3]}}),
-            ),
-            failures=(
-                Example("An unknown action.", {"mode": "json", "action": "lint", "text": "{}"}),
+                Param("action", "What to do.", default="`parse`"),
+                Param("text", "The JSON text, for `parse`."),
+                Param("data", "The value to serialise, for `format` and `minify`."),
+                Param("indent", "Indent width, for `format`.", default="2"),
+                Param("sort_keys", "Sort object keys on output.", default="`false`"),
             ),
         ),
     ),
@@ -3141,3 +2515,200 @@ CATALOGUE: tuple[ToolDoc, ...] = (
     GEO,
     ENCODE,
 )
+
+
+# --------------------------------------------------------------------------- #
+# Network tools - served from /external/mcp, documented but never executed here
+# --------------------------------------------------------------------------- #
+
+WEATHER = ToolDoc(
+    name="weather",
+    network=True,
+    intro=(
+        "Live weather from [Open-Meteo](https://open-meteo.com), no key required. A place name is "
+        "geocoded first, so `place: \"Kolkata\"` is enough; coordinates skip that step. Every answer "
+        "is as-of the moment of the call — there is nothing deterministic about tomorrow's weather."
+    ),
+    when=(
+        "Before stating today's conditions or a forecast: the model's training data has no weather in it.",
+        "Historical daily weather back to 1940, for a date or a date range.",
+        "Not for time zones — [`geo_offline`](/docs/tools/geo_offline) answers those without a network call.",
+    ),
+    related=(
+        "[`geo`](/docs/tools/geo) to resolve a place first · [`datetime`](/docs/tools/datetime) to "
+        "convert the timestamps it returns."
+    ),
+    modes=(
+        Mode(
+            name="current",
+            purpose="Conditions at this moment, at a place or a pair of coordinates.",
+            description=(
+                "Conditions right now at the resolved location: temperature, apparent temperature, "
+                "humidity, precipitation, wind speed and bearing, cloud cover, pressure, and whether "
+                "it is daylight there."
+            ),
+            params=(
+                Param("place", "A place name; geocoded before the lookup. Give this or `lat`/`lon`."),
+                Param("lat", "Latitude, when you already have coordinates."),
+                Param("lon", "Longitude, when you already have coordinates."),
+                Param("units", "`metric` (°C, km/h) or `imperial` (°F, mph).", default="`metric`"),
+                Param("tz", "IANA zone for the timestamps; `auto` uses the location's own zone.", default="`auto`"),
+            ),
+        ),
+        Mode(
+            name="forecast",
+            purpose="Today plus up to sixteen days ahead, day by day.",
+            description=(
+                "Current conditions plus a daily forecast: highs and lows, precipitation and its "
+                "probability, maximum wind, sunrise, sunset and UV index."
+            ),
+            params=(
+                Param("place", "A place name; geocoded before the lookup. Give this or `lat`/`lon`."),
+                Param("lat", "Latitude, when you already have coordinates."),
+                Param("lon", "Longitude, when you already have coordinates."),
+                Param("days", "How many days to return, 1..16.", default="`7`"),
+                Param("units", "`metric` or `imperial`.", default="`metric`"),
+                Param("tz", "IANA zone for the timestamps.", default="`auto`"),
+            ),
+        ),
+        Mode(
+            name="historical",
+            purpose="What the weather actually was, on a past date or range.",
+            description=(
+                "Daily observations from the reanalysis archive, which reaches back to 1940. One day, "
+                "or a range when `end_date` is given."
+            ),
+            params=(
+                Param("place", "A place name; geocoded before the lookup. Give this or `lat`/`lon`."),
+                Param("lat", "Latitude, when you already have coordinates."),
+                Param("lon", "Longitude, when you already have coordinates."),
+                Param("date", "First day, `YYYY-MM-DD`.", required=True),
+                Param("end_date", "Last day of the range.", default="`date`"),
+                Param("units", "`metric` or `imperial`.", default="`metric`"),
+                Param("tz", "IANA zone for the timestamps.", default="`auto`"),
+            ),
+        ),
+        Mode(
+            name="summary",
+            purpose="The forecast plus a ready-to-quote sentence.",
+            description=(
+                "Everything `forecast` returns, plus a one-sentence English summary of now and the "
+                "coming week — for pasting straight into an answer."
+            ),
+            params=(
+                Param("place", "A place name; geocoded before the lookup. Give this or `lat`/`lon`."),
+                Param("lat", "Latitude, when you already have coordinates."),
+                Param("lon", "Longitude, when you already have coordinates."),
+                Param("days", "How many days the sentence covers, 1..16.", default="`7`"),
+                Param("units", "`metric` or `imperial`.", default="`metric`"),
+                Param("tz", "IANA zone for the timestamps.", default="`auto`"),
+            ),
+        ),
+    ),
+)
+
+FX_RATE = ToolDoc(
+    name="fx_rate",
+    network=True,
+    intro=(
+        "European Central Bank reference rates, served by [Frankfurter](https://frankfurter.dev). "
+        "Mid-market rates published once a business day — right for reporting and estimates, not a "
+        "retail quote. The result includes `rates_table_for_convert`, which goes straight into "
+        "[`convert`](/docs/tools/convert) as `rates`."
+    ),
+    when=(
+        "Before converting money: [`convert`](/docs/tools/convert) deliberately refuses to invent a rate.",
+        "Historical rates for a specific date, for invoices and restatements.",
+        "Not for crypto or retail card rates — the ECB publishes neither.",
+    ),
+    related="[`convert`](/docs/tools/convert) does the arithmetic once you have the rates.",
+    params=(
+        Param("base", "The currency the rates are quoted against, ISO 4217.", default="`USD`"),
+        Param("to", "One code, a list of codes, or a comma-separated string. Omitted returns every published rate."),
+        Param("date", "`YYYY-MM-DD` for a historical rate; omitted uses the latest business day."),
+        Param("amount", "Converted as well as quoted, when exactly one target currency is given."),
+    ),
+)
+
+GEO_ONLINE = ToolDoc(
+    name="geo",
+    network=True,
+    intro=(
+        "Geocoding, reverse geocoding and road routing, from Open-Meteo's geocoder, OpenStreetMap "
+        "Nominatim and the OSRM demo router. Use it when the offline dataset in "
+        "[`geo_offline`](/docs/tools/geo_offline) cannot answer — that one covers cities and zones, "
+        "not street addresses or driving times."
+    ),
+    when=(
+        "Turning an address or a landmark into coordinates.",
+        "Turning coordinates into a postal address.",
+        "Driving distance and time, which is not the great-circle distance `geo_offline` returns.",
+    ),
+    related=(
+        "[`geo_offline`](/docs/tools/geo_offline) for time zones and straight-line distance with no "
+        "network call · [`weather`](/docs/tools/weather), which geocodes place names itself."
+    ),
+    modes=(
+        Mode(
+            name="geocode",
+            purpose="A place name becomes coordinates, a country and a time zone.",
+            description=(
+                "Resolve a place name to coordinates, country, admin area, elevation and IANA time "
+                "zone. The best match comes back as `best`, the rest as `results`."
+            ),
+            params=(
+                Param("place", "The name, address or landmark to resolve.", required=True),
+                Param("limit", "How many candidates to return.", default="`5`"),
+            ),
+        ),
+        Mode(
+            name="reverse",
+            purpose="Coordinates become a postal address.",
+            description=(
+                "Resolve coordinates to a postal address: the formatted `display_name` plus the "
+                "structured `address` components."
+            ),
+            params=(
+                Param("lat", "Latitude.", required=True),
+                Param("lon", "Longitude.", required=True),
+            ),
+        ),
+        Mode(
+            name="route",
+            purpose="Driving distance and time by road, not as the crow flies.",
+            description=(
+                "Road distance and travel time between two points. Each endpoint may be a place name "
+                "or a `{lat, lon}` object. The demo router has no live traffic, so read the duration "
+                "as free-flow."
+            ),
+            params=(
+                Param("origin", "Where the trip starts: a place name or `{lat, lon}`.", required=True),
+                Param("destination", "Where it ends: a place name or `{lat, lon}`.", required=True),
+                Param("profile", "`driving`, `walking` or `cycling`.", default="`driving`"),
+            ),
+        ),
+    ),
+)
+
+URL_CHECK = ToolDoc(
+    name="url_check",
+    network=True,
+    intro=(
+        "Actually fetch a URL and report what happened: final status, the redirect chain, the URL you "
+        "ended up at, content type, size and latency. A `HEAD` by default, falling back to `GET` when "
+        "a server rejects it."
+    ),
+    when=(
+        "Before telling a user a link works — models are confident about dead URLs.",
+        "Checking where a shortened or tracking link actually lands.",
+        "Not for reading the page: this reports on the response, not its body.",
+    ),
+    related="[`validate`](/docs/tools/validate) with `mode: url` checks the *syntax* of a URL without fetching it.",
+    params=(
+        Param("url", "The URL to fetch. A bare host is assumed to be `https://`.", required=True),
+        Param("method", "`HEAD` or `GET`.", default="`HEAD`"),
+    ),
+)
+
+#: The network-backed tools, served from `/external/mcp`.
+EXTERNAL_CATALOGUE: tuple[ToolDoc, ...] = (WEATHER, FX_RATE, GEO_ONLINE, URL_CHECK)
