@@ -103,15 +103,16 @@ export LB_KEY="lblz_YOUR_KEY"
 ### windows
 ```powershell
 # PowerShell aliases 'curl' to Invoke-WebRequest — use curl.exe
-curl.exe -s https://leftbrain.idlesync.in/keys/me -H "Authorization: Bearer $env:LB_KEY"
+curl.exe -s https://leftbrain.idlesync.in/keys/me `
+  -H "Authorization: Bearer $env:LB_KEY"
 ```
 ### macos
 ```bash
-curl -s https://leftbrain.idlesync.in/keys/me -H "Authorization: Bearer $LB_KEY"
+curl -s https://leftbrain.idlesync.in/keys/me \n  -H "Authorization: Bearer $LB_KEY"
 ```
 ### linux
 ```bash
-curl -s https://leftbrain.idlesync.in/keys/me -H "Authorization: Bearer $LB_KEY"
+curl -s https://leftbrain.idlesync.in/keys/me \n  -H "Authorization: Bearer $LB_KEY"
 ```
 :::
 
