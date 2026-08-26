@@ -1,0 +1,72 @@
+"""leftbrain-external MCP server: weather, fx_rate, geo, url_check (network, key-less)."""
+
+from __future__ import annotations
+
+import argparse
+from typing import Any
+
+from mcp.server import MCPServer
+
+from .. import __version__
+from . import tools
+
+server = MCPServer(
+    "leftbrain-external",
+    title="leftbrain external",
+    instructions="Network-backed facts the model cannot know: live weather, exchange rates, geocoding, URL reachability. Results are as-of the moment of the call.",
+    version=__version__,
+)
+
+
+def _clean(d: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in d.items() if v is not None}
+
+
+@server.tool(name="weather")
+def weather(mode: str = "current", place: str | None = None, lat: float | None = None, lon: float | None = None, days: int | None = None, date: str | None = None, end_date: str | None = None, units: str | None = None, tz: str | None = None) -> dict[str, Any]:
+    """Live weather for a place or coordinates (Open-Meteo, no key).
+    mode: current | forecast (days 1-16) | historical (date, end_date; back to 1940) | summary (one-line + week).
+    units: metric | imperial.
+    """
+    return tools.weather(mode, **_clean(dict(place=place, lat=lat, lon=lon, days=days, date=date, end_date=end_date, units=units, tz=tz)))
+
+
+@server.tool(name="fx_rate")
+def fx_rate(base: str = "USD", to: str | list[str] | None = None, date: str | None = None, amount: float | None = None) -> dict[str, Any]:
+    """Exchange rates (ECB reference via Frankfurter). base="USD", to="INR" or ["INR","EUR"], date="2026-01-15" for historical.
+    Returns rates_table_for_convert to pass straight into the core convert tool as rates=.
+    """
+    return tools.fx_rate(**_clean(dict(base=base, to=to, date=date, amount=amount)))
+
+
+@server.tool(name="geo")
+def geo(mode: str = "geocode", place: str | None = None, lat: float | None = None, lon: float | None = None, from_: Any | None = None, to: Any | None = None, profile: str | None = None, limit: int | None = None) -> dict[str, Any]:
+    """Online geo: geocode (place -> lat/lon/timezone), reverse (lat/lon -> address), route (driving distance & time between two places)."""
+    params = _clean(dict(place=place, lat=lat, lon=lon, to=to, profile=profile, limit=limit))
+    if from_ is not None:
+        params["from"] = from_
+    return tools.geo(mode, **params)
+
+
+@server.tool(name="url_check")
+def url_check(url: str, method: str | None = None) -> dict[str, Any]:
+    """Actually fetch a URL: status code, redirect chain, final URL, content-type, latency. Use before claiming a link works."""
+    return tools.url_check(**_clean(dict(url=url, method=method)))
+
+
+def main(argv: list[str] | None = None) -> None:
+    ap = argparse.ArgumentParser(prog="leftbrain-external")
+    ap.add_argument("--transport", choices=["stdio", "streamable-http", "sse"], default="stdio")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8766)
+    args = ap.parse_args(argv)
+    if args.transport == "stdio":
+        server.run(transport="stdio")
+    else:
+        server.settings.host = args.host
+        server.settings.port = args.port
+        server.run(transport=args.transport)
+
+
+if __name__ == "__main__":
+    main()

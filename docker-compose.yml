@@ -1,0 +1,13 @@
+services:
+  leftbrain:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      # LEFTBRAIN_API_KEY: "change-me"      # require Authorization: Bearer <key>
+      # LEFTBRAIN_SERVE_FILES: "1"          # expose /files/mcp
+      # LEFTBRAIN_FILE_ROOTS: "/data"       # allowlisted directories for file tools
+    # volumes:
+    #   - ./data:/data:ro
+    restart: unless-stopped
