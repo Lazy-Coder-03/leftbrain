@@ -2,6 +2,8 @@
 
 Two ways in: hand the prompt below to your coding agent, or wire it up yourself in three steps — get a key, store it in your shell, call a tool. All examples target the hosted server at **https://leftbrain.idlesync.in**; a self-hosted server uses the same routes on your own host.
 
+Every example on this page is labelled: **blue blocks are what you send**, **green blocks are what comes back**.
+
 <h2 id="set-it-up-for-me">Set it up for me</h2>
 
 You do two things: [sign in](/login) and create a key, then paste the block below to your
@@ -78,6 +80,7 @@ Prefer to wire it up yourself? The rest of this page is the manual route.
 
 ## 2 · Store it
 
+:::command
 :::os
 ### windows
 ```powershell
@@ -96,9 +99,11 @@ export LB_KEY="lblz_YOUR_KEY"
 # persist: add the line to ~/.bashrc or ~/.profile
 ```
 :::
+:::
 
 ## 3 · Check the key
 
+:::request
 :::os
 ### windows
 ```powershell
@@ -115,7 +120,9 @@ curl -s https://leftbrain.idlesync.in/keys/me \n  -H "Authorization: Bearer $LB_
 curl -s https://leftbrain.idlesync.in/keys/me \n  -H "Authorization: Bearer $LB_KEY"
 ```
 :::
+:::
 
+:::response
 ```json
 {
   "ok": true,
@@ -128,11 +135,13 @@ curl -s https://leftbrain.idlesync.in/keys/me \n  -H "Authorization: Bearer $LB_
   }
 }
 ```
+:::
 
 <h2 id="call-a-tool-over-mcp">4 · Call a tool over MCP</h2>
 
 The endpoint speaks **Streamable HTTP (JSON-RPC 2.0)** and is stateless, so you can send `tools/call` directly without opening a session.
 
+:::request
 :::os
 ### windows
 ```powershell
@@ -162,9 +171,11 @@ curl -s https://leftbrain.idlesync.in/mcp \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"numbers","arguments":{"mode":"compare","values":["9.11","9.9"]}}}'
 ```
 :::
+:::
 
 The response is an SSE stream by default (`content-type: text/event-stream`, one `event:`/`data:` pair); the JSON-RPC result is in the `data:` line and its `structuredContent` is the leftbrain contract:
 
+:::response
 ```json
 {
   "ok": true,
@@ -179,6 +190,7 @@ The response is an SSE stream by default (`content-type: text/event-stream`, one
   "warnings": []
 }
 ```
+:::
 
 Add `-H "Accept: application/json"` only (no `text/event-stream`) if your server runs with `--json` to get a plain JSON body.
 

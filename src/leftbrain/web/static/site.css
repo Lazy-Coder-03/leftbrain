@@ -69,6 +69,16 @@ table.keys{width:100%;border-collapse:collapse;font-size:.92rem}table.keys th{te
 .os-block{position:relative}.os-block h4{font-family:var(--mono);font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2);margin:10px 0 6px}.js .os-block{display:none}.js .os-block.show{display:block}.js .os-block h4{display:none}
 .copy{font-family:var(--mono);font-size:.72rem;background:var(--bg2);border:1px solid var(--line);color:var(--ink2);padding:4px 8px;border-radius:var(--radius)}.copy:hover{color:var(--ink)}
 .doc .codewrap{position:relative}.doc .codewrap .copy{position:absolute;top:8px;right:8px}.doc .codewrap pre{padding-right:4.5rem}
+/* request / response examples: blue is what you send, green is what comes back */
+.io{margin:0 0 14px;border:1px solid var(--line2);border-radius:var(--radius);overflow:hidden}
+.io-label{display:block;font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;padding:6px 12px;border-bottom:1px solid var(--line2)}
+.doc .io pre{margin:0;border:0;border-left:3px solid transparent;border-radius:0}
+.doc .io .codewrap+.codewrap pre,.doc .io pre+pre{border-top:1px solid var(--line2)}
+.doc .io p{margin:10px 0;padding:0 12px;font-size:.9rem}.doc .io ul,.doc .io ol{padding-left:34px}
+.doc .io .ostabs{margin:10px 12px}.doc .io .os-block h4{padding:0 12px}
+.io-req .io-label{background:var(--accent-soft);color:var(--accent)}.doc .io-req pre{background:#f2f5fd;border-left-color:var(--accent)}
+.io-res .io-label{background:#e6f3ec;color:var(--good)}.doc .io-res pre{background:#f1f7f3;border-left-color:var(--good)}
+.io-cmd .io-label{background:#eef1ee;color:var(--ink2)}.doc .io-cmd pre{background:#f0f2ef;border-left-color:var(--line)}
 pre,.out{scrollbar-width:thin}pre::-webkit-scrollbar{height:8px}pre::-webkit-scrollbar-thumb{background:var(--line);border-radius:4px}
 .callout{border-left:3px solid var(--accent);background:var(--accent-soft);padding:12px 16px;border-radius:0 var(--radius) var(--radius) 0;margin:16px 0;font-size:.92rem}
 @media (max-width:860px){.hero,.contract,.dash,.docs{grid-template-columns:1fr}.tgrid{grid-template-columns:1fr 1fr}.proof{grid-template-columns:1fr}.proof>div{border-right:0;border-bottom:1px solid var(--line2);padding-left:0}.toc{position:static}.sec-h{flex-direction:column;align-items:flex-start}.sec-h p{text-align:left}}

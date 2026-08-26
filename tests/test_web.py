@@ -435,6 +435,77 @@ def test_render_markdown_os_block_unterminated_fails_open():
     assert "<h1>T</h1>" in html
 
 
+# --- request / response containers -------------------------------------------
+
+
+def test_render_markdown_labels_request_response_and_command():
+    from leftbrain.web.docs import render_markdown
+
+    md = (
+        ":::request\n```bash\ncurl -s X\n```\n:::\n\n"
+        ":::response\n```json\n{\"ok\": true}\n```\n:::\n\n"
+        ":::command\n```bash\nexport LB_KEY=x\n```\n:::\n\n"
+        ":::request tools/call\n```json\n{\"method\": \"tools/call\"}\n```\n:::\n\nafter\n"
+    )
+    html = render_markdown(md)
+    assert '<div class="io io-req"><span class="io-label">Request · you send this</span>' in html
+    assert '<div class="io io-res"><span class="io-label">Response · you get this back</span>' in html
+    assert '<div class="io io-cmd"><span class="io-label">Command · run in your terminal</span>' in html
+    assert '<span class="io-label">Request · tools/call</span>' in html  # the labelled variant
+    assert html.count('class="io ') == 4 and "<p>after</p>" in html
+    assert ":::" not in html
+
+
+def test_render_markdown_io_container_wraps_os_tabs():
+    """A request may be per-OS: the container holds the tabs, not the other way round."""
+    from leftbrain.web.docs import render_markdown
+
+    md = (
+        ":::request\n:::os\n"
+        "### windows\n```powershell\ncurl.exe -s X\n```\n"
+        "### macos\n```bash\nMACOS_MARKER\n```\n"
+        "### linux\n```bash\nLINUX_MARKER\n```\n"
+        ":::\n:::\n\nafter\n"
+    )
+    html = render_markdown(md)
+    assert '<div class="io io-req"><span class="io-label">Request · you send this</span><div class="os">' in html
+    assert html.count('class="os-block"') == 3 and "MACOS_MARKER" in html and "LINUX_MARKER" in html
+    assert html.count('class="io ') == 1 and "<p>after</p>" in html
+    assert ":::" not in html  # the inner container's terminator did not close the outer one
+
+
+def test_render_markdown_io_container_is_fence_aware():
+    from leftbrain.web.docs import render_markdown
+
+    md = ":::response\n```text\nbefore\n:::\nafter-in-fence\n```\n:::\n\nafter\n"
+    html = render_markdown(md)
+    assert html.count('class="io io-res"') == 1
+    assert "before" in html and "after-in-fence" in html  # the fence was captured whole
+    assert "<p>:::</p>" not in html and "<p>after</p>" in html
+
+
+def test_render_markdown_io_container_unterminated_fails_open():
+    from leftbrain.web.docs import render_markdown
+
+    md = "# T\n\n:::request\n```bash\ncurl -s X\n```\n\nno closing marker here\n"
+    html = render_markdown(md)  # must not raise
+    assert 'class="io' not in html and "<h1>T</h1>" in html
+
+
+def test_hand_written_pages_label_what_you_send_and_what_comes_back(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        for path in ("/docs", "/docs/clients", "/docs/custom-agents"):
+            body = article(c.get(path).text)
+            assert 'class="io io-req"' in body, path
+            assert 'class="io io-res"' in body, path
+            assert "Request · you send this" in body and "Response · you get this back" in body, path
+            assert ":::" not in body, path  # no container marker leaks as text
+            assert "```" not in body, path
+        quickstart = article(c.get("/docs").text)
+        assert 'class="io io-cmd"' in quickstart  # storing the key is neither a call nor a reply
+        assert "blue blocks are what you send" in quickstart.lower()  # the legend, once
+
+
 # --- the set-it-up prompt and the custom-agents page --------------------------
 
 

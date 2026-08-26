@@ -6,6 +6,7 @@ leftbrain is a standard MCP server over Streamable HTTP. Point any client at `ht
 
 ## Claude Code
 
+:::command
 :::os
 ### windows
 ```powershell
@@ -23,11 +24,13 @@ claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp \
   --header "Authorization: Bearer $LB_KEY"
 ```
 :::
+:::
 
 ## Claude Desktop, Cursor, VS Code
 
 Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/mcp.json`, or `.vscode/mcp.json` (VS Code uses `"servers"` instead of `"mcpServers"`):
 
+:::request
 ```json
 {
   "mcpServers": {
@@ -39,9 +42,11 @@ Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/m
   }
 }
 ```
+:::
 
 ## Python (official `mcp` client)
 
+:::request
 ```python
 import asyncio
 import httpx
@@ -55,23 +60,40 @@ async def main():
         async with ClientSession(streams[0], streams[1]) as s:
             await s.initialize()
             r = await s.call_tool("numbers", {"mode": "compare", "values": ["9.11", "9.9"]})
-            print(r.structured_content)
+            print(r.structured_content["result"]["max"])
 
 asyncio.run(main())
 ```
+:::
+
+:::response
+```text
+{'input': '9.9', 'value': '9.9'}
+```
+:::
 
 ## No client at all
 
 Install the library and call the same functions locally — no key, no network:
 
+:::command
 ```bash
 pip install leftbrain
 ```
+:::
 
+:::request
 ```python
 from leftbrain.core.numbers import numbers
-numbers("compare", values=["9.11", "9.9"])
+numbers("compare", values=["9.11", "9.9"])["result"]["max"]
 ```
+:::
+
+:::response
+```text
+{'input': '9.9', 'value': '9.9'}
+```
+:::
 
 ## Something else
 

@@ -19,6 +19,7 @@ Two methods do everything — `tools/list` returns the tool names and their JSON
 there is no session to open and no `initialize` handshake required before you call a tool; the
 `Mcp-Session-Id` header a stateful server would hand back is simply absent.
 
+:::request
 ```http
 POST /mcp HTTP/1.1
 Host: leftbrain.idlesync.in
@@ -26,21 +27,27 @@ Authorization: Bearer lblz_YOUR_KEY
 Content-Type: application/json
 Accept: application/json, text/event-stream
 ```
+:::
 
 The [quickstart](/docs/quickstart#call-a-tool-over-mcp) has the copy-paste `curl` for all three
 operating systems. The two request bodies are:
 
+:::request tools/list
 ```json
 {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
 ```
+:::
 
+:::request tools/call
 ```json
 {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
  "params": {"name": "numbers", "arguments": {"mode": "compare", "values": ["9.11", "9.9"]}}}
 ```
+:::
 
 and a successful `tools/call` answers with a JSON-RPC envelope whose `result` carries three fields:
 
+:::response
 ```json
 {
   "jsonrpc": "2.0",
@@ -57,6 +64,7 @@ and a successful `tools/call` answers with a JSON-RPC envelope whose `result` ca
   }
 }
 ```
+:::
 
 Read `structuredContent`. `isError: true` means the call never reached the tool — a missing or
 mistyped argument, or an unknown tool name — and then `content[0].text` carries the reason. A tool
@@ -73,6 +81,7 @@ this server exists.
 
 **Executed.** `pip install mcp httpx`
 
+:::request
 ```python
 import asyncio
 import os
@@ -101,11 +110,14 @@ async def main() -> None:
 
 asyncio.run(main())
 ```
+:::
 
+:::response
 ```text
 tools: ['math', 'datetime', 'scale', 'convert', 'holidays', 'numbers', 'text', 'collections', 'validate', 'random', 'geo_offline', 'encode']
 max: {'input': '9.9', 'value': '9.9'}
 ```
+:::
 
 Each tool's JSON Schema is on `t.input_schema`, which is what you convert when you hand the tools to
 a model.
@@ -114,6 +126,7 @@ a model.
 
 **Executed** with Node 22. `npm i @modelcontextprotocol/sdk`
 
+:::request
 ```ts
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -139,11 +152,14 @@ console.log("max:", res.structuredContent.result.max);
 
 await client.close();
 ```
+:::
 
+:::response
 ```text
 tools: math, datetime, scale, convert, holidays, numbers, text, collections, validate, random, geo_offline, encode
 max: { input: '9.9', value: '9.9' }
 ```
+:::
 
 The schema is `t.inputSchema` here — camelCase, unlike the Python SDK.
 
@@ -153,6 +169,7 @@ The schema is `t.inputSchema` here — camelCase, unlike the Python SDK.
 
 `StreamableClientTransport` is a plain struct, so headers go on the `*http.Client` you hand it.
 
+:::request
 ```go
 package main
 
@@ -201,6 +218,7 @@ func main() {
 	fmt.Println(res.StructuredContent)
 }
 ```
+:::
 
 ### Rust — `rmcp`
 
@@ -212,6 +230,7 @@ rmcp = { version = "3", features = ["client", "transport-streamable-http-client-
 tokio = { version = "1", features = ["full"] }
 ```
 
+:::request
 ```rust
 use rmcp::model::CallToolRequestParams;
 use rmcp::transport::{StreamableHttpClientTransport, StreamableHttpClientTransportConfig};
@@ -238,11 +257,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+:::
 
 ### Java — MCP Java SDK
 
 **From the SDK docs.** `io.modelcontextprotocol.sdk:mcp-core`
 
+:::request
 ```java
 McpTransport transport = HttpClientStreamableHttpTransport
         .builder("https://leftbrain.idlesync.in")
@@ -261,11 +282,13 @@ CallToolResult result = client.callTool(
                 .build());
 System.out.println(result.structuredContent());
 ```
+:::
 
 ### C# — `ModelContextProtocol`
 
 **From the SDK docs.** `dotnet add package ModelContextProtocol`
 
+:::request
 ```csharp
 using ModelContextProtocol.Client;
 
@@ -291,6 +314,7 @@ var result = await client.CallToolAsync("numbers", new Dictionary<string, object
     ["values"] = new[] { "9.11", "9.9" }
 });
 ```
+:::
 
 ### Swift — `modelcontextprotocol/swift-sdk`
 
@@ -298,6 +322,7 @@ var result = await client.CallToolAsync("numbers", new Dictionary<string, object
 
 `HTTPClientTransport` takes a `requestModifier`, which is where the header goes.
 
+:::request
 ```swift
 import MCP
 
@@ -323,11 +348,13 @@ let (content, isError) = try await client.callTool(
     arguments: ["mode": "compare", "values": ["9.11", "9.9"]]
 )
 ```
+:::
 
 ### Kotlin — `io.modelcontextprotocol:kotlin-sdk-client`
 
 **From the SDK docs.** The header goes on the Ktor client you pass to the transport.
 
+:::request
 ```kotlin
 val http = HttpClient {
     install(SSE)
@@ -345,6 +372,7 @@ val result = client.callTool(
 )
 println(result)
 ```
+:::
 
 ## Wiring it into a framework
 
@@ -355,6 +383,7 @@ println(result)
 
 Python (`pip install anthropic mcp httpx`):
 
+:::request
 ```python
 import anthropic
 
@@ -396,12 +425,14 @@ while True:
 
 print(next(b.text for b in response.content if b.type == "text"))
 ```
+:::
 
 Two rules the loop depends on: return **all** the `tool_result` blocks of a turn in a *single* user
 message, and append `response.content` unchanged rather than just its text.
 
 TypeScript (`npm i @anthropic-ai/sdk @modelcontextprotocol/sdk`):
 
+:::request
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
 
@@ -442,11 +473,13 @@ for (;;) {
   messages.push({ role: "user", content: results });
 }
 ```
+:::
 
 ### OpenAI Agents SDK
 
 **From the SDK docs.** `pip install openai-agents`
 
+:::request
 ```python
 from agents import Agent
 from agents.mcp import MCPServerStreamableHttp
@@ -466,11 +499,13 @@ async with MCPServerStreamableHttp(
         mcp_servers=[server],
     )
 ```
+:::
 
 ### Vercel AI SDK
 
 **From the SDK docs.** `npm i ai @ai-sdk/mcp @modelcontextprotocol/sdk`
 
+:::request
 ```ts
 import { createMCPClient } from "@ai-sdk/mcp";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -493,6 +528,7 @@ try {
   await mcp.close();
 }
 ```
+:::
 
 Older versions of the SDK export the same function from `ai` as `experimental_createMCPClient`.
 
@@ -500,6 +536,7 @@ Older versions of the SDK export the same function from `ai` as `experimental_cr
 
 **From the SDK docs.** `pip install langchain-mcp-adapters`
 
+:::request
 ```python
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
@@ -512,12 +549,14 @@ client = MultiServerMCPClient({
 })
 tools = await client.get_tools()   # LangChain tools, ready for any agent
 ```
+:::
 
 ### CrewAI, AutoGen, Semantic Kernel
 
 **From the SDK docs.** CrewAI's `MCPServerAdapter` takes the endpoint and transport and yields
 CrewAI tools:
 
+:::request
 ```python
 from crewai_tools import MCPServerAdapter
 
@@ -525,6 +564,7 @@ server_params = {"url": "https://leftbrain.idlesync.in/mcp", "transport": "strea
 with MCPServerAdapter(server_params) as tools:
     agent = Agent(role="Analyst", goal="Be exact", tools=tools)
 ```
+:::
 
 AutoGen reaches the same endpoint through `McpWorkbench` with `StreamableHttpServerParams`. CrewAI's
 published examples do not show the header field, and Semantic Kernel's MCP plugin surface we could
@@ -537,11 +577,13 @@ Any language with an HTTP client can talk to leftbrain directly. Four things to 
 
 **The headers.** All three are required:
 
+:::request
 ```text
 Authorization: Bearer lblz_YOUR_KEY
 Content-Type: application/json
 Accept: application/json, text/event-stream
 ```
+:::
 
 If you send an `Accept` header at all it must name **both** types: `Accept: application/json`
 alone comes back as `406 Not Acceptable` — `{"error": {"code": -32600, "message": "Not
@@ -551,18 +593,22 @@ request reaches any tool.
 **The response is SSE by default.** A successful call comes back as `content-type:
 text/event-stream` with one event, and the JSON-RPC object is the `data:` line:
 
+:::response
 ```text
 event: message
 data: {"jsonrpc":"2.0","id":2,"result":{"content":[…],"structuredContent":{"ok":true,…},"isError":false}}
 ```
+:::
 
 So: read the body, take the first line beginning with `data: `, strip those six characters, and
 parse the rest as JSON. There is no chunk to reassemble and no `[DONE]` sentinel — a stateless
 `tools/call` sends exactly one event. In Python that is
 
+:::request
 ```python
 payload = next(json.loads(line[6:]) for line in body.splitlines() if line.startswith("data: "))
 ```
+:::
 
 A self-hosted server started with `--json` answers with `content-type: application/json` and no SSE
 framing at all; if you own the deployment and never want to parse events, that is the switch.
@@ -577,9 +623,11 @@ framing at all; if you own the deployment and never want to parse events, that i
 
 **401 and 429 never reach the tool**, so they are plain JSON, not JSON-RPC:
 
+:::response
 ```json
 {"ok": false, "error": "missing key", "message": "send Authorization: Bearer <key>"}
 ```
+:::
 
 A `401` means the header is absent or the key is not recognised — re-reading the key and retrying is
 pointless. A `429` carries `retry-after` in seconds and an `error` naming which limit you hit: a

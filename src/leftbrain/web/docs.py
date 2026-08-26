@@ -1,4 +1,4 @@
-"""Markdown docs with an `:::os` block that renders Windows / macOS / Linux tabs."""
+"""Markdown docs with `:::` containers: `:::os` tabs and `:::request`/`:::response` examples."""
 
 from __future__ import annotations
 
@@ -22,6 +22,13 @@ PAGES: list[tuple[str, str]] = [
 # dev checkout has no copy, so read the original instead of shipping a second one.
 ROOT_SOURCES: dict[str, Path] = {"changelog": Path(__file__).resolve().parents[3] / "CHANGELOG.md"}
 OS_LABELS = [("windows", "Windows · PowerShell"), ("macos", "macOS"), ("linux", "Linux")]
+# `:::request` / `:::response` / `:::command` containers: css class, noun, and the note that
+# says which way the example runs. `:::request tools/call` replaces the note with its argument.
+IO_KINDS: dict[str, tuple[str, str, str]] = {
+    "request": ("io-req", "Request", "you send this"),
+    "response": ("io-res", "Response", "you get this back"),
+    "command": ("io-cmd", "Command", "run in your terminal"),
+}
 # Every key in every example is written as this literal, so one replace personalises a page.
 KEY_PLACEHOLDER = "lblz_YOUR_KEY"
 ANON_KEY = "lblz_…"  # what a reader without a key of their own sees instead
@@ -32,6 +39,9 @@ _md = MarkdownIt("commonmark", {"html": True, "linkify": False}).enable("table")
 # "### linux" inside a fenced code block, so this is safe in practice; keep section
 # headings outside fences if you add new `:::os` content.
 _OS_SECTION = re.compile(r"^### (windows|macos|linux)\s*$", re.M)
+# A container opener: `:::os`, or `:::request` / `:::response` / `:::command` with an
+# optional label argument (`:::request tools/call`).
+_OPEN = re.compile(r"^:::(os|request|response|command)(?:[ \t]+(\S.*?))?[ \t]*$")
 
 
 def _is_fence_marker(line: str) -> bool:
@@ -39,41 +49,51 @@ def _is_fence_marker(line: str) -> bool:
     return stripped.startswith("```") or stripped.startswith("~~~")
 
 
-def _split_os_containers(text: str) -> list[tuple[str, str]]:
-    """Split text into ("md", chunk) / ("os", inner) segments, fence-aware.
+def _split_containers(text: str) -> list[tuple[str, str, str]]:
+    """Split text into ("md", "", chunk) / (kind, arg, inner) segments, fence-aware.
 
-    A `:::os` line (recognized only when not inside a fence) opens a container; it
-    closes at the next `:::` line that is also outside a fence. Fences are tracked
-    with a simple "a line starting with ``` or ~~~ toggles fence state" rule — enough
-    for our own docs content, though not a full CommonMark fence-length match.
+    A `:::os` / `:::request` / `:::response` / `:::command` line (recognized only when
+    not inside a fence) opens a container; it closes at the matching `:::` line that is
+    also outside a fence — matching, because containers nest, so a `:::request` may wrap
+    a `:::os` block. Fences are tracked with a simple "a line starting with ``` or ~~~
+    toggles fence state" rule — enough for our own docs content, though not a full
+    CommonMark fence-length match.
 
-    An unterminated container (no matching `:::` before EOF) fails open: its `:::os`
+    An unterminated container (no matching `:::` before EOF) fails open: its opening
     line and everything after it are treated as plain markdown, not a container.
     """
     lines = text.split("\n")
     n = len(lines)
-    segments: list[tuple[str, str]] = []
+    segments: list[tuple[str, str, str]] = []
     buf: list[str] = []
     in_fence = False
     i = 0
     while i < n:
         line = lines[i]
-        if not in_fence and line.strip() == ":::os":
+        opened = None if in_fence else _OPEN.match(line.strip())
+        if opened is not None:
             end = None
             inner_fence = False
+            depth = 0
             j = i + 1
             while j < n:
-                if not inner_fence and lines[j].strip() == ":::":
-                    end = j
-                    break
+                stripped = lines[j].strip()
+                if not inner_fence:
+                    if stripped == ":::":
+                        if depth == 0:
+                            end = j
+                            break
+                        depth -= 1
+                    elif _OPEN.match(stripped):
+                        depth += 1
                 if _is_fence_marker(lines[j]):
                     inner_fence = not inner_fence
                 j += 1
             if end is not None:
                 if buf:
-                    segments.append(("md", "\n".join(buf)))
+                    segments.append(("md", "", "\n".join(buf)))
                     buf = []
-                segments.append(("os", "\n".join(lines[i + 1 : end])))
+                segments.append((opened.group(1), opened.group(2) or "", "\n".join(lines[i + 1 : end])))
                 i = end + 1
                 continue
             # unterminated: fail open — fall through, treat this line as plain text
@@ -82,7 +102,7 @@ def _split_os_containers(text: str) -> list[tuple[str, str]]:
         buf.append(line)
         i += 1
     if buf:
-        segments.append(("md", "\n".join(buf)))
+        segments.append(("md", "", "\n".join(buf)))
     return segments
 
 
@@ -90,12 +110,27 @@ def _render_os_block(inner: str) -> str:
     parts = _OS_SECTION.split(inner)  # ['', 'windows', body, 'macos', body, ...]
     sections = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
     tabs = "".join(f'<button type="button" data-os="{k}" aria-pressed="{"true" if i == 0 else "false"}">{label}</button>' for i, (k, label) in enumerate(OS_LABELS))
-    blocks = "".join(f'<div class="os-block" data-os="{k}"><h4>{label}</h4>{_md.render(sections.get(k, ""))}</div>' for k, label in OS_LABELS)
+    blocks = "".join(f'<div class="os-block" data-os="{k}"><h4>{label}</h4>{render_markdown(sections.get(k, ""))}</div>' for k, label in OS_LABELS)
     return f'<div class="os"><div class="ostabs">{tabs}</div>{blocks}</div>\n'
 
 
+def _render_io_block(kind: str, arg: str, inner: str) -> str:
+    """One request/response/command example: a labelled bar above the code it describes."""
+    css, noun, note = IO_KINDS[kind]
+    label = f"{noun} · {escape(arg) if arg else note}"
+    return f'<div class="io {css}"><span class="io-label">{label}</span>{render_markdown(inner)}</div>\n'
+
+
 def render_markdown(text: str) -> str:
-    return "".join(_render_os_block(chunk) if kind == "os" else _md.render(chunk) for kind, chunk in _split_os_containers(text))
+    out = []
+    for kind, arg, chunk in _split_containers(text):
+        if kind == "md":
+            out.append(_md.render(chunk))
+        elif kind == "os":
+            out.append(_render_os_block(chunk))
+        else:
+            out.append(_render_io_block(kind, arg, chunk))
+    return "".join(out)
 
 
 def fill_key(html: str, key: str | None) -> str:
