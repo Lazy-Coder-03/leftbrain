@@ -248,3 +248,45 @@ def test_callback_emails_wrong_shape(tmp_path):
         assert "GitHub" in r.text
         assert "gho_" not in r.text
         assert "Traceback" not in r.text
+
+
+def test_dashboard_requires_login(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        r = c.get("/dashboard", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == "/login"
+
+
+def csrf_from(html: str) -> str:
+    return html.split('name="csrf" value="')[1].split('"')[0]
+
+
+def test_dashboard_create_list_cap_revoke(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        page = c.get("/dashboard")
+        assert page.status_code == 200 and "No keys yet" in page.text and "octo" in page.text
+        csrf = csrf_from(page.text)
+        r = c.post("/dashboard/keys", data={"name": "laptop", "csrf": csrf})
+        assert r.status_code == 200 and "lblz_" in r.text and "won't be shown again" in r.text
+        key = r.text.split("<code id=\"new-key\">")[1].split("</code>")[0]
+        assert key.startswith("lblz_") and len(key) > 20
+        # the key works on the API
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]["owner"] == "octo@example.com"
+        for i in range(2):
+            assert c.post("/dashboard/keys", data={"name": f"k{i}", "csrf": csrf}).status_code == 200
+        r = c.post("/dashboard/keys", data={"name": "one-too-many", "csrf": csrf})
+        assert r.status_code == 200 and "3 active" in r.text and "new-key" not in r.text
+        prefix = key[:13]
+        r = c.post(f"/dashboard/keys/{prefix}/revoke", data={"csrf": csrf}, follow_redirects=False)
+        assert r.status_code == 302
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).status_code == 403
+        assert "revoked" in c.get("/dashboard").text
+
+
+def test_dashboard_csrf_and_ownership(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        assert c.post("/dashboard/keys", data={"name": "x"}).status_code == 403
+        assert c.post("/dashboard/keys", data={"name": "x", "csrf": "bogus"}).status_code == 403
+        csrf = csrf_from(c.get("/dashboard").text)
+        assert c.post("/dashboard/keys/lblz_notmine1/revoke", data={"csrf": csrf}).status_code == 403

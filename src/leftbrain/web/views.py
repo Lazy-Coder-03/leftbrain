@@ -81,10 +81,55 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         auth.clear_session_cookie(resp, request)
         return resp
 
+    def require_user(request: Request) -> auth.User | None:
+        return auth.current_user(request, cfg)
+
+    def dashboard_ctx(request: Request, user: auth.User, **extra: Any) -> dict[str, Any]:
+        from ..keys import MAX_ACTIVE_KEYS_PER_EMAIL
+
+        keys = store.list(user.email) if store else []
+        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "new_key": None, "error": None, **extra}
+
+    async def dashboard(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        if store is None:
+            return error_page(request, 503, "Keys unavailable", "This server has no key store configured.")
+        return render(request, "dashboard.html", 200, **dashboard_ctx(request, user))
+
+    async def create_key(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        raw, info = store.create_for_owner(user.email, str(form.get("name") or ""))
+        if raw is None:
+            return render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=info))
+        return render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw))
+
+    async def revoke_key(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return error_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        prefix = request.path_params["prefix"]
+        if not store.owns(user.email, prefix):
+            return error_page(request, 403, "Not your key", "That key belongs to a different account.")
+        store.set_disabled(prefix, True)
+        return RedirectResponse("/dashboard", status_code=302)
+
     return [
         Route("/login", login),
         Route("/auth/github/callback", callback),
         Route("/logout", logout, methods=["POST"]),
+        Route("/dashboard", dashboard),
+        Route("/dashboard/keys", create_key, methods=["POST"]),
+        Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
     ]
 
 
