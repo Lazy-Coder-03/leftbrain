@@ -35,7 +35,11 @@ from starlette.routing import Mount, Route
 
 from . import __version__
 
-PUBLIC_PATHS = {"/", "/healthz", "/keys/signup"}
+PROTECTED_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp", "/keys/me")
+
+
+def _protected(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in PROTECTED_PREFIXES)
 
 
 def _client_ip(scope: Any) -> str:
@@ -64,7 +68,7 @@ class AuthMiddleware:
         self.store = store
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
-        if scope["type"] != "http" or scope.get("path") in PUBLIC_PATHS:
+        if scope["type"] != "http" or not _protected(scope.get("path", "")):
             await self.app(scope, receive, send)
             return
         supplied = _bearer(scope)
@@ -102,7 +106,7 @@ class AuthMiddleware:
         await resp(scope, receive, send)
 
 
-def build_app(*, include_external: bool = True, include_files: bool = False, stateless: bool = True, json_response: bool = False, host: str = "0.0.0.0", api_key: str | None = None, keys_db: str | None = None) -> Any:
+def build_app(*, include_external: bool = True, include_files: bool = False, stateless: bool = True, json_response: bool = False, host: str = "0.0.0.0", api_key: str | None = None, keys_db: str | None = None, web_config: Any | None = None) -> Any:
     from .mcp_server import server as core
 
     servers: list[tuple[str, Any]] = [("", core)]
@@ -123,6 +127,11 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     static_key = api_key if api_key is not None else os.environ.get("LEFTBRAIN_API_KEY") or None
     auth_kind = "none" if not (static_key or store) else ("keys" if store else "bearer")
 
+    from .web import build_web
+    from .web.config import WebConfig
+
+    cfg = web_config or WebConfig.from_env()
+
     mounts: list[Any] = []
     root_app = None
     for prefix, srv in servers:
@@ -132,8 +141,12 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
         else:
             root_app = app
 
-    async def index(_: Request) -> JSONResponse:
-        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if store else None, "transport": "streamable-http", "stateless": stateless})
+    async def index(request: Request) -> Any:
+        if "text/html" in request.headers.get("accept", ""):
+            from .web.views import landing
+
+            return await landing(request, store, cfg)
+        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if (store and cfg.open_signup) else None, "login": "/login", "docs": "/docs", "transport": "streamable-http", "stateless": stateless})
 
     async def healthz(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "version": __version__})
@@ -169,7 +182,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
                 await stack.enter_async_context(srv.session_manager.run())
             yield
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *mounts, Mount("", app=root_app)]
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *mounts, Mount("", app=root_app)]
     app: Any = Starlette(routes=routes, lifespan=lifespan)
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store)
