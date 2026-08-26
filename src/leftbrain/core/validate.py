@@ -679,10 +679,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "json_schema", "schema": _EX_LEAVE_SCHEMA, "data": {"employee": {"id": "E-19", "email": "asha@example.com"}, "leave": {"type": "sick", "days": 2}}},
         },
         {
-            "caption": "`schema` is required.",
-            "args": {"mode": "json_schema", "data": {"a": 1}},
-        },
-        {
             "caption": "A schema that is not a valid schema.",
             "args": {"mode": "json_schema", "schema": {"type": "nonsense"}, "data": {}},
         },
@@ -699,10 +695,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "`each` applies a sub-rule to every element of a list.",
             "args": {"mode": "assert", "data": {"lines": [{"qty": 2}, {"qty": 0}]}, "rules": [{"path": "lines", "op": "each", "value": {"path": "qty", "op": "gt", "value": 0}}]},
-        },
-        {
-            "caption": "`rules` is required and must be non-empty.",
-            "args": {"mode": "assert", "data": _EX_LEAVE_DOC},
         },
         {
             "caption": "An unknown operator.",
@@ -741,10 +733,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "An Aadhaar number verified by the Verhoeff algorithm and returned masked.",
             "args": {"mode": "id", "kind": "aadhaar", "value": "2345 6789 0124"},
-        },
-        {
-            "caption": "An unknown scheme lists the supported ones.",
-            "args": {"mode": "id", "kind": "passport", "value": "X1234567"},
         },
         {
             "caption": "`value` is required.",
@@ -831,10 +819,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Invalid SQL: a successful call that says the SQL is invalid.",
             "args": {"mode": "sql_parse", "sql": "SELCT * FROM t WHERE"},
-        },
-        {
-            "caption": "`sql` is required.",
-            "args": {"mode": "sql_parse"},
         },
         {
             "caption": "An unknown dialect.",

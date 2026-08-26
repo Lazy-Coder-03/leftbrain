@@ -139,10 +139,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "linear", "factor": 1.15, "entities": {"salary": 62000, "bonus": 8000}},
         },
         {
-            "caption": "`from_qty` (or `factor`) is required.",
-            "args": {"mode": "linear", "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]},
-        },
-        {
             "caption": "A zero base has no factor.",
             "args": {"mode": "linear", "from_qty": 0, "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]},
         },
@@ -179,10 +175,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Quantities must be numbers.",
             "args": {"mode": "inverse", "from_qty": "a few", "to_qty": 12, "entities": [{"name": "days", "qty": 5}]},
-        },
-        {
-            "caption": "`to_qty` is required when no `factor` is given.",
-            "args": {"mode": "inverse", "from_qty": 3, "entities": [{"name": "days", "qty": 5}]},
         },
     ],
 }

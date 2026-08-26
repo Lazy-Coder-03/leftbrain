@@ -218,10 +218,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "hash", "text": "hello", "algo": "sha999"},
         },
         {
-            "caption": "Some input is required.",
-            "args": {"mode": "hash", "algo": "sha256"},
-        },
-        {
             "caption": "`bytes_hex` must actually be hex.",
             "args": {"mode": "hash", "bytes_hex": "zzzz"},
         },
@@ -238,10 +234,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A different digest algorithm.",
             "args": {"mode": "hmac", "key": "s3cret", "text": "payload-1", "algo": "sha512"},
-        },
-        {
-            "caption": "`key` is required.",
-            "args": {"mode": "hmac", "text": "payload-1"},
         },
         {
             "caption": "An unknown algorithm.",
@@ -264,10 +256,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Only CRC32 and Adler-32 are checksums here.",
             "args": {"mode": "checksum", "text": "hello", "algo": "md5"},
-        },
-        {
-            "caption": "Some input is required.",
-            "args": {"mode": "checksum", "algo": "crc32"},
         },
     ],
     "base64": [
@@ -313,10 +301,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An odd number of hex digits.",
             "args": {"mode": "hex", "action": "decode", "text": "abc"},
         },
-        {
-            "caption": "Some input is required.",
-            "args": {"mode": "hex", "action": "encode"},
-        },
     ],
     "url": [
         {
@@ -356,16 +340,8 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "jwt_decode", "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTQyIiwibmFtZSI6IkFkYSIsImlhdCI6MTY5OTk5NjQwMCwiZXhwIjoxNzAwMDAwMDAwfQ.c2lnbmF0dXJlLW5vdC12ZXJpZmllZA"},
         },
         {
-            "caption": "A JWT has three dot-separated parts.",
-            "args": {"mode": "jwt_decode", "token": "abc"},
-        },
-        {
             "caption": "Three parts, but not Base64url JSON.",
             "args": {"mode": "jwt_decode", "token": "a.b.c"},
-        },
-        {
-            "caption": "`token` is required.",
-            "args": {"mode": "jwt_decode"},
         },
     ],
     "json": [

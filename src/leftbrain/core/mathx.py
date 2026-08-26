@@ -1154,10 +1154,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "Anything that looks like code execution is refused by the parser guard.",
             "args": {"mode": "eval", "expr": "__import__(1)"},
         },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "eval"},
-        },
     ],
     "exact": [
         {
@@ -1191,10 +1187,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "simplify", "expr": "sin(x)^2 + cos(x)^2"},
         },
         {
-            "caption": "`expr` is required.",
-            "args": {"mode": "simplify"},
-        },
-        {
             "caption": "A malformed operator sequence fails to parse.",
             "args": {"mode": "simplify", "expr": "x^^2"},
         },
@@ -1212,10 +1204,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "Unbalanced parentheses.",
             "args": {"mode": "expand", "expr": "(x + 1"},
         },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "expand"},
-        },
     ],
     "factor": [
         {
@@ -1229,10 +1217,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A statement separator is not allowed in an expression.",
             "args": {"mode": "factor", "expr": "x; y"},
-        },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "factor"},
         },
     ],
     "solve": [
@@ -1257,10 +1241,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "solve", "equations": ["x + y = 10"]},
         },
         {
-            "caption": "Neither `equations` nor `expr` was given.",
-            "args": {"mode": "solve"},
-        },
-        {
             "caption": "An unknown domain.",
             "args": {"mode": "solve", "equations": ["x = 1"], "domain": "quaternion"},
         },
@@ -1282,10 +1262,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "Two free symbols and no `var`: the tool lists them instead of choosing.",
             "args": {"mode": "diff", "expr": "x*y"},
         },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "diff"},
-        },
     ],
     "integrate": [
         {
@@ -1299,10 +1275,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Half a range is not a range.",
             "args": {"mode": "integrate", "expr": "x^2", "var": "x", "lower": 0},
-        },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "integrate"},
         },
     ],
     "limit": [
@@ -1322,10 +1294,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An unrecognised `side`.",
             "args": {"mode": "limit", "expr": "1/x", "var": "x", "point": 0, "side": "up"},
         },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "limit"},
-        },
     ],
     "series": [
         {
@@ -1340,10 +1308,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "Two free symbols and no `var`.",
             "args": {"mode": "series", "expr": "exp(x*y)", "order": 3},
         },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "series"},
-        },
     ],
     "ode": [
         {
@@ -1353,10 +1317,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A second-order equation pinned down by initial conditions.",
             "args": {"mode": "ode", "equation": "y'' + y = 0", "func": "y(x)", "ics": {"y(0)": 1, "y'(0)": 0}},
-        },
-        {
-            "caption": "`equation` is required.",
-            "args": {"mode": "ode"},
         },
         {
             "caption": "`func` must name a function, not an expression.",
@@ -1400,10 +1360,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An unknown operation lists the valid ones.",
             "args": {"mode": "matrix", "op": "eigenfrobnicate", "A": [[1, 0], [0, 1]]},
         },
-        {
-            "caption": "`A` is required.",
-            "args": {"mode": "matrix", "op": "det"},
-        },
     ],
     "stats": [
         {
@@ -1417,10 +1373,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A percentile, with the interpolation rule stated.",
             "args": {"mode": "stats", "op": "percentile", "data": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "percentile": 90},
-        },
-        {
-            "caption": "An empty sample.",
-            "args": {"mode": "stats", "op": "describe", "data": []},
         },
         {
             "caption": "A sample standard deviation needs at least two points.",
@@ -1456,10 +1408,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An unknown target form.",
             "args": {"mode": "convert_form", "expr": "2", "form": "binary"},
         },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "convert_form", "form": "polar"},
-        },
     ],
     "plot_points": [
         {
@@ -1477,10 +1425,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "One point is not a plot.",
             "args": {"mode": "plot_points", "expr": "x^2", "n": 1},
-        },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "plot_points"},
         },
     ],
 }

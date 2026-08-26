@@ -1234,10 +1234,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An abbreviation as the source zone.",
             "args": {"mode": "convert_tz", "value": "2025-06-01T10:00:00", "from_tz": "IST", "to_tz": "UTC"},
         },
-        {
-            "caption": "`to_tz` is required.",
-            "args": {"mode": "convert_tz", "value": "2025-06-01T10:00:00+00:00"},
-        },
     ],
     "parse": [
         {
@@ -1276,10 +1272,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An unknown locale code.",
             "args": {"mode": "parse", "value": "03/04/2025", "locale": "XX"},
         },
-        {
-            "caption": "`value` is required.",
-            "args": {"mode": "parse"},
-        },
     ],
     "add": [
         {
@@ -1297,10 +1289,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Subtracting, with a negative amount.",
             "args": {"mode": "add", "value": "2025-08-26", "amount": -2, "unit": "weeks"},
-        },
-        {
-            "caption": "`amount` and `unit` are both required.",
-            "args": {"mode": "add", "value": "2025-08-26", "amount": 3},
         },
         {
             "caption": "An unknown unit.",
@@ -1323,10 +1311,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A backwards range: `sign` is −1 and `direction` says so in words.",
             "args": {"mode": "diff", "start": "2025-03-15T18:00:00", "end": "2025-03-15T09:30:00"},
-        },
-        {
-            "caption": "`start` is required.",
-            "args": {"mode": "diff", "end": "2025-01-01"},
         },
         {
             "caption": "An unknown unit.",
@@ -1373,10 +1357,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": 5},
         },
         {
-            "caption": "`weekday` is required.",
-            "args": {"mode": "nth_weekday", "year": 2025, "month": 2},
-        },
-        {
             "caption": "`n` cannot be zero.",
             "args": {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": 0},
         },
@@ -1397,10 +1377,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Regional holidays via `subdiv`, plus a company shutdown day of your own.",
             "args": {"mode": "business_days", "start": "2025-10-01", "end": "2025-10-10", "region": "IN", "subdiv": "WB", "extra_holidays": ["2025-10-06"]},
-        },
-        {
-            "caption": "Both ends are required.",
-            "args": {"mode": "business_days", "start": "2025-08-01"},
         },
         {
             "caption": "An unknown weekday in `weekend`.",
@@ -1447,10 +1423,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T09:00:00", "end": "2025-08-26T11:00:00"}, {"start": "2025-08-26T10:30:00", "end": "2025-08-26T12:00:00"}]},
         },
         {
-            "caption": "`ranges` is required and must be a non-empty list.",
-            "args": {"mode": "duration_sum"},
-        },
-        {
             "caption": "Every entry needs both a `start` and an `end`.",
             "args": {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T09:00:00"}]},
         },
@@ -1475,10 +1447,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A phrase the converter does not recognise — it asks for an RRULE rather than guessing.",
             "args": {"mode": "recurrence", "rule": "every blue moon", "start": "2025-01-01"},
-        },
-        {
-            "caption": "`rule` is required.",
-            "args": {"mode": "recurrence", "start": "2025-01-01"},
         },
         {
             "caption": "`limit` is capped at 1000.",
@@ -1510,10 +1478,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "A value outside its field’s range.",
             "args": {"mode": "cron_next", "expr": "99 9 * * *"},
         },
-        {
-            "caption": "`expr` is required.",
-            "args": {"mode": "cron_next"},
-        },
     ],
     "age": [
         {
@@ -1523,10 +1487,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A leap-day birthday in a non-leap year.",
             "args": {"mode": "age", "dob": "2000-02-29", "on": "2025-03-01"},
-        },
-        {
-            "caption": "`dob` is required.",
-            "args": {"mode": "age", "on": "2025-08-26"},
         },
         {
             "caption": "The reference date precedes the birth date.",

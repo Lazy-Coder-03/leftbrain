@@ -364,10 +364,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "group_by", "items": _EX_ORDERS, "key": "rep.name", "include_items": True},
         },
         {
-            "caption": "`key` is required.",
-            "args": {"mode": "group_by", "items": _EX_ORDERS},
-        },
-        {
             "caption": "`items` must be a list.",
             "args": {"mode": "group_by", "items": {"a": 1}, "key": "a"},
         },
@@ -404,10 +400,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "pick_fields", "items": _EX_ORDERS, "fields": ["id", "rep.email"], "rename": {"rep.email": "contact"}},
         },
         {
-            "caption": "`fields` is required.",
-            "args": {"mode": "pick_fields", "items": _EX_ORDERS},
-        },
-        {
             "caption": "`items` must be a list.",
             "args": {"mode": "pick_fields", "items": {"id": 1}, "fields": ["id"]},
         },
@@ -426,10 +418,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "flatten", "data": [1, [2, [3, 4]], 5]},
         },
         {
-            "caption": "`data` must be a list or an object.",
-            "args": {"mode": "flatten", "data": "a.b.c"},
-        },
-        {
             "caption": "`data` is required.",
             "args": {"mode": "flatten"},
         },
@@ -442,10 +430,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Bracketed indices rebuild arrays.",
             "args": {"mode": "unflatten", "data": {"items[0].sku": "A1", "items[1].sku": "B2", "items[1].qty": 3}},
-        },
-        {
-            "caption": "`data` must be a flat object.",
-            "args": {"mode": "unflatten", "data": ["a.b"]},
         },
         {
             "caption": "`data` is required.",

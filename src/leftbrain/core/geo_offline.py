@@ -343,10 +343,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "A place the dataset does not know.",
             "args": {"mode": "tz_for_place", "place": "Atlantis"},
         },
-        {
-            "caption": "`place` is required.",
-            "args": {"mode": "tz_for_place"},
-        },
     ],
     "tz_for_coords": [
         {
@@ -358,10 +354,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "Coordinates in New York.",
             "args": {"mode": "tz_for_coords", "lat": 40.7128, "lon": -74.006},
             "volatile": True,
-        },
-        {
-            "caption": "Coordinates are required.",
-            "args": {"mode": "tz_for_coords"},
         },
         {
             "caption": "Coordinates must be numbers.",
@@ -385,14 +377,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "A place name that spans several zones is not specific enough to be a point.",
             "args": {"mode": "distance", "origin": "Australia", "destination": "Kolkata"},
         },
-        {
-            "caption": "An unknown place.",
-            "args": {"mode": "distance", "origin": "Atlantis", "destination": "Kolkata"},
-        },
-        {
-            "caption": "`destination` is required.",
-            "args": {"mode": "distance", "origin": [19.076, 72.8777]},
-        },
     ],
     "country": [
         {
@@ -409,10 +393,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An unknown country.",
             "args": {"mode": "country", "country": "Freedonia"},
         },
-        {
-            "caption": "`country` is required.",
-            "args": {"mode": "country"},
-        },
     ],
     "zone_info": [
         {
@@ -424,14 +404,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "A zone that does observe it.",
             "args": {"mode": "zone_info", "zone": "America/New_York"},
             "volatile": True,
-        },
-        {
-            "caption": "A zone name that does not exist.",
-            "args": {"mode": "zone_info", "zone": "Asia/Gotham"},
-        },
-        {
-            "caption": "An abbreviation is not a zone name.",
-            "args": {"mode": "zone_info", "zone": "IST"},
         },
         {
             "caption": "`zone` is required.",

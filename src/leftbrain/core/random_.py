@@ -282,10 +282,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "pick", "items": ["gold", "silver", "bronze"], "weights": [1, 3, 6], "n": 5, "unique": False, "seed": "loot"},
         },
         {
-            "caption": "The pool must be a non-empty list.",
-            "args": {"mode": "pick", "items": []},
-        },
-        {
             "caption": "Weights must line up with items.",
             "args": {"mode": "pick", "items": ["a", "b", "c"], "weights": [1, 2]},
         },
@@ -368,10 +364,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "`k` cannot exceed the population.",
             "args": {"mode": "sample", "items": ["a", "b"], "k": 5},
-        },
-        {
-            "caption": "The population must be a non-empty list.",
-            "args": {"mode": "sample", "items": [], "k": 1},
         },
     ],
 }

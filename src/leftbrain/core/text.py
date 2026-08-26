@@ -302,10 +302,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "count", "text": _EX_LOG_A, "what": "lines"},
         },
         {
-            "caption": "`text` is required.",
-            "args": {"mode": "count"},
-        },
-        {
             "caption": "An unknown statistic lists the valid ones.",
             "args": {"mode": "count", "text": "abc", "what": "vowels"},
         },
@@ -334,10 +330,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "An unknown flag letter.",
             "args": {"mode": "regex_match", "text": "abc", "pattern": "a", "flags": "z"},
-        },
-        {
-            "caption": "`pattern` is required.",
-            "args": {"mode": "regex_match", "text": "abc"},
         },
     ],
     "regex_replace": [
@@ -378,10 +370,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "An unknown granularity.",
             "args": {"mode": "diff", "a": "x", "b": "y", "granularity": "sentence"},
-        },
-        {
-            "caption": "Both sides are required.",
-            "args": {"mode": "diff", "a": "x"},
         },
     ],
     "sort": [
@@ -429,10 +417,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An unknown kind lists the valid ones.",
             "args": {"mode": "extract", "text": "abc", "what": "vehicles"},
         },
-        {
-            "caption": "`text` is required.",
-            "args": {"mode": "extract", "what": "emails"},
-        },
     ],
     "find": [
         {
@@ -442,10 +426,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "The same search, case-sensitive, finds fewer.",
             "args": {"mode": "find", "text": _EX_LOG_B, "substring": "info", "case_sensitive": True},
-        },
-        {
-            "caption": "`substring` is required.",
-            "args": {"mode": "find", "text": "abc"},
         },
         {
             "caption": "`text` is required.",

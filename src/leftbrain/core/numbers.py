@@ -493,16 +493,8 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "compare", "a": "1,250.50", "b": "1,499.99"},
         },
         {
-            "caption": "Comparison needs at least two values.",
-            "args": {"mode": "compare", "values": ["9.11"]},
-        },
-        {
             "caption": "A value that is not a number.",
             "args": {"mode": "compare", "values": ["nine point one", "9.9"]},
-        },
-        {
-            "caption": "Neither `values` nor `a`/`b`.",
-            "args": {"mode": "compare"},
         },
     ],
     "round": [
@@ -633,10 +625,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "sequence", "kind": "harmonic", "n": 5},
         },
         {
-            "caption": "An arithmetic sequence needs `n` or `end`.",
-            "args": {"mode": "sequence", "kind": "arithmetic", "start": 1, "step": 2},
-        },
-        {
             "caption": "A zero step never reaches the end.",
             "args": {"mode": "sequence", "kind": "arithmetic", "start": 1, "step": 0, "end": 10},
         },
@@ -665,10 +653,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "An unknown magnitude suffix.",
             "args": {"mode": "parse", "value": "5 zillion"},
-        },
-        {
-            "caption": "`value` is required.",
-            "args": {"mode": "parse"},
         },
     ],
     "to_words": [

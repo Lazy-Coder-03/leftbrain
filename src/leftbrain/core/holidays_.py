@@ -106,10 +106,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "list", "region": "IN", "year": 2025, "month": 10, "subdiv": "WB"},
         },
         {
-            "caption": "`region` is required.",
-            "args": {"mode": "list", "year": 2025},
-        },
-        {
             "caption": "An unsupported country code.",
             "args": {"mode": "list", "region": "XX", "year": 2025},
         },
@@ -139,10 +135,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "caption": "An unparseable date.",
             "args": {"mode": "check", "region": "IN", "date": "diwali"},
         },
-        {
-            "caption": "`region` is required.",
-            "args": {"mode": "check", "date": "2025-08-15"},
-        },
     ],
     "next": [
         {
@@ -152,10 +144,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "The same question for the UK, crossing into the following year.",
             "args": {"mode": "next", "region": "GB", "date": "2025-12-20", "n": 3},
-        },
-        {
-            "caption": "`region` is required.",
-            "args": {"mode": "next", "date": "2025-08-01"},
         },
         {
             "caption": "An unsupported region.",
@@ -176,10 +164,6 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "The UK's four nations.",
             "args": {"mode": "subdivisions", "region": "GB"},
-        },
-        {
-            "caption": "`region` is required.",
-            "args": {"mode": "subdivisions"},
         },
         {
             "caption": "An unsupported region.",
