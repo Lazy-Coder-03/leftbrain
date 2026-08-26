@@ -119,8 +119,14 @@ def _params_table(params: tuple[Param, ...]) -> list[str]:
     return out
 
 
+def _mcp_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Argument names as an MCP client must send them: ``from`` is a Python keyword, so the
+    MCP tool signatures spell it ``from_`` (the library and the demo endpoint accept ``from``)."""
+    return {("from_" if k == "from" else k): v for k, v in args.items()}
+
+
 def _example_block(tool: ToolDoc, example: Example) -> list[str]:
-    request = {"name": tool.name, "arguments": example.args}
+    request = {"name": tool.name, "arguments": _mcp_args(example.args)}
     response = run_example(tool, example)
     out = [example.caption, "", _json_block(request), "", _json_block(response), ""]
     if example.volatile:
@@ -152,7 +158,7 @@ CONTRACT_NOTE = (
 )
 
 _PAGE_LEAD = (
-    "Each example below shows the `tools/call` request first and the exact response underneath. "
+    "Each example below shows the `tools/call` request first and the exact response underneath.  Over MCP the `from` argument is spelled `from_` (a Python keyword); the Python library and the landing-page demo accept `from`."
     "Responses are produced by running the real tool when this page is built, so they cannot drift "
     "from what the server returns."
 )
@@ -466,7 +472,7 @@ MATH = ToolDoc(
             params=(
                 Param("expr", "string", True, "The integrand."),
                 Param("var", "string", False, "The variable of integration. Inferred when unambiguous."),
-                Param("from", "number \\| string", False, "Lower bound. Required together with `to`."),
+                Param("from_", "number \\| string", False, "Lower bound. Required together with `to`."),
                 Param("to", "number \\| string", False, "Upper bound. Required together with `from`."),
                 Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
             ),
@@ -823,7 +829,7 @@ DATETIME = ToolDoc(
                 "`unit: business_days` (with an optional `region`) to count working days instead."
             ),
             params=(
-                Param("from", "string", True, "Start instant."),
+                Param("from_", "string", True, "Start instant."),
                 Param("to", "string", False, "End instant.", "`now`"),
                 Param("unit", "string", False, "Report one unit in `value`; `business_days` counts working days.", "`auto`"),
                 Param("region", "string", False, "ISO country code for holidays, with `business_days`."),
@@ -903,7 +909,7 @@ DATETIME = ToolDoc(
                 "every working date."
             ),
             params=(
-                Param("from", "string", True, "Start of the range."),
+                Param("from_", "string", True, "Start of the range."),
                 Param("to", "string", True, "End of the range."),
                 Param("region", "string", False, "ISO country code whose public holidays to exclude."),
                 Param("subdiv", "string", False, "State/province code for regional holidays."),
@@ -1014,7 +1020,7 @@ DATETIME = ToolDoc(
             params=(
                 Param("expr", "string", True, "Cron expression or `@`-alias."),
                 Param("tz", "string", False, "Zone the schedule runs in.", "`UTC`"),
-                Param("from", "string", False, "Start searching after this instant.", "now"),
+                Param("from_", "string", False, "Start searching after this instant.", "now"),
                 Param("n", "integer", False, "How many fire times to return, 1..500.", "5"),
             ),
             examples=(
@@ -2812,7 +2818,7 @@ GEO = ToolDoc(
                 "is straight-line distance, never driving distance."
             ),
             params=(
-                Param("from", "object \\| number[] \\| string", True, "Origin: coordinates or a place name."),
+                Param("from_", "object \\| number[] \\| string", True, "Origin: coordinates or a place name."),
                 Param("to", "object \\| number[] \\| string", True, "Destination: coordinates or a place name."),
             ),
             examples=(
