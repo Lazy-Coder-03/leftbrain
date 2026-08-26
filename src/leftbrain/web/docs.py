@@ -94,6 +94,8 @@ def _first_mode(modes: str) -> str:
 def _tools_page_markdown() -> str:
     """Build the "Tools" docs page from the TOOLS list — no markdown file backs this page."""
     parts = [
+        "# Tools",
+        "",
         "Every tool takes a `mode` and returns the same contract — "
         "`{ok, result, assumptions[], warnings[]}` on success, or `{ok:false, error, needs}` when the "
         "input is ambiguous. Full per-tool reference pages are coming; for now, here is the complete "

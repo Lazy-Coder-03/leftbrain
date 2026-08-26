@@ -403,6 +403,7 @@ def test_docs_tools_page_lists_every_tool(tmp_path):
             assert name in r.text
         assert 'id="geo_offline"' in r.text
         assert 'href="/docs/tools" class="cur"' in r.text
+        assert "<h1>Tools</h1>" in r.text
 
 
 def test_docs_sidebar_drops_readme_link_for_tools_page(tmp_path):
