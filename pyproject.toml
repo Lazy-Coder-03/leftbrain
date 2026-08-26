@@ -49,9 +49,9 @@ leftbrain-serve = "leftbrain.serve:main"
 leftbrain-keys = "leftbrain.keys:main"
 
 [project.urls]
-Homepage = "https://github.com/sayantan-ghosh/leftbrain"
-Repository = "https://github.com/sayantan-ghosh/leftbrain"
-Issues = "https://github.com/sayantan-ghosh/leftbrain/issues"
+Homepage = "https://github.com/Lazy-Coder-03/leftbrain"
+Repository = "https://github.com/Lazy-Coder-03/leftbrain"
+Issues = "https://github.com/Lazy-Coder-03/leftbrain/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/leftbrain"]

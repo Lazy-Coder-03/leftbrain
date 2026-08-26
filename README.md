@@ -186,7 +186,7 @@ The store speaks **SQLite** (a path, for one instance with a volume) or **Postgr
 ## Development
 
 ```bash
-git clone https://github.com/sayantan-ghosh/leftbrain && cd leftbrain
+git clone https://github.com/Lazy-Coder-03/leftbrain && cd leftbrain
 python -m venv .venv && . .venv/bin/activate     # .venv\Scripts\activate on Windows
 pip install -e ".[dev]"
 pytest                          # unit tests

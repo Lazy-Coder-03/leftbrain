@@ -12,7 +12,7 @@ try:
 except ImportError:  # pragma: no cover
     httpx = None  # type: ignore[assignment]
 
-USER_AGENT = "leftbrain/0.1 (+https://github.com/sayantan-ghosh/leftbrain)"
+USER_AGENT = "leftbrain/0.1 (+https://github.com/Lazy-Coder-03/leftbrain)"
 TIMEOUT = 15.0
 
 _WMO = {

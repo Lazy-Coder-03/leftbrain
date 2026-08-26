@@ -58,7 +58,7 @@ server = MCPServer(
     title="leftbrain",
     instructions=INSTRUCTIONS,
     version=__version__,
-    website_url="https://github.com/sayantan-ghosh/leftbrain",
+    website_url="https://github.com/Lazy-Coder-03/leftbrain",
 )
 
 
