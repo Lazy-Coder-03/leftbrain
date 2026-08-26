@@ -3013,7 +3013,8 @@ ENCODE = ToolDoc(
             description=(
                 "Encodes text to lower-case hex, or decodes hex back to text. Spaces and a `0x` prefix "
                 "are tolerated when decoding. Bytes that are not valid UTF-8 come back as Base64 with a "
-                "warning rather than as broken text."
+                "warning rather than as broken text. Note that `decode` is the fallback: any `action` "
+                "other than `encode` is treated as a decode rather than rejected."
             ),
             params=(
                 Param("action", "`encode` \\| `decode`", False, "Direction.", "`encode`"),
