@@ -656,3 +656,203 @@ def validate(mode: str = "assert", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     return {"json_schema": _json_schema, "assert": _assert, "id": _id, "email": _email, "url": _url, "phone": _phone, "ip": _ip, "sql_parse": _sql_parse, "regex": _regex}[mode](p)
+
+#: Shared fixture for the documented examples below.
+_EX_LEAVE_DOC = {"employee": {"id": "E-19", "email": "asha@example.com"}, "leave": {"type": "casual", "days": 3, "start": "2025-09-01"}, "approvals": ["manager"]}
+
+#: Shared fixture for the documented examples below.
+_EX_LEAVE_SCHEMA = {"type": "object", "required": ["employee", "leave"], "properties": {"employee": {"type": "object", "required": ["id", "email"], "properties": {"id": {"type": "string"}, "email": {"type": "string", "format": "email"}}}, "leave": {"type": "object", "required": ["type", "days"], "properties": {"type": {"enum": ["casual", "sick", "earned"]}, "days": {"type": "integer", "minimum": 1, "maximum": 2}}}}}
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/validate is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "json_schema": [
+        {
+            "caption": "A document that fails two constraints, each located by path.",
+            "args": {"mode": "json_schema", "schema": _EX_LEAVE_SCHEMA, "data": _EX_LEAVE_DOC},
+        },
+        {
+            "caption": "The same schema against a document that passes.",
+            "args": {"mode": "json_schema", "schema": _EX_LEAVE_SCHEMA, "data": {"employee": {"id": "E-19", "email": "asha@example.com"}, "leave": {"type": "sick", "days": 2}}},
+        },
+        {
+            "caption": "`schema` is required.",
+            "args": {"mode": "json_schema", "data": {"a": 1}},
+        },
+        {
+            "caption": "A schema that is not a valid schema.",
+            "args": {"mode": "json_schema", "schema": {"type": "nonsense"}, "data": {}},
+        },
+    ],
+    "assert": [
+        {
+            "caption": "A policy check that fails one rule, with a score and a human message.",
+            "args": {"mode": "assert", "data": _EX_LEAVE_DOC, "rules": [{"id": "days", "path": "leave.days", "op": "lte", "value": 2, "message": "casual leave is capped at 2 days", "weight": 3}, {"id": "type", "path": "leave.type", "op": "in", "value": ["casual", "sick", "earned"]}, {"id": "email", "path": "employee.email", "op": "is_email"}, {"id": "start", "path": "leave.start", "op": "after", "value": "2025-08-31"}]},
+        },
+        {
+            "caption": "String numbers compared as numbers, and a list checked for uniqueness.",
+            "args": {"mode": "assert", "data": {"total": "1200.50", "skus": ["A1", "B2", "A1"]}, "rules": [{"path": "total", "op": "gt", "value": 1000}, {"path": "skus", "op": "unique"}, {"path": "skus", "op": "len_eq", "value": 3}]},
+        },
+        {
+            "caption": "`each` applies a sub-rule to every element of a list.",
+            "args": {"mode": "assert", "data": {"lines": [{"qty": 2}, {"qty": 0}]}, "rules": [{"path": "lines", "op": "each", "value": {"path": "qty", "op": "gt", "value": 0}}]},
+        },
+        {
+            "caption": "`rules` is required and must be non-empty.",
+            "args": {"mode": "assert", "data": _EX_LEAVE_DOC},
+        },
+        {
+            "caption": "An unknown operator.",
+            "args": {"mode": "assert", "data": {"a": 1}, "rules": [{"path": "a", "op": "frobnicate", "value": 1}]},
+        },
+        {
+            "caption": "`between` needs a two-element range.",
+            "args": {"mode": "assert", "data": {"a": 1}, "rules": [{"path": "a", "op": "between", "value": 5}]},
+        },
+        {
+            "caption": "An unknown type name.",
+            "args": {"mode": "assert", "data": {"a": 1}, "rules": [{"path": "a", "op": "type", "value": "decimal"}]},
+        },
+    ],
+    "id": [
+        {
+            "caption": "A card number that passes Luhn, with its brand detected and the value masked.",
+            "args": {"mode": "id", "kind": "card", "value": "4111 1111 1111 1111"},
+        },
+        {
+            "caption": "One digit changed: the same call, `valid: false`.",
+            "args": {"mode": "id", "kind": "card", "value": "4111 1111 1111 1112"},
+        },
+        {
+            "caption": "An IBAN, checked by mod-97 and by its country's expected length.",
+            "args": {"mode": "id", "kind": "iban", "value": "GB82 WEST 1234 5698 7654 32"},
+        },
+        {
+            "caption": "A GSTIN, whose check character is recomputed and whose embedded PAN is returned.",
+            "args": {"mode": "id", "kind": "gstin", "value": "19ABCDE1234F1ZX"},
+        },
+        {
+            "caption": "A PAN, with the holder type decoded from its fourth character.",
+            "args": {"mode": "id", "kind": "pan", "value": "ABCDE1234F"},
+        },
+        {
+            "caption": "An Aadhaar number verified by the Verhoeff algorithm and returned masked.",
+            "args": {"mode": "id", "kind": "aadhaar", "value": "2345 6789 0124"},
+        },
+        {
+            "caption": "An unknown scheme lists the supported ones.",
+            "args": {"mode": "id", "kind": "passport", "value": "X1234567"},
+        },
+        {
+            "caption": "`value` is required.",
+            "args": {"mode": "id", "kind": "card"},
+        },
+    ],
+    "email": [
+        {
+            "caption": "A normal address, normalised.",
+            "args": {"mode": "email", "value": "Asha.Roy@Example.COM"},
+        },
+        {
+            "caption": "A disposable domain, flagged but still syntactically valid.",
+            "args": {"mode": "email", "value": "throwaway@mailinator.com"},
+        },
+        {
+            "caption": "A malformed address: a successful call with `valid: false` and a reason.",
+            "args": {"mode": "email", "value": "asha@@example..com"},
+        },
+    ],
+    "url": [
+        {
+            "caption": "A full URL, decomposed.",
+            "args": {"mode": "url", "value": "https://leftbrain.dev:8443/docs/tools?q=math#eval"},
+        },
+        {
+            "caption": "A missing scheme is reported, not repaired.",
+            "args": {"mode": "url", "value": "leftbrain.dev/docs"},
+        },
+        {
+            "caption": "An IP literal host is detected as one.",
+            "args": {"mode": "url", "value": "http://192.168.1.10:8080/health"},
+        },
+    ],
+    "phone": [
+        {
+            "caption": "An E.164 number: the region is inferred, not asked for.",
+            "args": {"mode": "phone", "value": "+91 98765 43210"},
+        },
+        {
+            "caption": "A national number with an explicit region and a trunk prefix.",
+            "args": {"mode": "phone", "value": "098765 43210", "region": "IN"},
+        },
+        {
+            "caption": "A number that does not match its region's pattern.",
+            "args": {"mode": "phone", "value": "12345 67890", "region": "IN"},
+        },
+        {
+            "caption": "A national number with no region: the tool asks rather than assuming a country.",
+            "args": {"mode": "phone", "value": "9876543210"},
+        },
+        {
+            "caption": "An unsupported region.",
+            "args": {"mode": "phone", "value": "9876543210", "region": "ZZ"},
+        },
+    ],
+    "ip": [
+        {
+            "caption": "A private IPv4 address.",
+            "args": {"mode": "ip", "value": "192.168.1.10"},
+        },
+        {
+            "caption": "A CIDR network, with its size and bounds.",
+            "args": {"mode": "ip", "value": "10.0.0.0/24"},
+        },
+        {
+            "caption": "IPv6, compressed and exploded.",
+            "args": {"mode": "ip", "value": "2001:db8::1"},
+        },
+        {
+            "caption": "Something that is not an address at all.",
+            "args": {"mode": "ip", "value": "300.1.1.1"},
+        },
+    ],
+    "sql_parse": [
+        {
+            "caption": "A read-only query: tables, columns and `read_only: true`.",
+            "args": {"mode": "sql_parse", "sql": "SELECT o.id, c.name FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.total > 100 LIMIT 50"},
+        },
+        {
+            "caption": "An unbounded DELETE, flagged in `warnings` before it runs.",
+            "args": {"mode": "sql_parse", "sql": "DELETE FROM sessions"},
+        },
+        {
+            "caption": "Invalid SQL: a successful call that says the SQL is invalid.",
+            "args": {"mode": "sql_parse", "sql": "SELCT * FROM t WHERE"},
+        },
+        {
+            "caption": "`sql` is required.",
+            "args": {"mode": "sql_parse"},
+        },
+        {
+            "caption": "An unknown dialect.",
+            "args": {"mode": "sql_parse", "sql": "SELECT 1", "dialect": "klingon"},
+        },
+    ],
+    "regex": [
+        {
+            "caption": "A valid pattern with named groups.",
+            "args": {"mode": "regex", "pattern": "(?P<year>\\d{4})-(?P<month>\\d{2})"},
+        },
+        {
+            "caption": "An invalid pattern, with the failure position.",
+            "args": {"mode": "regex", "pattern": "([a-z"},
+        },
+        {
+            "caption": "`pattern` is required.",
+            "args": {"mode": "regex"},
+        },
+    ],
+}

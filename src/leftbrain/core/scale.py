@@ -15,6 +15,9 @@ from typing import Any
 from ..contract import ToolError, ok, tool
 from .convert import _norm_unit, _parse_value, ureg
 
+#: The proportions this tool understands (the "mode" argument).
+MODES = ("linear", "inverse")
+
 
 def _mixed(fr: Fraction) -> str:
     if fr.denominator == 1:
@@ -41,7 +44,7 @@ def scale(**params: Any) -> dict[str, Any]:
     """Scale from one quantity to another and apply the factor to every entity."""
     p = {k: v for k, v in params.items() if v is not None}
     mode = (p.get("mode") or "linear").lower()
-    if mode not in ("linear", "inverse"):
+    if mode not in MODES:
         raise ToolError("mode must be 'linear' (direct proportion) or 'inverse' (inverse proportion)")
     precision = int(p.get("precision", 6))
     assumptions: list[str] = []
@@ -115,3 +118,71 @@ def scale(**params: Any) -> dict[str, Any]:
     if mode == "inverse":
         assumptions.append("inverse proportion: doubling 'from' halves each entity")
     return ok(out, assumptions=assumptions, warnings=warnings)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/scale is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "linear": [
+        {
+            "caption": "A recipe for 4 rescaled to 7 servings. Note the mixed numbers and the egg rounded up.",
+            "args": {"mode": "linear", "from_qty": 4, "to_qty": 7, "entities": [{"name": "flour", "qty": 2, "unit": "cups"}, {"name": "butter", "qty": 150, "unit": "g"}, {"name": "eggs", "qty": 2, "integer": True}]},
+        },
+        {
+            "caption": "A price per kilogram restated per 250 g: the unit change becomes the factor.",
+            "args": {"mode": "linear", "from_qty": 1, "from_unit": "kg", "to_qty": 250, "to_unit": "g", "entities": [{"name": "price", "qty": 480}]},
+        },
+        {
+            "caption": "An explicit factor, with entities given as a plain map.",
+            "args": {"mode": "linear", "factor": 1.15, "entities": {"salary": 62000, "bonus": 8000}},
+        },
+        {
+            "caption": "`from_qty` (or `factor`) is required.",
+            "args": {"mode": "linear", "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]},
+        },
+        {
+            "caption": "A zero base has no factor.",
+            "args": {"mode": "linear", "from_qty": 0, "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]},
+        },
+        {
+            "caption": "Every entity needs a `qty`.",
+            "args": {"mode": "linear", "from_qty": 4, "to_qty": 7, "entities": [{"name": "flour"}]},
+        },
+        {
+            "caption": "Units that cannot be related to each other.",
+            "args": {"mode": "linear", "from_qty": 1, "from_unit": "kg", "to_qty": 1, "to_unit": "liter", "entities": [{"name": "price", "qty": 480}]},
+        },
+        {
+            "caption": "An ambiguous unit is refused here exactly as in `convert`.",
+            "args": {"mode": "linear", "from_qty": 1, "from_unit": "oz", "to_qty": 100, "to_unit": "g", "entities": [{"name": "price", "qty": 480}]},
+        },
+        {
+            "caption": "`mode` must be `linear` or `inverse`.",
+            "args": {"mode": "quadratic", "from_qty": 4, "to_qty": 7, "entities": [{"name": "flour", "qty": 2}]},
+        },
+    ],
+    "inverse": [
+        {
+            "caption": "Three workers take five days; twelve workers take a quarter of that.",
+            "args": {"mode": "inverse", "from_qty": 3, "to_qty": 12, "entities": [{"name": "days", "qty": 5}]},
+        },
+        {
+            "caption": "Doubling the line speed shortens every downstream time.",
+            "args": {"mode": "inverse", "from_qty": 2, "to_qty": 5, "entities": {"hours_per_batch": 6, "operators_hours": 18}},
+        },
+        {
+            "caption": "An inverse relationship cannot target zero.",
+            "args": {"mode": "inverse", "from_qty": 3, "to_qty": 0, "entities": [{"name": "days", "qty": 5}]},
+        },
+        {
+            "caption": "Quantities must be numbers.",
+            "args": {"mode": "inverse", "from_qty": "a few", "to_qty": 12, "entities": [{"name": "days", "qty": 5}]},
+        },
+        {
+            "caption": "`to_qty` is required when no `factor` is given.",
+            "args": {"mode": "inverse", "from_qty": 3, "entities": [{"name": "days", "qty": 5}]},
+        },
+    ],
+}

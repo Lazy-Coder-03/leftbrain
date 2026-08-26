@@ -85,3 +85,105 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
     out = {"region": code, "subdiv": subdiv, "years": years, "count": len(items), "holidays": items, "long_weekends": long_weekends}
     assumptions = [] if subdiv else ["national holidays only; pass subdiv (e.g. state code) for regional ones" if _hol.list_supported_countries().get(code) else ""]
     return ok(out, assumptions=[x for x in assumptions if x])
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/holidays is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "list": [
+        {
+            "caption": "India, one month, with the year's long weekends alongside.",
+            "args": {"mode": "list", "region": "IN", "year": 2025, "month": 8},
+        },
+        {
+            "caption": "The US, November.",
+            "args": {"mode": "list", "region": "US", "year": 2025, "month": 11},
+        },
+        {
+            "caption": "West Bengal's regional holidays, which the national list does not contain.",
+            "args": {"mode": "list", "region": "IN", "year": 2025, "month": 10, "subdiv": "WB"},
+        },
+        {
+            "caption": "`region` is required.",
+            "args": {"mode": "list", "year": 2025},
+        },
+        {
+            "caption": "An unsupported country code.",
+            "args": {"mode": "list", "region": "XX", "year": 2025},
+        },
+        {
+            "caption": "An unknown subdivision — the valid codes come back in the message.",
+            "args": {"mode": "list", "region": "IN", "year": 2025, "subdiv": "ZZ"},
+        },
+    ],
+    "check": [
+        {
+            "caption": "A national holiday.",
+            "args": {"mode": "check", "region": "IN", "date": "2025-08-15"},
+        },
+        {
+            "caption": "The next day, which is not.",
+            "args": {"mode": "check", "region": "IN", "date": "2025-08-16"},
+        },
+        {
+            "caption": "A date that is only a holiday in one state.",
+            "args": {"mode": "check", "region": "IN", "date": "2025-10-20", "subdiv": "WB"},
+        },
+        {
+            "caption": "An ambiguous numeric date, refused exactly as `datetime` refuses it.",
+            "args": {"mode": "check", "region": "IN", "date": "03/04/2025"},
+        },
+        {
+            "caption": "An unparseable date.",
+            "args": {"mode": "check", "region": "IN", "date": "diwali"},
+        },
+        {
+            "caption": "`region` is required.",
+            "args": {"mode": "check", "date": "2025-08-15"},
+        },
+    ],
+    "next": [
+        {
+            "caption": "The next three Indian holidays after a fixed date.",
+            "args": {"mode": "next", "region": "IN", "date": "2025-08-01", "n": 3},
+        },
+        {
+            "caption": "The same question for the UK, crossing into the following year.",
+            "args": {"mode": "next", "region": "GB", "date": "2025-12-20", "n": 3},
+        },
+        {
+            "caption": "`region` is required.",
+            "args": {"mode": "next", "date": "2025-08-01"},
+        },
+        {
+            "caption": "An unsupported region.",
+            "args": {"mode": "next", "region": "Atlantis", "date": "2025-08-01"},
+        },
+    ],
+    "countries": [
+        {
+            "caption": "Every supported country code.",
+            "args": {"mode": "countries"},
+        },
+    ],
+    "subdivisions": [
+        {
+            "caption": "India's state codes.",
+            "args": {"mode": "subdivisions", "region": "IN"},
+        },
+        {
+            "caption": "The UK's four nations.",
+            "args": {"mode": "subdivisions", "region": "GB"},
+        },
+        {
+            "caption": "`region` is required.",
+            "args": {"mode": "subdivisions"},
+        },
+        {
+            "caption": "An unsupported region.",
+            "args": {"mode": "subdivisions", "region": "XX"},
+        },
+    ],
+}

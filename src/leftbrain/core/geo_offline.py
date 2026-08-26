@@ -312,3 +312,130 @@ def geo_offline(mode: str = "tz_for_place", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     return {"tz_for_place": _tz_for_place, "tz_for_coords": _tz_for_coords, "distance": _distance, "country": _country, "zone_info": _zone_info}[mode](p)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/geo_offline is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "tz_for_place": [
+        {
+            "caption": "A city alias resolved to its zone.",
+            "args": {"mode": "tz_for_place", "place": "Mumbai"},
+            "volatile": True,
+        },
+        {
+            "caption": "An exact zone name passes straight through.",
+            "args": {"mode": "tz_for_place", "place": "Europe/Berlin"},
+            "volatile": True,
+        },
+        {
+            "caption": "A country that spans several zones, with `all` set.",
+            "args": {"mode": "tz_for_place", "place": "Portugal", "all": True},
+            "volatile": True,
+        },
+        {
+            "caption": "A country spanning many zones, without `all`: the candidates come back in `needs.options`.",
+            "args": {"mode": "tz_for_place", "place": "Australia"},
+        },
+        {
+            "caption": "A place the dataset does not know.",
+            "args": {"mode": "tz_for_place", "place": "Atlantis"},
+        },
+        {
+            "caption": "`place` is required.",
+            "args": {"mode": "tz_for_place"},
+        },
+    ],
+    "tz_for_coords": [
+        {
+            "caption": "Coordinates in eastern India.",
+            "args": {"mode": "tz_for_coords", "lat": 22.5726, "lon": 88.3639},
+            "volatile": True,
+        },
+        {
+            "caption": "Coordinates in New York.",
+            "args": {"mode": "tz_for_coords", "lat": 40.7128, "lon": -74.006},
+            "volatile": True,
+        },
+        {
+            "caption": "Coordinates are required.",
+            "args": {"mode": "tz_for_coords"},
+        },
+        {
+            "caption": "Coordinates must be numbers.",
+            "args": {"mode": "tz_for_coords", "lat": "north", "lon": 88.36},
+        },
+    ],
+    "distance": [
+        {
+            "caption": "Mumbai to Delhi, by coordinates.",
+            "args": {"mode": "distance", "origin": [19.076, 72.8777], "destination": [28.6139, 77.209]},
+        },
+        {
+            "caption": "Coordinates as strings, Bengaluru to Chennai.",
+            "args": {"mode": "distance", "origin": "12.9716,77.5946", "destination": "13.0827,80.2707"},
+        },
+        {
+            "caption": "Place names, with the approximation stated in `assumptions`.",
+            "args": {"mode": "distance", "origin": "Kolkata", "destination": "London"},
+        },
+        {
+            "caption": "A place name that spans several zones is not specific enough to be a point.",
+            "args": {"mode": "distance", "origin": "Australia", "destination": "Kolkata"},
+        },
+        {
+            "caption": "An unknown place.",
+            "args": {"mode": "distance", "origin": "Atlantis", "destination": "Kolkata"},
+        },
+        {
+            "caption": "`destination` is required.",
+            "args": {"mode": "distance", "origin": [19.076, 72.8777]},
+        },
+    ],
+    "country": [
+        {
+            "caption": "A single-zone country.",
+            "args": {"mode": "country", "country": "IN"},
+            "volatile": True,
+        },
+        {
+            "caption": "A country resolved by name, spanning two zones.",
+            "args": {"mode": "country", "country": "New Zealand"},
+            "volatile": True,
+        },
+        {
+            "caption": "An unknown country.",
+            "args": {"mode": "country", "country": "Freedonia"},
+        },
+        {
+            "caption": "`country` is required.",
+            "args": {"mode": "country"},
+        },
+    ],
+    "zone_info": [
+        {
+            "caption": "A zone with no daylight saving.",
+            "args": {"mode": "zone_info", "zone": "Asia/Kolkata"},
+            "volatile": True,
+        },
+        {
+            "caption": "A zone that does observe it.",
+            "args": {"mode": "zone_info", "zone": "America/New_York"},
+            "volatile": True,
+        },
+        {
+            "caption": "A zone name that does not exist.",
+            "args": {"mode": "zone_info", "zone": "Asia/Gotham"},
+        },
+        {
+            "caption": "An abbreviation is not a zone name.",
+            "args": {"mode": "zone_info", "zone": "IST"},
+        },
+        {
+            "caption": "`zone` is required.",
+            "args": {"mode": "zone_info"},
+        },
+    ],
+}

@@ -189,3 +189,205 @@ def encode(mode: str = "hash", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     return {"hash": _hash, "hmac": _hmac_mode, "checksum": _checksum, "base64": _base64, "hex": _hex, "url": _url, "html": _html, "jwt_decode": _jwt_decode, "json": _json_mode}[mode](p)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/encode is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "hash": [
+        {
+            "caption": "SHA-256 of a string, in hex and Base64.",
+            "args": {"mode": "hash", "text": "hello world"},
+        },
+        {
+            "caption": "A different algorithm on the same input.",
+            "args": {"mode": "hash", "text": "hello world", "algo": "md5"},
+        },
+        {
+            "caption": "Hashing an object — serialised deterministically, and it says so.",
+            "args": {"mode": "hash", "text": {"b": 2, "a": 1}},
+        },
+        {
+            "caption": "Hashing raw bytes given as hex.",
+            "args": {"mode": "hash", "bytes_hex": "deadbeef", "algo": "sha1"},
+        },
+        {
+            "caption": "An unknown algorithm lists the supported ones.",
+            "args": {"mode": "hash", "text": "hello", "algo": "sha999"},
+        },
+        {
+            "caption": "Some input is required.",
+            "args": {"mode": "hash", "algo": "sha256"},
+        },
+        {
+            "caption": "`bytes_hex` must actually be hex.",
+            "args": {"mode": "hash", "bytes_hex": "zzzz"},
+        },
+    ],
+    "hmac": [
+        {
+            "caption": "An HMAC-SHA256 signature.",
+            "args": {"mode": "hmac", "key": "s3cret", "text": "payload-1"},
+        },
+        {
+            "caption": "Verifying a signature: `matches` is computed in constant time.",
+            "args": {"mode": "hmac", "key": "s3cret", "text": "payload-1", "expected": "874582d507bf2715cab202a7b899745887fba3a1935da6699029a96c6a82e770"},
+        },
+        {
+            "caption": "A different digest algorithm.",
+            "args": {"mode": "hmac", "key": "s3cret", "text": "payload-1", "algo": "sha512"},
+        },
+        {
+            "caption": "`key` is required.",
+            "args": {"mode": "hmac", "text": "payload-1"},
+        },
+        {
+            "caption": "An unknown algorithm.",
+            "args": {"mode": "hmac", "key": "s3cret", "text": "x", "algo": "sha999"},
+        },
+        {
+            "caption": "Some message is required.",
+            "args": {"mode": "hmac", "key": "s3cret"},
+        },
+    ],
+    "checksum": [
+        {
+            "caption": "CRC32 of a string.",
+            "args": {"mode": "checksum", "text": "hello world"},
+        },
+        {
+            "caption": "Adler-32 of the same input.",
+            "args": {"mode": "checksum", "text": "hello world", "algo": "adler32"},
+        },
+        {
+            "caption": "Only CRC32 and Adler-32 are checksums here.",
+            "args": {"mode": "checksum", "text": "hello", "algo": "md5"},
+        },
+        {
+            "caption": "Some input is required.",
+            "args": {"mode": "checksum", "algo": "crc32"},
+        },
+    ],
+    "base64": [
+        {
+            "caption": "Encoding.",
+            "args": {"mode": "base64", "action": "encode", "text": "leftbrain ✓"},
+        },
+        {
+            "caption": "Decoding the same string back.",
+            "args": {"mode": "base64", "action": "decode", "text": "bGVmdGJyYWluIOKckw=="},
+        },
+        {
+            "caption": "URL-safe and unpadded, for a query string.",
+            "args": {"mode": "base64", "action": "encode", "text": "sub?a=1&b=2", "urlsafe": True, "strip_padding": True},
+        },
+        {
+            "caption": "Decoding bytes that are not UTF-8: hex, with a warning, instead of mojibake.",
+            "args": {"mode": "base64", "action": "decode", "text": "3q2+7w=="},
+        },
+        {
+            "caption": "An unknown action.",
+            "args": {"mode": "base64", "action": "flip", "text": "abc"},
+        },
+        {
+            "caption": "Input that is not valid Base64.",
+            "args": {"mode": "base64", "action": "decode", "text": "a"},
+        },
+    ],
+    "hex": [
+        {
+            "caption": "Encoding.",
+            "args": {"mode": "hex", "action": "encode", "text": "leftbrain"},
+        },
+        {
+            "caption": "Decoding, with separators tolerated.",
+            "args": {"mode": "hex", "action": "decode", "text": "6c 65 66 74 62 72 61 69 6e"},
+        },
+        {
+            "caption": "Input that is not hex.",
+            "args": {"mode": "hex", "action": "decode", "text": "zzzz"},
+        },
+        {
+            "caption": "An odd number of hex digits.",
+            "args": {"mode": "hex", "action": "decode", "text": "abc"},
+        },
+        {
+            "caption": "Some input is required.",
+            "args": {"mode": "hex", "action": "encode"},
+        },
+    ],
+    "url": [
+        {
+            "caption": "Path-style encoding: the slash survives.",
+            "args": {"mode": "url", "action": "encode", "text": "reports/Q3 2025/summary&final.pdf"},
+        },
+        {
+            "caption": "Form-style encoding of the same string.",
+            "args": {"mode": "url", "action": "encode", "text": "reports/Q3 2025/summary&final.pdf", "plus": True},
+        },
+        {
+            "caption": "Decoding.",
+            "args": {"mode": "url", "action": "decode", "text": "q%3Dleft%20brain%26page%3D2"},
+        },
+        {
+            "caption": "An unknown action.",
+            "args": {"mode": "url", "action": "flip", "text": "abc"},
+        },
+    ],
+    "html": [
+        {
+            "caption": "Escaping markup and quotes.",
+            "args": {"mode": "html", "action": "escape", "text": "<b class=\"x\">Tom & Jerry</b>"},
+        },
+        {
+            "caption": "Unescaping entities, named and numeric.",
+            "args": {"mode": "html", "action": "unescape", "text": "caf&eacute; &amp; cr&#232;me"},
+        },
+        {
+            "caption": "An unknown action.",
+            "args": {"mode": "html", "action": "flip", "text": "abc"},
+        },
+    ],
+    "jwt_decode": [
+        {
+            "caption": "An expired token: claims decoded, timestamps rendered, signature untouched.",
+            "args": {"mode": "jwt_decode", "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTQyIiwibmFtZSI6IkFkYSIsImlhdCI6MTY5OTk5NjQwMCwiZXhwIjoxNzAwMDAwMDAwfQ.c2lnbmF0dXJlLW5vdC12ZXJpZmllZA"},
+        },
+        {
+            "caption": "A JWT has three dot-separated parts.",
+            "args": {"mode": "jwt_decode", "token": "abc"},
+        },
+        {
+            "caption": "Three parts, but not Base64url JSON.",
+            "args": {"mode": "jwt_decode", "token": "a.b.c"},
+        },
+        {
+            "caption": "`token` is required.",
+            "args": {"mode": "jwt_decode"},
+        },
+    ],
+    "json": [
+        {
+            "caption": "Valid JSON, parsed.",
+            "args": {"mode": "json", "action": "parse", "text": "{\"a\": 1, \"b\": [2, 3]}"},
+        },
+        {
+            "caption": "Invalid JSON: the error is located to line and column.",
+            "args": {"mode": "json", "action": "parse", "text": "{\"a\": 1,}"},
+        },
+        {
+            "caption": "Pretty-printing with sorted keys.",
+            "args": {"mode": "json", "action": "format", "data": {"b": 2, "a": 1}, "sort_keys": True},
+        },
+        {
+            "caption": "Minifying.",
+            "args": {"mode": "json", "action": "minify", "data": {"a": 1, "b": [2, 3]}},
+        },
+        {
+            "caption": "An unknown action.",
+            "args": {"mode": "json", "action": "lint", "text": "{}"},
+        },
+    ],
+}

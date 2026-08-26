@@ -41,7 +41,10 @@ def fx_rate(base: str = "USD", to: str | list[str] | None = None, date: str | No
 
 @server.tool(name="geo")
 def geo(mode: str = "geocode", place: str | None = None, lat: float | None = None, lon: float | None = None, origin: Any | None = None, destination: Any | None = None, profile: str | None = None, limit: int | None = None) -> dict[str, Any]:
-    """Online geo: geocode (place -> lat/lon/timezone), reverse (lat/lon -> address), route (driving distance & time between origin and destination)."""
+    """Online geo lookups that need the network.
+    mode: geocode (place -> lat/lon/timezone) | reverse (lat/lon -> address) | route (driving
+    distance and time between origin and destination)
+    """
     return tools.geo(mode, **_clean(dict(place=place, lat=lat, lon=lon, origin=origin, destination=destination, profile=profile, limit=limit)))
 
 

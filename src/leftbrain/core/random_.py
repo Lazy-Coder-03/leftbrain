@@ -200,3 +200,178 @@ def random_tool(mode: str = "uuid", **params: Any) -> dict[str, Any]:
     p = {k: v for k, v in params.items() if v is not None}
     _ = os  # keep import for potential entropy checks
     return {"uuid": _uuid_mode, "int": _int, "float": _float, "pick": _pick, "shuffle": _shuffle, "token": _token, "bool": _bool, "sample": _sample}[mode](p)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/random is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "uuid": [
+        {
+            "caption": "One v4 UUID.",
+            "args": {"mode": "uuid"},
+            "volatile": True,
+        },
+        {
+            "caption": "Three time-ordered v7 UUIDs in bare hex — note the shared prefix.",
+            "args": {"mode": "uuid", "version": 7, "n": 3, "format": "hex"},
+            "volatile": True,
+        },
+        {
+            "caption": "Only versions 4 and 7 are offered.",
+            "args": {"mode": "uuid", "version": 5},
+        },
+        {
+            "caption": "`n` must be at least 1.",
+            "args": {"mode": "uuid", "n": 0},
+        },
+    ],
+    "int": [
+        {
+            "caption": "Five dice rolls, seeded — this exact list comes back every time.",
+            "args": {"mode": "int", "min": 1, "max": 6, "n": 5, "seed": "demo"},
+        },
+        {
+            "caption": "Six distinct numbers from 1 to 49, seeded.",
+            "args": {"mode": "int", "min": 1, "max": 49, "n": 6, "unique": True, "seed": "lotto-2025"},
+        },
+        {
+            "caption": "Unseeded: a fresh draw from system entropy every call.",
+            "args": {"mode": "int", "min": 1, "max": 100},
+            "volatile": True,
+        },
+        {
+            "caption": "The range must not be inverted.",
+            "args": {"mode": "int", "min": 10, "max": 1},
+        },
+        {
+            "caption": "Too few values in the range to draw that many distinct ones.",
+            "args": {"mode": "int", "min": 1, "max": 3, "n": 5, "unique": True},
+        },
+        {
+            "caption": "`n` is capped at 10 000.",
+            "args": {"mode": "int", "min": 1, "max": 10, "n": 999999},
+        },
+    ],
+    "float": [
+        {
+            "caption": "Four seeded prices, rounded as they are drawn.",
+            "args": {"mode": "float", "min": 10, "max": 20, "n": 4, "decimals": 2, "seed": "demo"},
+        },
+        {
+            "caption": "A single seeded value, unrounded.",
+            "args": {"mode": "float", "seed": "demo"},
+        },
+        {
+            "caption": "The range must not be inverted.",
+            "args": {"mode": "float", "min": 5, "max": 1},
+        },
+        {
+            "caption": "`n` must be at least 1.",
+            "args": {"mode": "float", "n": 0},
+        },
+    ],
+    "pick": [
+        {
+            "caption": "Two winners from a list, seeded.",
+            "args": {"mode": "pick", "items": ["asha", "bo", "chen", "dev", "eve"], "n": 2, "seed": "raffle-1"},
+        },
+        {
+            "caption": "A weighted draw with replacement.",
+            "args": {"mode": "pick", "items": ["gold", "silver", "bronze"], "weights": [1, 3, 6], "n": 5, "unique": False, "seed": "loot"},
+        },
+        {
+            "caption": "The pool must be a non-empty list.",
+            "args": {"mode": "pick", "items": []},
+        },
+        {
+            "caption": "Weights must line up with items.",
+            "args": {"mode": "pick", "items": ["a", "b", "c"], "weights": [1, 2]},
+        },
+        {
+            "caption": "You cannot draw more unique items than exist.",
+            "args": {"mode": "pick", "items": ["a", "b"], "n": 5},
+        },
+    ],
+    "shuffle": [
+        {
+            "caption": "A seeded shuffle.",
+            "args": {"mode": "shuffle", "items": ["a", "b", "c", "d", "e"], "seed": "demo"},
+        },
+        {
+            "caption": "A different seed, a different order — from the same input.",
+            "args": {"mode": "shuffle", "items": ["a", "b", "c", "d", "e"], "seed": "other"},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "shuffle", "items": "abcde"},
+        },
+    ],
+    "token": [
+        {
+            "caption": "A URL-safe API token.",
+            "args": {"mode": "token", "kind": "urlsafe", "length": 32},
+            "volatile": True,
+        },
+        {
+            "caption": "A password with all four character classes guaranteed.",
+            "args": {"mode": "token", "kind": "password", "length": 16},
+            "volatile": True,
+        },
+        {
+            "caption": "A six-digit OTP.",
+            "args": {"mode": "token", "kind": "otp", "length": 6},
+            "volatile": True,
+        },
+        {
+            "caption": "Human-readable codes with no confusable characters.",
+            "args": {"mode": "token", "kind": "readable", "length": 8, "n": 3},
+            "volatile": True,
+        },
+        {
+            "caption": "An unknown alphabet lists the valid ones.",
+            "args": {"mode": "token", "kind": "runes"},
+        },
+        {
+            "caption": "`length` must be between 1 and 4096.",
+            "args": {"mode": "token", "kind": "hex", "length": 0},
+        },
+    ],
+    "bool": [
+        {
+            "caption": "Ten seeded flips at 30%, with the count of trues.",
+            "args": {"mode": "bool", "p": 0.3, "n": 10, "seed": "demo"},
+        },
+        {
+            "caption": "A single seeded fair flip.",
+            "args": {"mode": "bool", "seed": "demo"},
+        },
+        {
+            "caption": "A probability outside 0..1.",
+            "args": {"mode": "bool", "p": 1.5},
+        },
+        {
+            "caption": "`n` must be at least 1.",
+            "args": {"mode": "bool", "n": 0},
+        },
+    ],
+    "sample": [
+        {
+            "caption": "A seeded sample of three.",
+            "args": {"mode": "sample", "items": ["u1", "u2", "u3", "u4", "u5", "u6", "u7"], "k": 3, "seed": "audit-2025"},
+        },
+        {
+            "caption": "A named A/B/C split, balanced to within one.",
+            "args": {"mode": "sample", "items": ["u1", "u2", "u3", "u4", "u5", "u6", "u7"], "groups": ["control", "variant_a", "variant_b"], "seed": "exp-42"},
+        },
+        {
+            "caption": "`k` cannot exceed the population.",
+            "args": {"mode": "sample", "items": ["a", "b"], "k": 5},
+        },
+        {
+            "caption": "The population must be a non-empty list.",
+            "args": {"mode": "sample", "items": [], "k": 1},
+        },
+    ],
+}

@@ -1118,3 +1118,369 @@ def math(mode: str = "eval", **params: Any) -> dict[str, Any]:
         "plot_points": lambda: _mode_plot_points(p),
     }
     return _run(dispatch[mode], timeout)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/math is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "eval": [
+        {
+            "caption": "A percentage of an amount. The `%` reading is reported back in `assumptions`.",
+            "args": {"mode": "eval", "expr": "15% of 2400"},
+        },
+        {
+            "caption": "Trigonometry in degrees. The exact form survives; the decimal is there too.",
+            "args": {"mode": "eval", "expr": "sin(30) + cos(60)", "angle": "deg"},
+        },
+        {
+            "caption": "Substituting variables before evaluating.",
+            "args": {"mode": "eval", "expr": "sqrt(a^2 + b^2)", "vars": {"a": 3, "b": 4}},
+        },
+        {
+            "caption": "Complex arithmetic, described with modulus and argument.",
+            "args": {"mode": "eval", "expr": "(3 + 4i) * (1 - 2i)"},
+        },
+        {
+            "caption": "Trigonometry without `angle`. Degrees and radians differ by a factor of 57, so the tool refuses to pick one.",
+            "args": {"mode": "eval", "expr": "sin(30)"},
+        },
+        {
+            "caption": "An unknown function is rejected instead of being read as implicit multiplication.",
+            "args": {"mode": "eval", "expr": "foo(2) + 1"},
+        },
+        {
+            "caption": "Anything that looks like code execution is refused by the parser guard.",
+            "args": {"mode": "eval", "expr": "__import__(1)"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "eval"},
+        },
+    ],
+    "exact": [
+        {
+            "caption": "Float noise recovered as the rational the caller meant.",
+            "args": {"mode": "exact", "expr": "0.1 + 0.2"},
+        },
+        {
+            "caption": "Fractions stay fractions.",
+            "args": {"mode": "exact", "expr": "1/3 + 1/6"},
+        },
+        {
+            "caption": "A radical stays a radical.",
+            "args": {"mode": "exact", "expr": "sqrt(50)"},
+        },
+        {
+            "caption": "An incomplete expression fails to parse.",
+            "args": {"mode": "exact", "expr": "2 +"},
+        },
+        {
+            "caption": "`angle` is still mandatory for trigonometry.",
+            "args": {"mode": "exact", "expr": "tan(45)"},
+        },
+    ],
+    "simplify": [
+        {
+            "caption": "A removable factor cancels.",
+            "args": {"mode": "simplify", "expr": "(x^2 - 1)/(x - 1)"},
+        },
+        {
+            "caption": "A Pythagorean identity collapses to 1.",
+            "args": {"mode": "simplify", "expr": "sin(x)^2 + cos(x)^2"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "simplify"},
+        },
+        {
+            "caption": "A malformed operator sequence fails to parse.",
+            "args": {"mode": "simplify", "expr": "x^^2"},
+        },
+    ],
+    "expand": [
+        {
+            "caption": "A binomial cube.",
+            "args": {"mode": "expand", "expr": "(x + 1)^3"},
+        },
+        {
+            "caption": "A difference of squares, expanded.",
+            "args": {"mode": "expand", "expr": "(a + b)*(a - b)"},
+        },
+        {
+            "caption": "Unbalanced parentheses.",
+            "args": {"mode": "expand", "expr": "(x + 1"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "expand"},
+        },
+    ],
+    "factor": [
+        {
+            "caption": "A quadratic with integer roots.",
+            "args": {"mode": "factor", "expr": "x^2 - 5*x + 6"},
+        },
+        {
+            "caption": "A difference of cubes.",
+            "args": {"mode": "factor", "expr": "a^3 - b^3"},
+        },
+        {
+            "caption": "A statement separator is not allowed in an expression.",
+            "args": {"mode": "factor", "expr": "x; y"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "factor"},
+        },
+    ],
+    "solve": [
+        {
+            "caption": "A quadratic: both roots, exact and decimal.",
+            "args": {"mode": "solve", "equations": ["x^2 - 5*x + 6 = 0"]},
+        },
+        {
+            "caption": "A linear system in two unknowns.",
+            "args": {"mode": "solve", "equations": ["x + y = 10", "x - y = 2"]},
+        },
+        {
+            "caption": "Restricting the domain to the reals — the complex roots are dropped and the empty result is flagged in `warnings`.",
+            "args": {"mode": "solve", "equations": ["x^2 + 1 = 0"], "domain": "real"},
+        },
+        {
+            "caption": "An inequality returns a solution set, not a list of roots.",
+            "args": {"mode": "solve", "equations": ["x^2 - 4 > 0"], "vars": ["x"]},
+        },
+        {
+            "caption": "One equation, two unknowns: the tool asks which variable you want rather than picking alphabetically.",
+            "args": {"mode": "solve", "equations": ["x + y = 10"]},
+        },
+        {
+            "caption": "Neither `equations` nor `expr` was given.",
+            "args": {"mode": "solve"},
+        },
+        {
+            "caption": "An unknown domain.",
+            "args": {"mode": "solve", "equations": ["x = 1"], "domain": "quaternion"},
+        },
+    ],
+    "diff": [
+        {
+            "caption": "A first derivative; `var` is inferred.",
+            "args": {"mode": "diff", "expr": "x^3 + 2*x"},
+        },
+        {
+            "caption": "A second derivative, evaluated at a point.",
+            "args": {"mode": "diff", "expr": "x^3", "var": "x", "order": 2, "at": 4},
+        },
+        {
+            "caption": "A partial derivative of a two-variable expression.",
+            "args": {"mode": "diff", "expr": "x^2*y + y^3", "var": "y"},
+        },
+        {
+            "caption": "Two free symbols and no `var`: the tool lists them instead of choosing.",
+            "args": {"mode": "diff", "expr": "x*y"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "diff"},
+        },
+    ],
+    "integrate": [
+        {
+            "caption": "An indefinite integral, returned with `+ C`.",
+            "args": {"mode": "integrate", "expr": "x^2", "var": "x"},
+        },
+        {
+            "caption": "A definite integral with symbolic bounds.",
+            "args": {"mode": "integrate", "expr": "sin(x)", "var": "x", "lower": 0, "upper": "pi"},
+        },
+        {
+            "caption": "Half a range is not a range.",
+            "args": {"mode": "integrate", "expr": "x^2", "var": "x", "lower": 0},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "integrate"},
+        },
+    ],
+    "limit": [
+        {
+            "caption": "The classic removable singularity.",
+            "args": {"mode": "limit", "expr": "sin(x)/x", "var": "x", "point": 0},
+        },
+        {
+            "caption": "A one-sided limit that diverges.",
+            "args": {"mode": "limit", "expr": "1/x", "var": "x", "point": 0, "side": "+"},
+        },
+        {
+            "caption": "A two-sided limit that does not exist: still `ok`, with both sides reported.",
+            "args": {"mode": "limit", "expr": "1/x", "var": "x", "point": 0},
+        },
+        {
+            "caption": "An unrecognised `side`.",
+            "args": {"mode": "limit", "expr": "1/x", "var": "x", "point": 0, "side": "up"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "limit"},
+        },
+    ],
+    "series": [
+        {
+            "caption": "The exponential series to fifth order.",
+            "args": {"mode": "series", "expr": "exp(x)", "var": "x", "order": 5},
+        },
+        {
+            "caption": "A logarithm expanded about zero.",
+            "args": {"mode": "series", "expr": "log(1 + x)", "var": "x", "at": 0, "order": 4},
+        },
+        {
+            "caption": "Two free symbols and no `var`.",
+            "args": {"mode": "series", "expr": "exp(x*y)", "order": 3},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "series"},
+        },
+    ],
+    "ode": [
+        {
+            "caption": "A first-order equation with a free constant.",
+            "args": {"mode": "ode", "equation": "y' = y", "func": "y(x)"},
+        },
+        {
+            "caption": "A second-order equation pinned down by initial conditions.",
+            "args": {"mode": "ode", "equation": "y'' + y = 0", "func": "y(x)", "ics": {"y(0)": 1, "y'(0)": 0}},
+        },
+        {
+            "caption": "`equation` is required.",
+            "args": {"mode": "ode"},
+        },
+        {
+            "caption": "`func` must name a function, not an expression.",
+            "args": {"mode": "ode", "equation": "y' = y", "func": "2x"},
+        },
+        {
+            "caption": "Initial-condition keys must look like `y(0)` or `y'(0)`.",
+            "args": {"mode": "ode", "equation": "y' = y", "func": "y(x)", "ics": {"y0": 1}},
+        },
+    ],
+    "matrix": [
+        {
+            "caption": "A determinant, exactly.",
+            "args": {"mode": "matrix", "op": "det", "A": [[1, 2], [3, 4]]},
+        },
+        {
+            "caption": "An inverse, as exact rationals.",
+            "args": {"mode": "matrix", "op": "inv", "A": [[4, 7], [2, 6]]},
+        },
+        {
+            "caption": "Eigenvalues, eigenvectors and the characteristic polynomial.",
+            "args": {"mode": "matrix", "op": "eig", "A": [[2, 1], [1, 2]]},
+        },
+        {
+            "caption": "Solving `A·x = b`.",
+            "args": {"mode": "matrix", "op": "solve", "A": [[2, 1], [1, 3]], "b": [5, 10]},
+        },
+        {
+            "caption": "A determinant needs a square matrix.",
+            "args": {"mode": "matrix", "op": "det", "A": [[1, 2, 3], [4, 5, 6]]},
+        },
+        {
+            "caption": "A singular matrix has no inverse.",
+            "args": {"mode": "matrix", "op": "inv", "A": [[1, 2], [2, 4]]},
+        },
+        {
+            "caption": "Inner dimensions must agree for multiplication.",
+            "args": {"mode": "matrix", "op": "mul", "A": [[1, 2], [3, 4]], "B": [[1, 2, 3]]},
+        },
+        {
+            "caption": "An unknown operation lists the valid ones.",
+            "args": {"mode": "matrix", "op": "eigenfrobnicate", "A": [[1, 0], [0, 1]]},
+        },
+        {
+            "caption": "`A` is required.",
+            "args": {"mode": "matrix", "op": "det"},
+        },
+    ],
+    "stats": [
+        {
+            "caption": "A full description, with sample and population spread side by side.",
+            "args": {"mode": "stats", "op": "describe", "data": [2, 4, 4, 4, 5, 5, 7, 9]},
+        },
+        {
+            "caption": "Least-squares regression with a prediction.",
+            "args": {"mode": "stats", "op": "regress", "data": [1, 2, 3, 4], "y": [2, 4, 6, 9], "predict": 5},
+        },
+        {
+            "caption": "A percentile, with the interpolation rule stated.",
+            "args": {"mode": "stats", "op": "percentile", "data": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10], "percentile": 90},
+        },
+        {
+            "caption": "An empty sample.",
+            "args": {"mode": "stats", "op": "describe", "data": []},
+        },
+        {
+            "caption": "A sample standard deviation needs at least two points.",
+            "args": {"mode": "stats", "op": "stdev", "data": [5]},
+        },
+        {
+            "caption": "An unknown statistic lists the valid ones.",
+            "args": {"mode": "stats", "op": "vibe", "data": [1, 2, 3]},
+        },
+        {
+            "caption": "Paired series must be the same length.",
+            "args": {"mode": "stats", "op": "corr", "data": [1, 2, 3], "y": [1, 2]},
+        },
+    ],
+    "convert_form": [
+        {
+            "caption": "A complex number in polar form, with the phasor notation spelled out.",
+            "args": {"mode": "convert_form", "expr": "3 + 4i", "form": "polar"},
+        },
+        {
+            "caption": "A decimal recovered as an exact fraction.",
+            "args": {"mode": "convert_form", "expr": "0.375", "form": "fraction"},
+        },
+        {
+            "caption": "Scientific notation to three significant figures.",
+            "args": {"mode": "convert_form", "expr": "0.000123456", "form": "scientific", "significant": 3},
+        },
+        {
+            "caption": "Scientific notation is undefined for a complex number.",
+            "args": {"mode": "convert_form", "expr": "3 + 4i", "form": "scientific"},
+        },
+        {
+            "caption": "An unknown target form.",
+            "args": {"mode": "convert_form", "expr": "2", "form": "binary"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "convert_form", "form": "polar"},
+        },
+    ],
+    "plot_points": [
+        {
+            "caption": "Five points of a parabola.",
+            "args": {"mode": "plot_points", "expr": "x^2", "var": "x", "range": [-2, 2], "n": 5},
+        },
+        {
+            "caption": "A pole at zero: the undefined sample is skipped and reported.",
+            "args": {"mode": "plot_points", "expr": "1/x", "var": "x", "range": [-1, 1], "n": 5},
+        },
+        {
+            "caption": "`range` must have exactly two entries.",
+            "args": {"mode": "plot_points", "expr": "x^2", "range": [0]},
+        },
+        {
+            "caption": "One point is not a plot.",
+            "args": {"mode": "plot_points", "expr": "x^2", "n": 1},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "plot_points"},
+        },
+    ],
+}

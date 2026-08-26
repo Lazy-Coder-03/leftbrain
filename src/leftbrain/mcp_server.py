@@ -100,6 +100,7 @@ def math(
     range: list[float] | None = None,
     tolerance: float | None = None,
     significant: int | None = None,
+    timeout: float | None = None,
 ) -> dict[str, Any]:
     """Use for ANY arithmetic or mathematics before stating a number - percentages, fractions,
     powers, roots, trigonometry, complex numbers, algebra, calculus, matrices, statistics.
@@ -115,7 +116,7 @@ def math(
     angle is REQUIRED ('rad' or 'deg') whenever the expression contains trigonometry.
     Returns exact form, decimal form and LaTeX together.
     """
-    params = _clean(dict(expr=expr, angle=angle, precision=precision, var=var, vars=vars, equations=equations, domain=domain, order=order, at=at, lower=lower, upper=upper, point=point, form=form, side=side, equation=equation, func=func, ics=ics, op=op, A=A, B=B, b=b, n=n, data=data, y=y, weights=weights, percentile=percentile, value=value, predict=predict, range=range, tolerance=tolerance, significant=significant))
+    params = _clean(dict(expr=expr, angle=angle, precision=precision, var=var, vars=vars, equations=equations, domain=domain, order=order, at=at, lower=lower, upper=upper, point=point, form=form, side=side, equation=equation, func=func, ics=ics, op=op, A=A, B=B, b=b, n=n, data=data, y=y, weights=weights, percentile=percentile, value=value, predict=predict, range=range, tolerance=tolerance, significant=significant, timeout=timeout))
     return mathx.math(mode, **params)
 
 
@@ -153,6 +154,7 @@ def datetime(
     dob: str | None = None,
     on: str | None = None,
     fy_start_month: int | None = None,
+    dates_only: bool | None = None,
 ) -> dict[str, Any]:
     """Use for ANYTHING involving dates, times, timezones, durations, weekdays, deadlines,
     business days, recurring schedules, cron, ages or fiscal periods. Never compute these yourself.
@@ -170,7 +172,7 @@ def datetime(
     - cron_next (expr="0 9 * * 1-5", tz, start, n)
     - age (dob, on) | fiscal (value, region or fy_start_month)
     """
-    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, end=end, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month))
+    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, end=end, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month, dates_only=dates_only))
     return datetimex.datetime_tool(mode, **params)
 
 
@@ -188,7 +190,9 @@ def scale(
 ) -> dict[str, Any]:
     """Use when one quantity changes and everything proportional to it must change too:
     recipes (4 -> 7 servings), price per kg -> per 250 g, batch sizes, headcount vs. days
-    (mode="inverse"), ratios held constant. entities=[{name, qty, unit?, integer?}].
+    ratios held constant. entities=[{name, qty, unit?, integer?}].
+    mode: linear (direct proportion - more servings, more of everything) | inverse (more workers,
+    fewer days)
     Returns the factor and every entity scaled, in exact and decimal form.
     """
     return scale_mod.scale(**_clean(dict(from_qty=from_qty, to_qty=to_qty, from_unit=from_unit, to_unit=to_unit, entities=entities, mode=mode, factor=factor, precision=precision, assume=assume)))
@@ -207,12 +211,15 @@ def convert(
     base: str | None = None,
     precision: int | None = None,
     decimals: int | None = None,
+    date: str | None = None,
 ) -> dict[str, Any]:
     """Use for ANY unit, temperature or currency conversion (km->mi, sqft->sqm, C->F, kWh->J,
     GB->GiB, USD->INR). Ambiguous units (ton, gallon, oz, cup, KB) are refused with options
     unless assume="common". Currency needs rate= or rates= (fetch via the external fx_rate tool).
+    mode: units (any physical or digital unit) | temperature (C/F/K, delta= for a difference) |
+    currency (rate or rates) | auto (pick one of the three from the arguments)
     """
-    return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals)))
+    return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals, date=date)))
 
 
 @server.tool(name="holidays")
@@ -226,12 +233,13 @@ def holidays(
     date: str | None = None,
     n: int | None = None,
     categories: list[str] | None = None,
+    locale: str | None = None,
 ) -> dict[str, Any]:
     """Use for public holidays of any country/state (region="IN", subdiv="WB").
     mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions.
     The model's holiday knowledge is stale; this dataset is current.
     """
-    return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories)))
+    return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale)))
 
 
 @server.tool(name="numbers")
@@ -262,6 +270,7 @@ def numbers(
     end: Any | None = None,
     n: int | None = None,
     system: str | None = None,
+    suffix_only: bool | None = None,
 ) -> dict[str, Any]:
     """Use to compare numbers (9.11 vs 9.9), round with a stated rule, format for a locale
     (Indian 12,34,567 / currency / percent / compact), split an amount so shares sum exactly
@@ -269,7 +278,7 @@ def numbers(
     or spell an amount in words (to_words: system=indian|international, currency=INR).
     mode: compare | round | format | allocate | sequence | parse | to_words
     """
-    return numbers_mod.numbers(mode, **_clean(dict(values=values, a=a, b=b, value=value, decimals=decimals, significant=significant, nearest=nearest, rounding=rounding, locale=locale, style=style, currency=currency, accounting=accounting, total=total, parts=parts, weights=weights, percentages=percentages, labels=labels, method=method, kind=kind, start=start, step=step, ratio=ratio, end=end, n=n, system=system)))
+    return numbers_mod.numbers(mode, **_clean(dict(values=values, a=a, b=b, value=value, decimals=decimals, significant=significant, nearest=nearest, rounding=rounding, locale=locale, style=style, currency=currency, accounting=accounting, total=total, parts=parts, weights=weights, percentages=percentages, labels=labels, method=method, kind=kind, start=start, step=step, ratio=ratio, end=end, n=n, system=system, suffix_only=suffix_only)))
 
 
 @server.tool(name="text")
@@ -294,13 +303,15 @@ def text(
     unique: bool | None = None,
     limit: int | None = None,
     context: int | None = None,
+    normalize_whitespace: bool | None = None,
+    overlapping: bool | None = None,
 ) -> dict[str, Any]:
     """Use to count characters/words/occurrences ("how many r in strawberry"), run or test a
     regex, produce an exact diff between two texts, sort strings (natural order), remove
     duplicates, find positions, or extract emails/phones/urls/dates/ids from text.
     mode: count | regex_match | regex_replace | diff | sort | dedupe | extract | find
     """
-    return text_mod.text(mode, **_clean(dict(text=text, what=what, substring=substring, case_sensitive=case_sensitive, pattern=pattern, flags=flags, replacement=replacement, count=count, a=a, b=b, granularity=granularity, items=items, key=key, order=order, natural=natural, case_insensitive=case_insensitive, unique=unique, limit=limit, context=context)))
+    return text_mod.text(mode, **_clean(dict(text=text, what=what, substring=substring, case_sensitive=case_sensitive, pattern=pattern, flags=flags, replacement=replacement, count=count, a=a, b=b, granularity=granularity, items=items, key=key, order=order, natural=natural, case_insensitive=case_insensitive, unique=unique, limit=limit, context=context, normalize_whitespace=normalize_whitespace, overlapping=overlapping)))
 
 
 @server.tool(name="collections")
@@ -326,6 +337,10 @@ def collections(
     n: int | None = None,
     case_insensitive: bool | None = None,
     include_items: bool | None = None,
+    order: str | None = None,
+    rename: dict[str, str] | None = None,
+    short_names: bool | None = None,
+    flatten_lists: bool | None = None,
 ) -> dict[str, Any]:
     """Use for exact list/record logic that models get wrong past ~20 items: compare two lists
     (what's missing where), union/intersection/difference, group records by a field with
@@ -333,7 +348,7 @@ def collections(
     mode: set_ops | group_by | aggregate | pick_fields | flatten | unflatten | paginate | find_duplicates | sort_by | chunk
     Paths use dotted syntax: "user.address.city", "items[0].sku".
     """
-    return collections_.collections(mode, **_clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items)))
+    return collections_.collections(mode, **_clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists)))
 
 
 @server.tool(name="validate")
@@ -378,13 +393,14 @@ def random(
     p: float | None = None,
     groups: int | list[str] | None = None,
     k: int | None = None,
+    format: str | None = None,
 ) -> dict[str, Any]:
     """Use whenever randomness is needed - the model cannot generate it. UUIDs (v4/v7), random
     integers/floats (seed= for reproducibility), pick/shuffle/sample from a list, A/B group
     assignment, secure tokens/passwords/OTPs (kind=hex|alnum|urlsafe|password|otp|readable).
     mode: uuid | int | float | pick | shuffle | token | bool | sample
     """
-    return random_.random_tool(mode, **_clean(dict(n=n, min=min, max=max, unique=unique, seed=seed, items=items, weights=weights, kind=kind, length=length, version=version, decimals=decimals, p=p, groups=groups, k=k)))
+    return random_.random_tool(mode, **_clean(dict(n=n, min=min, max=max, unique=unique, seed=seed, items=items, weights=weights, kind=kind, length=length, version=version, decimals=decimals, p=p, groups=groups, k=k, format=format)))
 
 
 @server.tool(name="geo_offline")
@@ -398,13 +414,14 @@ def geo(
     country: str | None = None,
     zone: str | None = None,
     all: bool | None = None,
+    point: Any | None = None,
 ) -> dict[str, Any]:
     """Use to get the IANA timezone for a city/country ("Mumbai" -> Asia/Kolkata) before any
     timezone conversion, the zone nearest to coordinates, great-circle distance and bearing
     between two places or coordinates, or a country's zones. Fully offline.
     mode: tz_for_place | tz_for_coords | distance (origin, destination) | country | zone_info
     """
-    params = _clean(dict(place=place, lat=lat, lon=lon, origin=origin, destination=destination, country=country, zone=zone, all=all))
+    params = _clean(dict(place=place, lat=lat, lon=lon, origin=origin, destination=destination, country=country, zone=zone, all=all, point=point))
     return geo_offline.geo_offline(mode, **params)
 
 
@@ -422,12 +439,19 @@ def encode(
     indent: int | None = None,
     bytes_base64: str | None = None,
     bytes_hex: str | None = None,
+    encoding: str | None = None,
+    key_base64: bool | None = None,
+    strip_padding: bool | None = None,
+    plus: bool | None = None,
+    safe: str | None = None,
+    quote: bool | None = None,
+    sort_keys: bool | None = None,
 ) -> dict[str, Any]:
     """Use for any hash, HMAC, checksum or encoding - models hallucinate these every time.
     mode: hash (algo=sha256|md5|sha1|sha512|blake2b) | hmac (key) | checksum (crc32|adler32) |
     base64 (action=encode|decode) | hex | url | html | jwt_decode (unverified claims) | json (parse|format|minify)
     """
-    return encode_mod.encode(mode, **_clean(dict(text=text, algo=algo, key=key, expected=expected, action=action, urlsafe=urlsafe, token=token, data=data, indent=indent, bytes_base64=bytes_base64, bytes_hex=bytes_hex)))
+    return encode_mod.encode(mode, **_clean(dict(text=text, algo=algo, key=key, expected=expected, action=action, urlsafe=urlsafe, token=token, data=data, indent=indent, bytes_base64=bytes_base64, bytes_hex=bytes_hex, encoding=encoding, key_base64=key_base64, strip_padding=strip_padding, plus=plus, safe=safe, quote=quote, sort_keys=sort_keys)))
 
 
 def main(argv: list[str] | None = None) -> None:

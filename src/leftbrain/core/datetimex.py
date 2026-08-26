@@ -1177,3 +1177,382 @@ def datetime_tool(mode: str = "now", **params: Any) -> dict[str, Any]:
         "age": _mode_age,
         "fiscal": _mode_fiscal,
     }[mode](p)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/datetime is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "now": [
+        {
+            "caption": "The current instant in a named zone.",
+            "args": {"mode": "now", "tz": "Asia/Kolkata"},
+            "volatile": True,
+        },
+        {
+            "caption": "No zone: UTC, with the assumption recorded.",
+            "args": {"mode": "now"},
+            "volatile": True,
+        },
+        {
+            "caption": "A fixed offset works too, but carries no daylight-saving rules.",
+            "args": {"mode": "now", "tz": "UTC+05:30"},
+            "volatile": True,
+        },
+        {
+            "caption": "`IST` is Indian, Israeli and Irish Standard Time. The tool lists the candidates instead of picking one.",
+            "args": {"mode": "now", "tz": "IST"},
+        },
+        {
+            "caption": "An unknown zone name.",
+            "args": {"mode": "now", "tz": "Mars/Olympus"},
+        },
+    ],
+    "convert_tz": [
+        {
+            "caption": "A New York meeting time in Indian Standard Time.",
+            "args": {"mode": "convert_tz", "value": "2025-03-09T09:30:00", "from_tz": "America/New_York", "to_tz": "Asia/Kolkata"},
+        },
+        {
+            "caption": "One instant fanned out to a whole team, each with its own day shift.",
+            "args": {"mode": "convert_tz", "value": "2025-11-04T18:00:00", "from_tz": "Europe/London", "to_tz": ["Asia/Kolkata", "America/Los_Angeles", "Australia/Sydney"]},
+        },
+        {
+            "caption": "An offset already in the string needs no `from_tz`.",
+            "args": {"mode": "convert_tz", "value": "2025-06-01T10:00:00+05:30", "to_tz": "UTC"},
+        },
+        {
+            "caption": "A date with no time cannot be converted — midnight where?",
+            "args": {"mode": "convert_tz", "value": "2025-06-01", "from_tz": "UTC", "to_tz": "Asia/Tokyo"},
+        },
+        {
+            "caption": "A naive timestamp with no `from_tz`.",
+            "args": {"mode": "convert_tz", "value": "2025-06-01T10:00:00", "to_tz": "Asia/Tokyo"},
+        },
+        {
+            "caption": "An abbreviation as the source zone.",
+            "args": {"mode": "convert_tz", "value": "2025-06-01T10:00:00", "from_tz": "IST", "to_tz": "UTC"},
+        },
+        {
+            "caption": "`to_tz` is required.",
+            "args": {"mode": "convert_tz", "value": "2025-06-01T10:00:00+00:00"},
+        },
+    ],
+    "parse": [
+        {
+            "caption": "An ISO date. `date_only` says no time was supplied.",
+            "args": {"mode": "parse", "value": "2025-03-04"},
+        },
+        {
+            "caption": "The same numeric date read two ways — first the Indian reading.",
+            "args": {"mode": "parse", "value": "03/04/2025", "locale": "IN"},
+        },
+        {
+            "caption": "…and the US reading of exactly the same string.",
+            "args": {"mode": "parse", "value": "03/04/2025", "locale": "US"},
+        },
+        {
+            "caption": "A relative phrase anchored to an explicit reference date.",
+            "args": {"mode": "parse", "value": "next friday 5pm", "ref_date": "2025-08-26T10:00:00", "tz": "Asia/Kolkata"},
+        },
+        {
+            "caption": "A unix timestamp in milliseconds is detected and reported.",
+            "args": {"mode": "parse", "value": 1755180000000},
+        },
+        {
+            "caption": "`03/04/2025` with no locale: both readings are returned in `needs.options` with their ISO dates, so the caller can pick.",
+            "args": {"mode": "parse", "value": "03/04/2025"},
+        },
+        {
+            "caption": "Text that is not a date at all.",
+            "args": {"mode": "parse", "value": "sometime next quarter-ish"},
+        },
+        {
+            "caption": "A date that does not exist.",
+            "args": {"mode": "parse", "value": "31/02/2025"},
+        },
+        {
+            "caption": "An unknown locale code.",
+            "args": {"mode": "parse", "value": "03/04/2025", "locale": "XX"},
+        },
+        {
+            "caption": "`value` is required.",
+            "args": {"mode": "parse"},
+        },
+    ],
+    "add": [
+        {
+            "caption": "Month arithmetic that clamps, with the clamp reported in `warnings`.",
+            "args": {"mode": "add", "value": "2025-01-31", "amount": 1, "unit": "months"},
+        },
+        {
+            "caption": "Three business days in India, listing the public holiday it stepped over.",
+            "args": {"mode": "add", "value": "2025-08-13", "amount": 3, "unit": "business_days", "region": "IN"},
+        },
+        {
+            "caption": "Elapsed hours across a US DST spring-forward: the wall clock jumps, the elapsed time does not.",
+            "args": {"mode": "add", "value": "2025-03-09T00:30:00", "tz": "America/New_York", "amount": 3, "unit": "hours"},
+        },
+        {
+            "caption": "Subtracting, with a negative amount.",
+            "args": {"mode": "add", "value": "2025-08-26", "amount": -2, "unit": "weeks"},
+        },
+        {
+            "caption": "`amount` and `unit` are both required.",
+            "args": {"mode": "add", "value": "2025-08-26", "amount": 3},
+        },
+        {
+            "caption": "An unknown unit.",
+            "args": {"mode": "add", "value": "2025-08-26", "amount": 3, "unit": "fortnite"},
+        },
+        {
+            "caption": "Fractional months have no defined meaning.",
+            "args": {"mode": "add", "value": "2025-08-26", "amount": 1.5, "unit": "months"},
+        },
+    ],
+    "diff": [
+        {
+            "caption": "Calendar breakdown and totals between two dates.",
+            "args": {"mode": "diff", "start": "2025-01-01", "end": "2025-03-15"},
+        },
+        {
+            "caption": "Working days between the same two dates, excluding Indian public holidays.",
+            "args": {"mode": "diff", "start": "2025-01-01", "end": "2025-03-15", "unit": "business_days", "region": "IN"},
+        },
+        {
+            "caption": "A backwards range: `sign` is −1 and `direction` says so in words.",
+            "args": {"mode": "diff", "start": "2025-03-15T18:00:00", "end": "2025-03-15T09:30:00"},
+        },
+        {
+            "caption": "`start` is required.",
+            "args": {"mode": "diff", "end": "2025-01-01"},
+        },
+        {
+            "caption": "An unknown unit.",
+            "args": {"mode": "diff", "start": "2025-01-01", "end": "2025-02-01", "unit": "moons"},
+        },
+        {
+            "caption": "An ambiguous numeric date on either side is refused, exactly as in `parse`.",
+            "args": {"mode": "diff", "start": "01/02/2025", "end": "2025-03-01"},
+        },
+    ],
+    "weekday": [
+        {
+            "caption": "A public holiday that happens to fall on a Friday.",
+            "args": {"mode": "weekday", "value": "2025-08-15"},
+        },
+        {
+            "caption": "A leap day, with `is_leap_year` and `days_in_month` confirming it.",
+            "args": {"mode": "weekday", "value": "2024-02-29"},
+        },
+        {
+            "caption": "A date that does not exist in that month.",
+            "args": {"mode": "weekday", "value": "31/02/2025"},
+        },
+        {
+            "caption": "An ambiguous numeric date.",
+            "args": {"mode": "weekday", "value": "03/04/2025"},
+        },
+    ],
+    "nth_weekday": [
+        {
+            "caption": "US Thanksgiving 2025: the fourth Thursday of November.",
+            "args": {"mode": "nth_weekday", "year": 2025, "month": 11, "weekday": "thursday", "n": 4},
+        },
+        {
+            "caption": "The last Friday of February 2025, counting backwards.",
+            "args": {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": -1},
+        },
+        {
+            "caption": "Ordinal words work too, and the month can be a name.",
+            "args": {"mode": "nth_weekday", "year": 2025, "month": "September", "weekday": "monday", "n": "first"},
+        },
+        {
+            "caption": "February 2025 has only four Fridays.",
+            "args": {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": 5},
+        },
+        {
+            "caption": "`weekday` is required.",
+            "args": {"mode": "nth_weekday", "year": 2025, "month": 2},
+        },
+        {
+            "caption": "`n` cannot be zero.",
+            "args": {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "friday", "n": 0},
+        },
+        {
+            "caption": "An unknown weekday name.",
+            "args": {"mode": "nth_weekday", "year": 2025, "month": 2, "weekday": "sunsday"},
+        },
+    ],
+    "business_days": [
+        {
+            "caption": "Working days in an Indian August, with the Independence Day holiday named.",
+            "args": {"mode": "business_days", "start": "2025-08-11", "end": "2025-08-22", "region": "IN"},
+        },
+        {
+            "caption": "A Friday/Saturday weekend, as used across the Gulf.",
+            "args": {"mode": "business_days", "start": "2025-08-11", "end": "2025-08-22", "weekend": ["friday", "saturday"], "region": "AE"},
+        },
+        {
+            "caption": "Regional holidays via `subdiv`, plus a company shutdown day of your own.",
+            "args": {"mode": "business_days", "start": "2025-10-01", "end": "2025-10-10", "region": "IN", "subdiv": "WB", "extra_holidays": ["2025-10-06"]},
+        },
+        {
+            "caption": "Both ends are required.",
+            "args": {"mode": "business_days", "start": "2025-08-01"},
+        },
+        {
+            "caption": "An unknown weekday in `weekend`.",
+            "args": {"mode": "business_days", "start": "2025-08-01", "end": "2025-08-10", "weekend": ["funday"]},
+        },
+        {
+            "caption": "An unsupported holiday region.",
+            "args": {"mode": "business_days", "start": "2025-08-01", "end": "2025-08-10", "region": "XX"},
+        },
+    ],
+    "overlap": [
+        {
+            "caption": "Two meetings that collide, with the colliding window returned.",
+            "args": {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:30:00"}, "b": {"start": "2025-08-26T10:00:00", "end": "2025-08-26T11:00:00"}},
+        },
+        {
+            "caption": "Two that do not, with the gap between them.",
+            "args": {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:00:00"}, "b": {"start": "2025-08-26T14:00:00", "end": "2025-08-26T15:00:00"}},
+        },
+        {
+            "caption": "Containment is named, not just detected.",
+            "args": {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T18:00:00"}, "b": {"start": "2025-08-26T11:00:00", "end": "2025-08-26T12:00:00"}},
+        },
+        {
+            "caption": "An interval must be an object with `start` and `end`.",
+            "args": {"mode": "overlap", "a": "2025-08-26", "b": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:00:00"}},
+        },
+        {
+            "caption": "An interval that ends before it starts.",
+            "args": {"mode": "overlap", "a": {"start": "2025-08-26T12:00:00", "end": "2025-08-26T09:00:00"}, "b": {"start": "2025-08-26T09:00:00", "end": "2025-08-26T10:00:00"}},
+        },
+        {
+            "caption": "One side aware, the other naive.",
+            "args": {"mode": "overlap", "a": {"start": "2025-08-26T09:00:00+05:30", "end": "2025-08-26T10:00:00+05:30"}, "b": {"start": "2025-08-26T09:30:00", "end": "2025-08-26T10:30:00"}},
+        },
+    ],
+    "duration_sum": [
+        {
+            "caption": "Three labelled work sessions, totalled.",
+            "args": {"mode": "duration_sum", "ranges": [{"label": "morning", "start": "2025-08-26T09:15:00", "end": "2025-08-26T12:00:00"}, {"label": "afternoon", "start": "2025-08-26T13:00:00", "end": "2025-08-26T17:30:00"}, {"label": "evening", "start": "2025-08-26T20:00:00", "end": "2025-08-26T21:45:00"}]},
+        },
+        {
+            "caption": "Two sessions that overlap: the total still adds them, and `warnings` names the double count.",
+            "args": {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T09:00:00", "end": "2025-08-26T11:00:00"}, {"start": "2025-08-26T10:30:00", "end": "2025-08-26T12:00:00"}]},
+        },
+        {
+            "caption": "`ranges` is required and must be a non-empty list.",
+            "args": {"mode": "duration_sum"},
+        },
+        {
+            "caption": "Every entry needs both a `start` and an `end`.",
+            "args": {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T09:00:00"}]},
+        },
+        {
+            "caption": "An interval that runs backwards.",
+            "args": {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T11:00:00", "end": "2025-08-26T09:00:00"}]},
+        },
+    ],
+    "recurrence": [
+        {
+            "caption": "A phrase turned into an RRULE and expanded.",
+            "args": {"mode": "recurrence", "rule": "every 2nd tuesday", "start": "2025-01-01", "count": 5},
+        },
+        {
+            "caption": "A raw RRULE for a three-day-a-week standup.",
+            "args": {"mode": "recurrence", "rule": "FREQ=WEEKLY;BYDAY=MO,WE,FR", "start": "2025-01-01", "count": 6},
+        },
+        {
+            "caption": "Month ends, bounded by `until`.",
+            "args": {"mode": "recurrence", "rule": "month end", "start": "2025-01-01", "until": "2025-06-30"},
+        },
+        {
+            "caption": "A phrase the converter does not recognise — it asks for an RRULE rather than guessing.",
+            "args": {"mode": "recurrence", "rule": "every blue moon", "start": "2025-01-01"},
+        },
+        {
+            "caption": "`rule` is required.",
+            "args": {"mode": "recurrence", "start": "2025-01-01"},
+        },
+        {
+            "caption": "`limit` is capped at 1000.",
+            "args": {"mode": "recurrence", "rule": "every day", "start": "2025-01-01", "limit": 5000},
+        },
+        {
+            "caption": "A malformed RRULE.",
+            "args": {"mode": "recurrence", "rule": "FREQ=FORTNIGHTLY", "start": "2025-01-01", "count": 3},
+        },
+    ],
+    "cron_next": [
+        {
+            "caption": "Weekday mornings in Kolkata.",
+            "args": {"mode": "cron_next", "expr": "0 9 * * 1-5", "tz": "Asia/Kolkata", "start": "2025-08-15T00:00:00", "n": 3},
+        },
+        {
+            "caption": "An alias, and a step field.",
+            "args": {"mode": "cron_next", "expr": "@monthly", "start": "2025-01-15T00:00:00", "n": 3},
+        },
+        {
+            "caption": "Every 15 minutes during office hours.",
+            "args": {"mode": "cron_next", "expr": "*/15 9-10 * * *", "start": "2025-08-15T09:00:00", "n": 4},
+        },
+        {
+            "caption": "A cron expression must have five fields.",
+            "args": {"mode": "cron_next", "expr": "0 9 * *"},
+        },
+        {
+            "caption": "A value outside its field’s range.",
+            "args": {"mode": "cron_next", "expr": "99 9 * * *"},
+        },
+        {
+            "caption": "`expr` is required.",
+            "args": {"mode": "cron_next"},
+        },
+    ],
+    "age": [
+        {
+            "caption": "An age on a fixed date.",
+            "args": {"mode": "age", "dob": "1990-02-14", "on": "2025-08-26"},
+        },
+        {
+            "caption": "A leap-day birthday in a non-leap year.",
+            "args": {"mode": "age", "dob": "2000-02-29", "on": "2025-03-01"},
+        },
+        {
+            "caption": "`dob` is required.",
+            "args": {"mode": "age", "on": "2025-08-26"},
+        },
+        {
+            "caption": "The reference date precedes the birth date.",
+            "args": {"mode": "age", "dob": "2025-08-26", "on": "1990-01-01"},
+        },
+    ],
+    "fiscal": [
+        {
+            "caption": "India: an April-to-March fiscal year.",
+            "args": {"mode": "fiscal", "value": "2025-08-26", "region": "IN"},
+        },
+        {
+            "caption": "The US federal year, which starts in October and is labelled by its end.",
+            "args": {"mode": "fiscal", "value": "2025-08-26", "region": "US"},
+        },
+        {
+            "caption": "An explicit start month for a company that does not follow its country.",
+            "args": {"mode": "fiscal", "value": "2025-08-26", "fy_start_month": 7},
+        },
+        {
+            "caption": "`fy_start_month` must be a real month.",
+            "args": {"mode": "fiscal", "value": "2025-08-26", "fy_start_month": 13},
+        },
+        {
+            "caption": "An unparseable date.",
+            "args": {"mode": "fiscal", "value": "the third quarter"},
+        },
+    ],
+}

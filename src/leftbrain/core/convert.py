@@ -304,3 +304,127 @@ def convert(mode: str = "auto", **params: Any) -> dict[str, Any]:
     if mode == "currency" or (mode == "auto" and _CURRENCY_RE.match(src.strip().upper()) and _CURRENCY_RE.match(dst.strip().upper()) and src.strip().upper() not in ("DEG", "RAD") and len(src.strip()) == 3 and src.strip().isupper()):
         return _currency(p)
     return _units(p)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/convert is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "units": [
+        {
+            "caption": "Kilometres to miles, with the statute-mile assumption stated and the exact factor returned.",
+            "args": {"mode": "units", "value": 5, "from_unit": "km", "to_unit": "miles"},
+        },
+        {
+            "caption": "Square feet to square metres — `sqft` is understood as an alias.",
+            "args": {"mode": "units", "value": 1500, "from_unit": "sqft", "to_unit": "sqm"},
+        },
+        {
+            "caption": "Decimal to binary bytes, spelled out so the 7% difference is not a surprise.",
+            "args": {"mode": "units", "value": 1, "from_unit": "gigabyte", "to_unit": "gibibyte"},
+        },
+        {
+            "caption": "An ambiguous unit resolved on purpose with `assume`, and the reading recorded.",
+            "args": {"mode": "units", "value": 1, "from_unit": "ton", "to_unit": "kg", "assume": "common"},
+        },
+        {
+            "caption": "An Indian land unit, defined in the registry.",
+            "args": {"mode": "units", "value": 1, "from_unit": "bigha", "to_unit": "sqft"},
+        },
+        {
+            "caption": "`ton` is three different masses. The options come back in `needs.options`.",
+            "args": {"mode": "units", "value": 1, "from_unit": "ton", "to_unit": "kg"},
+        },
+        {
+            "caption": "`gallon` is US or imperial — a 20% difference.",
+            "args": {"mode": "units", "value": 1, "from_unit": "gallon", "to_unit": "liter"},
+        },
+        {
+            "caption": "`oz` is a mass or a volume depending on what is being measured.",
+            "args": {"mode": "units", "value": 8, "from_unit": "oz", "to_unit": "g"},
+        },
+        {
+            "caption": "`GB` may be decimal bytes, binary bytes or bits.",
+            "args": {"mode": "units", "value": 1, "from_unit": "GB", "to_unit": "MB"},
+        },
+        {
+            "caption": "Dimensions that do not relate.",
+            "args": {"mode": "units", "value": 5, "from_unit": "km", "to_unit": "kg"},
+        },
+        {
+            "caption": "An unknown unit.",
+            "args": {"mode": "units", "value": 5, "from_unit": "blorg", "to_unit": "km"},
+        },
+        {
+            "caption": "`to_unit` is required.",
+            "args": {"mode": "units", "value": 5, "from_unit": "km"},
+        },
+    ],
+    "temperature": [
+        {
+            "caption": "An absolute reading.",
+            "args": {"mode": "temperature", "value": 100, "from_unit": "C", "to_unit": "F"},
+        },
+        {
+            "caption": "The same number as a difference — a different answer, and the tool says which it used.",
+            "args": {"mode": "temperature", "value": 100, "from_unit": "C", "to_unit": "F", "delta": True},
+        },
+        {
+            "caption": "Body temperature into kelvin.",
+            "args": {"mode": "temperature", "value": 98.6, "from_unit": "F", "to_unit": "K"},
+        },
+        {
+            "caption": "A temperature cannot become a length.",
+            "args": {"mode": "temperature", "value": 100, "from_unit": "C", "to_unit": "km"},
+        },
+        {
+            "caption": "`from_unit` is required.",
+            "args": {"mode": "temperature", "value": 100, "to_unit": "F"},
+        },
+    ],
+    "currency": [
+        {
+            "caption": "A direct rate.",
+            "args": {"mode": "currency", "value": 100, "from_unit": "USD", "to_unit": "INR", "rate": 83.42},
+        },
+        {
+            "caption": "A rate table with a base currency — the cross rate is derived.",
+            "args": {"mode": "currency", "value": 250, "from_unit": "EUR", "to_unit": "INR", "rates": {"USD": 1, "EUR": 0.92, "INR": 83.42}, "base": "USD"},
+        },
+        {
+            "caption": "A zero-decimal currency.",
+            "args": {"mode": "currency", "value": 100, "from_unit": "USD", "to_unit": "JPY", "rate": 147.2, "decimals": 0},
+        },
+        {
+            "caption": "No rate and no table: the tool refuses to invent one and says where to get it.",
+            "args": {"mode": "currency", "value": 100, "from_unit": "USD", "to_unit": "INR"},
+        },
+        {
+            "caption": "Currency codes must be three letters.",
+            "args": {"mode": "currency", "value": 100, "from_unit": "DOLLAR", "to_unit": "INR", "rate": 83.42},
+        },
+        {
+            "caption": "A rate table that does not cover both sides.",
+            "args": {"mode": "currency", "value": 100, "from_unit": "AUD", "to_unit": "INR", "rates": {"USD": 1, "EUR": 0.92}},
+        },
+    ],
+    "auto": [
+        {
+            "caption": "Two unit names: the unit path.",
+            "args": {"mode": "auto", "value": 10, "from_unit": "km", "to_unit": "mi"},
+        },
+        {
+            "caption": "Two ISO codes and a rate: the currency path.",
+            "args": {"mode": "auto", "value": 100, "from_unit": "USD", "to_unit": "INR", "rate": 83.42},
+        },
+        {
+            "caption": "Detected as currency, but with no rate supplied.",
+            "args": {"mode": "auto", "value": 100, "from_unit": "USD", "to_unit": "INR"},
+        },
+        {
+            "caption": "Detected as units, and still refused when ambiguous.",
+            "args": {"mode": "auto", "value": 1, "from_unit": "ton", "to_unit": "kg"},
+        },
+    ],
+}

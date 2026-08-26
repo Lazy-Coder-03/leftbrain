@@ -472,3 +472,229 @@ def numbers(mode: str = "compare", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     return {"compare": _compare, "round": _round, "format": _format, "allocate": _allocate, "sequence": _sequence, "parse": _parse, "to_words": _to_words}[mode](p)
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/numbers is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "compare": [
+        {
+            "caption": "The canonical case.",
+            "args": {"mode": "compare", "values": ["9.11", "9.9"]},
+        },
+        {
+            "caption": "Mixed human notation, all reduced to decimals before ordering.",
+            "args": {"mode": "compare", "values": ["1.2 Cr", "₹15,00,000", "2.5k", "0.03 bn"]},
+        },
+        {
+            "caption": "Two values give a relation, a difference and a percentage change.",
+            "args": {"mode": "compare", "a": "1,250.50", "b": "1,499.99"},
+        },
+        {
+            "caption": "Comparison needs at least two values.",
+            "args": {"mode": "compare", "values": ["9.11"]},
+        },
+        {
+            "caption": "A value that is not a number.",
+            "args": {"mode": "compare", "values": ["nine point one", "9.9"]},
+        },
+        {
+            "caption": "Neither `values` nor `a`/`b`.",
+            "args": {"mode": "compare"},
+        },
+    ],
+    "round": [
+        {
+            "caption": "Half-up: the rule most humans mean.",
+            "args": {"mode": "round", "value": "2.5", "decimals": 0},
+        },
+        {
+            "caption": "Bankers' rounding on the same value gives a different answer.",
+            "args": {"mode": "round", "value": "2.5", "decimals": 0, "rounding": "half_even"},
+        },
+        {
+            "caption": "Three significant figures.",
+            "args": {"mode": "round", "value": "1234.5678", "significant": 3},
+        },
+        {
+            "caption": "Cash rounding to the nearest five cents.",
+            "args": {"mode": "round", "value": "12.327", "nearest": "0.05"},
+        },
+        {
+            "caption": "An unknown rounding rule lists the valid ones.",
+            "args": {"mode": "round", "value": "2.5", "rounding": "cosmic"},
+        },
+        {
+            "caption": "Zero significant figures is meaningless.",
+            "args": {"mode": "round", "value": "2.5", "significant": 0},
+        },
+        {
+            "caption": "A step must be positive.",
+            "args": {"mode": "round", "value": "2.5", "nearest": 0},
+        },
+        {
+            "caption": "An unparseable value.",
+            "args": {"mode": "round", "value": "two and a half"},
+        },
+    ],
+    "format": [
+        {
+            "caption": "Indian digit grouping — two-digit groups above the thousand.",
+            "args": {"mode": "format", "value": 12345678.9, "locale": "en_IN"},
+        },
+        {
+            "caption": "The same number for Germany, where the separators swap.",
+            "args": {"mode": "format", "value": 12345678.9, "locale": "de_DE"},
+        },
+        {
+            "caption": "Currency, with the symbol and the right number of decimals.",
+            "args": {"mode": "format", "value": "1234567.891", "locale": "en_IN", "style": "currency", "currency": "INR"},
+        },
+        {
+            "caption": "Compact Indian notation.",
+            "args": {"mode": "format", "value": 12345678, "locale": "en_IN", "style": "compact", "currency": "INR"},
+        },
+        {
+            "caption": "A percentage, and an accounting-style negative.",
+            "args": {"mode": "format", "value": "-0.0725", "style": "percent", "accounting": True},
+        },
+        {
+            "caption": "An unsupported locale.",
+            "args": {"mode": "format", "value": 1234.5, "locale": "xx_YY"},
+        },
+        {
+            "caption": "An unparseable value.",
+            "args": {"mode": "format", "value": "lots"},
+        },
+    ],
+    "allocate": [
+        {
+            "caption": "100 split three ways: two parts get 33.33, one gets 33.34, and the total is exact.",
+            "args": {"mode": "allocate", "total": 100, "parts": 3},
+        },
+        {
+            "caption": "A labelled weighted split.",
+            "args": {"mode": "allocate", "total": "10000", "weights": {"alice": 3, "bob": 2, "carol": 1}},
+        },
+        {
+            "caption": "Percentages, validated to sum to 100.",
+            "args": {"mode": "allocate", "total": "1250.75", "percentages": [50, 30, 20], "labels": ["rent", "food", "savings"]},
+        },
+        {
+            "caption": "The same split with the remainder forced onto the first part instead.",
+            "args": {"mode": "allocate", "total": 100, "parts": 3, "method": "first"},
+        },
+        {
+            "caption": "Percentages that do not add to 100.",
+            "args": {"mode": "allocate", "total": 100, "percentages": [50, 30, 10]},
+        },
+        {
+            "caption": "Neither `weights` nor `parts`.",
+            "args": {"mode": "allocate", "total": 100},
+        },
+        {
+            "caption": "Labels that do not match the weights.",
+            "args": {"mode": "allocate", "total": 100, "weights": [1, 2, 3], "labels": ["a", "b"]},
+        },
+        {
+            "caption": "A negative weight.",
+            "args": {"mode": "allocate", "total": 100, "weights": [3, -1]},
+        },
+        {
+            "caption": "Weights that are all zero.",
+            "args": {"mode": "allocate", "total": 100, "weights": [0, 0]},
+        },
+        {
+            "caption": "An unknown distribution method.",
+            "args": {"mode": "allocate", "total": 100, "parts": 3, "method": "random"},
+        },
+    ],
+    "sequence": [
+        {
+            "caption": "An arithmetic sequence by count.",
+            "args": {"mode": "sequence", "kind": "arithmetic", "start": 100, "step": 25, "n": 6},
+        },
+        {
+            "caption": "A range defined by its endpoints, with a fractional step.",
+            "args": {"mode": "sequence", "kind": "range", "start": "0", "end": "2", "step": "0.5"},
+        },
+        {
+            "caption": "Fibonacci, exact.",
+            "args": {"mode": "sequence", "kind": "fibonacci", "n": 12},
+        },
+        {
+            "caption": "A geometric sequence — compound growth without float drift.",
+            "args": {"mode": "sequence", "kind": "geometric", "start": "1000", "ratio": "1.08", "n": 5},
+        },
+        {
+            "caption": "An unknown kind.",
+            "args": {"mode": "sequence", "kind": "harmonic", "n": 5},
+        },
+        {
+            "caption": "An arithmetic sequence needs `n` or `end`.",
+            "args": {"mode": "sequence", "kind": "arithmetic", "start": 1, "step": 2},
+        },
+        {
+            "caption": "A zero step never reaches the end.",
+            "args": {"mode": "sequence", "kind": "arithmetic", "start": 1, "step": 0, "end": 10},
+        },
+        {
+            "caption": "The term cap is 10 000.",
+            "args": {"mode": "sequence", "kind": "fibonacci", "n": 20000},
+        },
+    ],
+    "parse": [
+        {
+            "caption": "An Indian crore amount with a currency symbol.",
+            "args": {"mode": "parse", "value": "₹1.2 Cr"},
+        },
+        {
+            "caption": "A batch, each with its reading explained.",
+            "args": {"mode": "parse", "values": ["(500)", "12%", "1,23,456.78", "2.5k", "1234,56"]},
+        },
+        {
+            "caption": "Words are not numbers.",
+            "args": {"mode": "parse", "value": "twelve"},
+        },
+        {
+            "caption": "Separators that cannot be reconciled.",
+            "args": {"mode": "parse", "value": "1,23.45.6"},
+        },
+        {
+            "caption": "An unknown magnitude suffix.",
+            "args": {"mode": "parse", "value": "5 zillion"},
+        },
+        {
+            "caption": "`value` is required.",
+            "args": {"mode": "parse"},
+        },
+    ],
+    "to_words": [
+        {
+            "caption": "International grouping.",
+            "args": {"mode": "to_words", "value": 1234567, "system": "international"},
+        },
+        {
+            "caption": "The same number in the Indian system.",
+            "args": {"mode": "to_words", "value": 1234567, "system": "indian"},
+        },
+        {
+            "caption": "Invoice phrasing with minor units.",
+            "args": {"mode": "to_words", "value": "125430.75", "system": "indian", "currency": "INR"},
+        },
+        {
+            "caption": "A negative with a fractional part.",
+            "args": {"mode": "to_words", "value": "-42.5"},
+        },
+        {
+            "caption": "An unknown numbering system.",
+            "args": {"mode": "to_words", "value": 1234, "system": "roman"},
+        },
+        {
+            "caption": "An unparseable value.",
+            "args": {"mode": "to_words", "value": "a lot"},
+        },
+    ],
+}

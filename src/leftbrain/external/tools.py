@@ -25,6 +25,11 @@ _WMO = {
 }
 
 
+#: Accepted "mode" values, per tool. fx_rate and url_check take no mode.
+WEATHER_MODES = ("current", "forecast", "historical", "summary")
+GEO_MODES = ("geocode", "reverse", "route")
+
+
 def _client() -> Any:
     if httpx is None:
         raise ToolError("external tools need httpx: pip install 'leftbrain[external]'", code="unsupported")
@@ -73,7 +78,7 @@ def _resolve_point(p: dict[str, Any]) -> tuple[float, float, dict[str, Any], lis
 def weather(mode: str = "current", **params: Any) -> dict[str, Any]:
     """Weather via Open-Meteo. Modes: current | forecast (days) | historical (date) | summary."""
     p = {k: v for k, v in params.items() if v is not None}
-    if mode not in ("current", "forecast", "historical", "summary"):
+    if mode not in WEATHER_MODES:
         raise ToolError("mode must be current, forecast, historical or summary")
     lat, lon, loc, assumptions = _resolve_point(p)
     units = (p.get("units") or "metric").lower()
@@ -158,7 +163,7 @@ def geo(mode: str = "geocode", **params: Any) -> dict[str, Any]:
             raise ToolError("no route found", code="upstream")
         r = routes[0]
         return ok({"distance_km": round(r["distance"] / 1000, 2), "duration_min": round(r["duration"] / 60, 1), "duration_human": f"{int(r['duration'] // 3600)}h {int((r['duration'] % 3600) // 60)}m", "origin": a_loc, "destination": b_loc, "profile": profile}, assumptions=aa + ab + ["OSRM demo server; no live traffic"])
-    raise ToolError("mode must be geocode, reverse or route")
+    raise ToolError("mode must be " + " or ".join((", ".join(GEO_MODES[:-1]), GEO_MODES[-1])))
 
 
 @tool

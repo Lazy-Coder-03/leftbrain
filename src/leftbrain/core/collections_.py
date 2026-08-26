@@ -322,3 +322,206 @@ def collections(mode: str = "set_ops", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     return {"set_ops": _set_ops, "group_by": _group_by, "aggregate": _aggregate, "pick_fields": _pick_fields, "flatten": _flatten, "unflatten": _unflatten, "paginate": _paginate, "find_duplicates": _find_duplicates, "sort_by": _sort_by, "chunk": _chunk}[mode](p)
+
+#: Shared fixture for the documented examples below.
+_EX_ORDERS = [{"id": "A-1", "region": "north", "amount": "1200.50", "rep": {"name": "Asha"}}, {"id": "A-2", "region": "south", "amount": "890.00", "rep": {"name": "Bo"}}, {"id": "A-3", "region": "north", "amount": "430.25", "rep": {"name": "Asha"}}, {"id": "A-4", "region": "east", "amount": "2100.00", "rep": {"name": "Chen"}}, {"id": "A-5", "region": "south", "amount": "75.75", "rep": {"name": "Bo"}}]
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/collections is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "set_ops": [
+        {
+            "caption": "Two lists of SKUs: both directions of difference at once.",
+            "args": {"mode": "set_ops", "a": ["A1", "B2", "C3", "D4"], "b": ["B2", "D4", "E5"]},
+        },
+        {
+            "caption": "A union, with the duplicate collapse reported.",
+            "args": {"mode": "set_ops", "a": ["x", "y", "y"], "b": ["y", "z"], "op": "union"},
+        },
+        {
+            "caption": "Comparing records on one field rather than whole objects.",
+            "args": {"mode": "set_ops", "a": [{"sku": "A1", "qty": 2}, {"sku": "B2", "qty": 1}], "b": [{"sku": "B2", "qty": 9}], "op": "difference", "key": "sku"},
+        },
+        {
+            "caption": "Both sides must be lists.",
+            "args": {"mode": "set_ops", "a": ["x"], "b": "y"},
+        },
+        {
+            "caption": "An unknown operation.",
+            "args": {"mode": "set_ops", "a": ["x"], "b": ["y"], "op": "xor"},
+        },
+    ],
+    "group_by": [
+        {
+            "caption": "Sales by region, with an exact decimal sum and average.",
+            "args": {"mode": "group_by", "items": _EX_ORDERS, "key": "region", "agg_field": "amount", "agg": ["sum", "avg", "count"], "include_items": False},
+        },
+        {
+            "caption": "Grouping on a nested path, keeping the members.",
+            "args": {"mode": "group_by", "items": _EX_ORDERS, "key": "rep.name", "include_items": True},
+        },
+        {
+            "caption": "`key` is required.",
+            "args": {"mode": "group_by", "items": _EX_ORDERS},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "group_by", "items": {"a": 1}, "key": "a"},
+        },
+        {
+            "caption": "An unknown aggregate.",
+            "args": {"mode": "group_by", "items": _EX_ORDERS, "key": "region", "agg_field": "amount", "agg": ["median"]},
+        },
+    ],
+    "aggregate": [
+        {
+            "caption": "Totals across a field.",
+            "args": {"mode": "aggregate", "items": _EX_ORDERS, "field": "amount"},
+        },
+        {
+            "caption": "Distinct values of a field.",
+            "args": {"mode": "aggregate", "items": _EX_ORDERS, "field": "region", "ops": ["count", "count_distinct", "list"]},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "aggregate", "items": "1,2,3"},
+        },
+        {
+            "caption": "An unknown aggregate.",
+            "args": {"mode": "aggregate", "items": _EX_ORDERS, "field": "amount", "ops": ["stdev"]},
+        },
+    ],
+    "pick_fields": [
+        {
+            "caption": "Flattening a nested field into a table-shaped row.",
+            "args": {"mode": "pick_fields", "items": _EX_ORDERS, "fields": ["id", "rep.name", "amount"], "short_names": True},
+        },
+        {
+            "caption": "Renaming as you project; a missing path becomes null.",
+            "args": {"mode": "pick_fields", "items": _EX_ORDERS, "fields": ["id", "rep.email"], "rename": {"rep.email": "contact"}},
+        },
+        {
+            "caption": "`fields` is required.",
+            "args": {"mode": "pick_fields", "items": _EX_ORDERS},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "pick_fields", "items": {"id": 1}, "fields": ["id"]},
+        },
+    ],
+    "flatten": [
+        {
+            "caption": "A nested object flattened to dotted keys.",
+            "args": {"mode": "flatten", "data": {"order": {"id": "A-1", "rep": {"name": "Asha"}}, "tags": ["rush", "gift"]}},
+        },
+        {
+            "caption": "Limiting the depth leaves deeper structures intact.",
+            "args": {"mode": "flatten", "data": {"order": {"id": "A-1", "rep": {"name": "Asha"}}}, "depth": 2},
+        },
+        {
+            "caption": "A list of lists, flattened.",
+            "args": {"mode": "flatten", "data": [1, [2, [3, 4]], 5]},
+        },
+        {
+            "caption": "`data` must be a list or an object.",
+            "args": {"mode": "flatten", "data": "a.b.c"},
+        },
+        {
+            "caption": "`data` is required.",
+            "args": {"mode": "flatten"},
+        },
+    ],
+    "unflatten": [
+        {
+            "caption": "Dotted keys back into a nested object.",
+            "args": {"mode": "unflatten", "data": {"order.id": "A-1", "order.rep.name": "Asha", "order.total": 1200.5}},
+        },
+        {
+            "caption": "Bracketed indices rebuild arrays.",
+            "args": {"mode": "unflatten", "data": {"items[0].sku": "A1", "items[1].sku": "B2", "items[1].qty": 3}},
+        },
+        {
+            "caption": "`data` must be a flat object.",
+            "args": {"mode": "unflatten", "data": ["a.b"]},
+        },
+        {
+            "caption": "`data` is required.",
+            "args": {"mode": "unflatten"},
+        },
+    ],
+    "paginate": [
+        {
+            "caption": "The middle page of five items, three to a page.",
+            "args": {"mode": "paginate", "items": _EX_ORDERS, "page": 2, "per_page": 3},
+        },
+        {
+            "caption": "A page past the end: empty, and the flags explain it.",
+            "args": {"mode": "paginate", "items": _EX_ORDERS, "page": 9, "per_page": 3},
+        },
+        {
+            "caption": "Page numbers start at 1.",
+            "args": {"mode": "paginate", "items": _EX_ORDERS, "page": 0},
+        },
+        {
+            "caption": "`per_page` must be at least 1.",
+            "args": {"mode": "paginate", "items": _EX_ORDERS, "per_page": 0},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "paginate", "items": "abc"},
+        },
+    ],
+    "find_duplicates": [
+        {
+            "caption": "Repeated addresses, matched without regard to case.",
+            "args": {"mode": "find_duplicates", "items": ["a@x.com", "b@x.com", "A@X.com", "c@x.com", "b@x.com"], "case_insensitive": True},
+        },
+        {
+            "caption": "Duplicate records on one field.",
+            "args": {"mode": "find_duplicates", "items": _EX_ORDERS, "key": "rep.name"},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "find_duplicates", "items": "abc"},
+        },
+    ],
+    "sort_by": [
+        {
+            "caption": "Region ascending, then amount descending within each region.",
+            "args": {"mode": "sort_by", "items": _EX_ORDERS, "keys": [{"field": "region"}, {"field": "amount", "order": "desc"}]},
+        },
+        {
+            "caption": "The single-key shorthand.",
+            "args": {"mode": "sort_by", "items": _EX_ORDERS, "key": "amount", "order": "desc"},
+        },
+        {
+            "caption": "Sort keys are required.",
+            "args": {"mode": "sort_by", "items": _EX_ORDERS},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "sort_by", "items": "abc", "key": "id"},
+        },
+    ],
+    "chunk": [
+        {
+            "caption": "Fixed-size batches.",
+            "args": {"mode": "chunk", "items": [1, 2, 3, 4, 5, 6, 7], "size": 3},
+        },
+        {
+            "caption": "A fixed number of near-equal chunks.",
+            "args": {"mode": "chunk", "items": [1, 2, 3, 4, 5, 6, 7], "n": 3},
+        },
+        {
+            "caption": "One of `size` or `n` is required.",
+            "args": {"mode": "chunk", "items": [1, 2, 3]},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "chunk", "items": "abc", "size": 2},
+        },
+    ],
+}

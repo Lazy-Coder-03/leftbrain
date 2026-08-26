@@ -268,3 +268,188 @@ def text(mode: str = "count", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     return {"count": _count, "regex_match": _regex_match, "regex_replace": _regex_replace, "diff": _diff, "sort": _sort, "dedupe": _dedupe, "extract": _extract, "find": _find}[mode](p)
+
+#: Shared fixture for the documented examples below.
+_EX_LOG_A = "2025-08-26 09:00 INFO started\n2025-08-26 09:05 WARN retrying\n2025-08-26 09:06 INFO ready"
+
+#: Shared fixture for the documented examples below.
+_EX_LOG_B = "2025-08-26 09:00 INFO started\n2025-08-26 09:05 ERROR timed out\n2025-08-26 09:06 INFO ready\n2025-08-26 09:07 INFO done"
+
+#: Shared fixture for the documented examples below.
+_EX_CONTACT = "Ping ops@example.com or billing@mailinator.com, docs at https://leftbrain.dev/docs, invoice ₹1,25,000 due 2025-09-15, GST 19ABCDE1234F1ZX, call +91 98765 43210. #urgent @sayantan"
+
+#: Worked examples for the reference page, one list per mode. Every one of them is
+#: executed when /docs/tools/text is built and sorted by the result into
+#: "Examples" (the call succeeded) and "Fails when" (it did not), so a fixture never
+#: states an expectation of its own. Mark anything whose output depends on the
+#: current instant with "volatile": True.
+EXAMPLES: dict[str, list[dict[str, Any]]] = {
+    "count": [
+        {
+            "caption": "How many `r` in strawberry — counted, with positions.",
+            "args": {"mode": "count", "text": "strawberry", "what": "occurrences", "substring": "r"},
+        },
+        {
+            "caption": "Codepoints versus bytes: a family emoji is one glyph, seven codepoints and 25 bytes.",
+            "args": {"mode": "count", "text": "Café 👨‍👩‍👧‍👦"},
+        },
+        {
+            "caption": "Overlapping matches, which a plain `count()` misses.",
+            "args": {"mode": "count", "text": "aaaa", "what": "occurrences", "substring": "aa", "overlapping": True},
+        },
+        {
+            "caption": "Just one statistic.",
+            "args": {"mode": "count", "text": _EX_LOG_A, "what": "lines"},
+        },
+        {
+            "caption": "`text` is required.",
+            "args": {"mode": "count"},
+        },
+        {
+            "caption": "An unknown statistic lists the valid ones.",
+            "args": {"mode": "count", "text": "abc", "what": "vowels"},
+        },
+        {
+            "caption": "Counting occurrences needs a `substring`.",
+            "args": {"mode": "count", "text": "abc", "what": "occurrences"},
+        },
+    ],
+    "regex_match": [
+        {
+            "caption": "Every four-digit run in a line.",
+            "args": {"mode": "regex_match", "text": "Order 1234 shipped 2025-08-26 to PIN 560001", "pattern": "\\d{4}"},
+        },
+        {
+            "caption": "Named groups come back separately.",
+            "args": {"mode": "regex_match", "text": "2025-08-26", "pattern": "(?P<year>\\d{4})-(?P<month>\\d{2})-(?P<day>\\d{2})"},
+        },
+        {
+            "caption": "Case-insensitive matching with a flag.",
+            "args": {"mode": "regex_match", "text": "Error: ERROR while erroring", "pattern": "error", "flags": "i"},
+        },
+        {
+            "caption": "A pattern that does not compile, with the position of the problem.",
+            "args": {"mode": "regex_match", "text": "abc", "pattern": "([a-z"},
+        },
+        {
+            "caption": "An unknown flag letter.",
+            "args": {"mode": "regex_match", "text": "abc", "pattern": "a", "flags": "z"},
+        },
+        {
+            "caption": "`pattern` is required.",
+            "args": {"mode": "regex_match", "text": "abc"},
+        },
+    ],
+    "regex_replace": [
+        {
+            "caption": "Masking digits.",
+            "args": {"mode": "regex_replace", "text": "call 98765 43210 now", "pattern": "\\d", "replacement": "#"},
+        },
+        {
+            "caption": "Reordering with backreferences.",
+            "args": {"mode": "regex_replace", "text": "2025-08-26", "pattern": "(\\d{4})-(\\d{2})-(\\d{2})", "replacement": "\\3/\\2/\\1"},
+        },
+        {
+            "caption": "Only the first two, and the count proves it.",
+            "args": {"mode": "regex_replace", "text": "a a a a", "pattern": "a", "replacement": "b", "count": 2},
+        },
+        {
+            "caption": "`replacement` is required — an empty string is fine, but it must be given.",
+            "args": {"mode": "regex_replace", "text": "abc", "pattern": "a"},
+        },
+        {
+            "caption": "A backreference to a group that does not exist.",
+            "args": {"mode": "regex_replace", "text": "abc", "pattern": "a", "replacement": "\\9"},
+        },
+        {
+            "caption": "A pattern that does not compile.",
+            "args": {"mode": "regex_replace", "text": "abc", "pattern": "a(", "replacement": "x"},
+        },
+    ],
+    "diff": [
+        {
+            "caption": "A line diff, with the unified patch included.",
+            "args": {"mode": "diff", "a": _EX_LOG_A, "b": _EX_LOG_B},
+        },
+        {
+            "caption": "A word-level diff of a single sentence.",
+            "args": {"mode": "diff", "a": "the quick brown fox", "b": "the quiet brown dog", "granularity": "word"},
+        },
+        {
+            "caption": "An unknown granularity.",
+            "args": {"mode": "diff", "a": "x", "b": "y", "granularity": "sentence"},
+        },
+        {
+            "caption": "Both sides are required.",
+            "args": {"mode": "diff", "a": "x"},
+        },
+    ],
+    "sort": [
+        {
+            "caption": "Natural ordering: `file2` before `file10`.",
+            "args": {"mode": "sort", "items": ["file10.txt", "file2.txt", "File1.txt", "file20.txt"]},
+        },
+        {
+            "caption": "Sorting objects by a field, descending.",
+            "args": {"mode": "sort", "items": [{"n": "b", "v": 2}, {"n": "a", "v": 10}, {"n": "c", "v": 7}], "key": "v", "order": "desc"},
+        },
+        {
+            "caption": "Turning natural ordering off gives plain lexicographic order.",
+            "args": {"mode": "sort", "items": ["file10.txt", "file2.txt"], "natural": False},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "sort", "items": "a,b,c"},
+        },
+    ],
+    "dedupe": [
+        {
+            "caption": "Case and whitespace variations collapsed, with each duplicate traced back.",
+            "args": {"mode": "dedupe", "items": ["Apple", "  apple ", "APPLE", "banana", "banana"], "case_insensitive": True},
+        },
+        {
+            "caption": "Deduping records on one field.",
+            "args": {"mode": "dedupe", "items": [{"id": 1, "n": "a"}, {"id": 2, "n": "b"}, {"id": 1, "n": "c"}], "key": "id"},
+        },
+        {
+            "caption": "`items` must be a list.",
+            "args": {"mode": "dedupe", "items": {"a": 1}},
+        },
+    ],
+    "extract": [
+        {
+            "caption": "A few specific kinds.",
+            "args": {"mode": "extract", "text": _EX_CONTACT, "what": ["emails", "urls", "money"]},
+        },
+        {
+            "caption": "Everything the library knows about, in one pass.",
+            "args": {"mode": "extract", "text": _EX_CONTACT},
+        },
+        {
+            "caption": "An unknown kind lists the valid ones.",
+            "args": {"mode": "extract", "text": "abc", "what": "vehicles"},
+        },
+        {
+            "caption": "`text` is required.",
+            "args": {"mode": "extract", "what": "emails"},
+        },
+    ],
+    "find": [
+        {
+            "caption": "Case-insensitive search with line numbers.",
+            "args": {"mode": "find", "text": _EX_LOG_B, "substring": "info", "context": 12},
+        },
+        {
+            "caption": "The same search, case-sensitive, finds fewer.",
+            "args": {"mode": "find", "text": _EX_LOG_B, "substring": "info", "case_sensitive": True},
+        },
+        {
+            "caption": "`substring` is required.",
+            "args": {"mode": "find", "text": "abc"},
+        },
+        {
+            "caption": "`text` is required.",
+            "args": {"mode": "find", "substring": "abc"},
+        },
+    ],
+}
