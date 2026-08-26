@@ -22,6 +22,7 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Changed
 
+- Free tier is **1,000 calls per key per day** (was 5,000); `LEFTBRAIN_DEFAULT_DAILY_QUOTA` still overrides it. Every place the site quotes the limit — landing, sign-in, quickstart, the demo's 429 — now reads the configured value instead of a hard-coded number.
 - Site shows loading skeletons on navigation, form submits and demo runs; the colour legend on docs pages was dropped.
 - Docs key picker shows the key name only (prefix only for unnamed keys).
 

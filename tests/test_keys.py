@@ -53,7 +53,9 @@ def test_http_server_with_keys(tmp_path):
         assert r.status_code == 201
         key = r.json()["key"]
         assert key.startswith("lblz_") and r.json()["prefix"] == key[:13]
-        assert r.json()["daily_quota"] == 5000 and r.json()["rpm"] == 60
+        from leftbrain.keys import DEFAULT_DAILY, DEFAULT_RPM
+
+        assert r.json()["daily_quota"] == DEFAULT_DAILY and r.json()["rpm"] == DEFAULT_RPM
         me = c.get("/keys/me", headers={"Authorization": f"Bearer {key}"})
         assert me.status_code == 200 and me.json()["result"]["owner"] == "dev@example.com"
         assert me.json()["result"]["expires_at"]  # self-serve keys get the default lifetime, not forever

@@ -1275,3 +1275,19 @@ def test_docs_picker_excludes_expired_keys_and_reminds_near_expiry(tmp_path):
         backdate(tmp_path, older[:13])
         page = c.get("/docs/quickstart").text
         assert older not in page and 'id="keypick"' not in page and "Create a key" in page
+
+
+def test_every_quota_mention_follows_the_configured_default(tmp_path, monkeypatch):
+    """Landing, login, the demo 429 and the docs all quote the same number the store enforces."""
+    import leftbrain.keys
+
+    monkeypatch.setattr(leftbrain.keys, "DEFAULT_DAILY", 1234)
+    with TestClient(make_app(tmp_path)) as c:  # no OAuth configured, so /login renders the page itself
+        assert "1,234 calls/day" in c.get("/", headers={"Accept": "text/html"}).text
+        assert "1,234 calls/day each" in c.get("/login", headers={"Accept": "text/html"}).text
+        quick = c.get("/docs/quickstart").text
+        assert "1,234 calls/day" in quick and '&quot;daily_quota&quot;: 1234' in quick and "5,000" not in quick
+        assert "5000" not in c.get("/docs/custom-agents").text.split("daily quota of")[1][:8]
+        for _ in range(31):
+            r = c.post("/demo/numbers", json={"mode": "compare", "values": ["1", "2"]})
+        assert r.status_code == 429 and "1,234 calls/day" in r.json()["message"]

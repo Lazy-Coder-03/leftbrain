@@ -19,8 +19,15 @@ def wants_html(request: Request) -> bool:
     return "text/html" in request.headers.get("accept", "")
 
 
+def free_tier() -> dict[str, Any]:
+    """The limits every page quotes, read at request time so a configured default is what shows."""
+    from .. import keys as keys_mod
+
+    return {"daily_quota": keys_mod.DEFAULT_DAILY, "rpm": keys_mod.DEFAULT_RPM, "max_keys": keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL}
+
+
 def render(request: Request, name: str, status: int = 200, **ctx: Any) -> Response:
-    return templates.TemplateResponse(request, name, ctx, status_code=status)
+    return templates.TemplateResponse(request, name, {**free_tier(), **ctx}, status_code=status)
 
 
 def no_store(response: Response) -> Response:
@@ -73,6 +80,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         if page is None:
             return fail_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
         title, html = page
+        html = docs_mod.fill_defaults(html)
         user = auth.current_user(request, cfg)
         # Only a page that actually asks for a key gets the picker; the tool index and the
         # changelog would otherwise offer to fill in examples they do not have.
@@ -102,7 +110,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             return JSONResponse({"ok": False, "error": "invalid_input", "message": "body too large"}, status_code=413)
         ok, retry = throttle.allow(_client_ip(request.scope))
         if not ok:
-            return JSONResponse({"ok": False, "error": "rate_limited", "message": "demo limit reached; get a free key for 5,000 calls/day"}, status_code=429, headers={"retry-after": str(retry)})
+            return JSONResponse({"ok": False, "error": "rate_limited", "message": f"demo limit reached; get a free key for {free_tier()['daily_quota']:,} calls/day"}, status_code=429, headers={"retry-after": str(retry)})
         # Read the body ourselves so the cap holds for chunked requests too (no content-length).
         body = bytearray()
         async for chunk in request.stream():

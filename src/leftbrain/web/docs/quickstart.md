@@ -75,7 +75,7 @@ Prefer to wire it up yourself? The rest of this page is the manual route.
 
 ## 1 · Get a key
 
-[Sign in with GitHub](/login) and create a key on the Keys page. The free tier gives every key 5,000 calls/day and 60 requests/minute. While you stay signed in, **Show** on the Keys page brings a key back whenever you need it — and every example below is already filled in with it.
+[Sign in with GitHub](/login) and create a key on the Keys page. The free tier gives every key {{daily_quota}} calls/day and {{rpm}} requests/minute. While you stay signed in, **Show** on the Keys page brings a key back whenever you need it — and every example below is already filled in with it.
 
 ## 2 · Store it
 
@@ -127,7 +127,7 @@ curl -s https://leftbrain.idlesync.in/keys/me \n  -H "Authorization: Bearer $LB_
   "ok": true,
   "result": {
     "prefix": "lblz_qm9DsdMO",
-    "daily_quota": 5000,
+    "daily_quota": {{daily_quota_raw}},
     "rpm": 60,
     "used_today": 12,
     "remaining_today": 4988

@@ -53,7 +53,7 @@ Project → **Services → Create service → Combined service** (build + deploy
 | Basic | Name | `leftbrain` (cannot be renamed later) |
 | Repository | Repo / branch | `Lazy-Coder-03/leftbrain` · `main` |
 | Build | Type | **Dockerfile** · path `/Dockerfile` · context `/` |
-| Environment | Runtime variables | `PORT=8080` · `WEB_CONCURRENCY=1` · `LEFTBRAIN_SERVE_EXTERNAL=1` · `LEFTBRAIN_SERVE_FILES=0` · `LEFTBRAIN_DEFAULT_DAILY_QUOTA=5000` · `LEFTBRAIN_DEFAULT_RPM=60` · `GITHUB_CLIENT_ID=…` · `GITHUB_CLIENT_SECRET=…` · `LEFTBRAIN_SECRET=<python -c "import secrets;print(secrets.token_urlsafe(48))">` · `LEFTBRAIN_BASE_URL=https://leftbrain.idlesync.in` · `LEFTBRAIN_TRUSTED_PROXY_HOPS=1` |
+| Environment | Runtime variables | `PORT=8080` · `WEB_CONCURRENCY=1` · `LEFTBRAIN_SERVE_EXTERNAL=1` · `LEFTBRAIN_SERVE_FILES=0` · `LEFTBRAIN_DEFAULT_DAILY_QUOTA=1000` · `LEFTBRAIN_DEFAULT_RPM=60` · `GITHUB_CLIENT_ID=…` · `GITHUB_CLIENT_SECRET=…` · `LEFTBRAIN_SECRET=<python -c "import secrets;print(secrets.token_urlsafe(48))">` · `LEFTBRAIN_BASE_URL=https://leftbrain.idlesync.in` · `LEFTBRAIN_TRUSTED_PROXY_HOPS=1` |
 | Networking | Port | `8080`, protocol **HTTP**, **Public** ✔, name `web` (auto-filled from `EXPOSE 8080`; check the *Public* toggle) |
 | Resources | Plan | the sandbox default (`nf-compute-10`/`20`) · 1 instance |
 | Advanced → Health checks | | HTTP · port `8080` · path `/healthz` · initial delay 20 s |

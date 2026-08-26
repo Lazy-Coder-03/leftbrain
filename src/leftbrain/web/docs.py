@@ -133,6 +133,16 @@ def render_markdown(text: str) -> str:
     return "".join(out)
 
 
+def fill_defaults(html: str) -> str:
+    """Quote the free tier's actual limits: ``{{daily_quota}}`` (grouped) and ``{{daily_quota_raw}}``."""
+    from ..keys import (  # read at request time, so a configured default shows
+        DEFAULT_DAILY,
+        DEFAULT_RPM,
+    )
+
+    return html.replace("{{daily_quota_raw}}", str(DEFAULT_DAILY)).replace("{{daily_quota}}", f"{DEFAULT_DAILY:,}").replace("{{rpm}}", str(DEFAULT_RPM))
+
+
 def fill_key(html: str, key: str | None) -> str:
     """Put the reader's own key into every example, or the anonymous placeholder."""
     return html.replace(KEY_PLACEHOLDER, escape(key) if key else ANON_KEY)

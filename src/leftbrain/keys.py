@@ -15,7 +15,7 @@ Northflank's ``DATABASE_URL`` is honoured automatically.
 
 CLI::
 
-    leftbrain-keys create --owner you@example.com [--daily 5000] [--rpm 60] [--expires 90d|never] [--note "..."]
+    leftbrain-keys create --owner you@example.com [--daily 1000] [--rpm 60] [--expires 90d|never] [--note "..."]
     leftbrain-keys list | disable <prefix> | enable <prefix> | revoke <prefix>
     leftbrain-keys usage [<prefix>] [--days 7] | set <prefix> --daily N --rpm N --expires 90d|never | stats
 
@@ -42,7 +42,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 DEFAULT_DB = "leftbrain-keys.sqlite3"
-DEFAULT_DAILY = int(os.environ.get("LEFTBRAIN_DEFAULT_DAILY_QUOTA", "5000"))
+DEFAULT_DAILY = int(os.environ.get("LEFTBRAIN_DEFAULT_DAILY_QUOTA", "1000"))
 DEFAULT_RPM = int(os.environ.get("LEFTBRAIN_DEFAULT_RPM", "60"))
 KEY_PREFIX = "lblz_"
 PREFIX_LEN = len(KEY_PREFIX) + 8  # shown/stored identifier, e.g. lblz_pI5brWOG

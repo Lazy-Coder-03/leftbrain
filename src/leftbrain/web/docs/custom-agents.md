@@ -632,7 +632,7 @@ framing at all; if you own the deployment and never want to parse events, that i
 A `401` means the header is absent or the key is not recognised — re-reading the key and retrying is
 pointless. A `429` carries `retry-after` in seconds and an `error` naming which limit you hit: a
 per-minute one (`rate limit: 60 requests/minute`) clears within the minute, a daily one
-(`daily quota of 5000 exhausted; resets at 00:00 UTC`) does not. Sleep for `retry-after` and retry;
+(`daily quota of {{daily_quota_raw}} exhausted; resets at 00:00 UTC`) does not. Sleep for `retry-after` and retry;
 do not retry a `401`.
 
 ## Next

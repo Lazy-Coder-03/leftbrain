@@ -8,7 +8,7 @@
     <div class="cta">
       {% if user %}<a class="btn primary" href="/dashboard">Your API keys, {{ user.login }} →</a>{% else %}<a class="btn primary" href="/login">Sign in with GitHub → get a key</a>{% endif %}
       <a class="btn ghost" href="/docs">Read the docs</a>
-      <span class="hint">5,000 calls/day free · no card</span>
+      <span class="hint">{{ "{:,}".format(daily_quota) }} calls/day free · no card</span>
     </div>
   </div>
   <div class="demo" id="demo" data-demo>

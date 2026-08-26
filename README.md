@@ -167,13 +167,13 @@ With a store configured, `leftbrain-serve` also grows a web site:
 
 and the key API behaves like this:
 
-- **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 5000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email. Anonymous signup is **off** unless `LEFTBRAIN_OPEN_SIGNUP=1`; with the web site, people sign in at `/login` instead.
+- **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 1000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email. Anonymous signup is **off** unless `LEFTBRAIN_OPEN_SIGNUP=1`; with the web site, people sign in at `/login` instead.
 - **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key, and `403 {"error": "expired", "message": "key expired on 2026-11-25; create a new one at /dashboard"}` once a key's lifetime is up. Expired keys stop counting towards the 3-active cap.
 - **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`.
 
 Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars), `LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback), and `LEFTBRAIN_TRUSTED_PROXY_HOPS` (default `1`) — how many proxies append to `X-Forwarded-For` in front of the process, so per-IP limits are keyed on the entry *your* proxy wrote rather than the caller-supplied leftmost one. One reverse proxy (Northflank, Render, Fly, nginx) is `1`; add Cloudflare in front and it becomes `2`; `0` means nothing proxies it and no forwarding header is believed.
 
-Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Authentication only ever compares a SHA-256 of the key. When `LEFTBRAIN_SECRET` is set the store also keeps a Fernet-encrypted copy of each key, under a key derived from that secret, so the signed-in owner can be shown their own key again on the dashboard and have it filled into the docs examples. Rotating `LEFTBRAIN_SECRET` leaves existing keys working but no longer revealable; leave the secret unset and nothing but the hash is stored.
+Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (1000), `LEFTBRAIN_DEFAULT_RPM` (60), `LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` (3). Authentication only ever compares a SHA-256 of the key. When `LEFTBRAIN_SECRET` is set the store also keeps a Fernet-encrypted copy of each key, under a key derived from that secret, so the signed-in owner can be shown their own key again on the dashboard and have it filled into the docs examples. Rotating `LEFTBRAIN_SECRET` leaves existing keys working but no longer revealable; leave the secret unset and nothing but the hash is stored.
 
 Admin CLI (any DSN):
 
