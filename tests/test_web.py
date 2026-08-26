@@ -5,7 +5,8 @@ from leftbrain.web.config import WebConfig
 
 
 def make_app(tmp_path, **cfg):
-    config = WebConfig(client_id=None, client_secret=None, secret="test-secret-0123456789", base_url=None, open_signup=False, **cfg)
+    defaults = {"client_id": None, "client_secret": None, "secret": "test-secret-0123456789", "base_url": None, "open_signup": False}
+    config = WebConfig(**{**defaults, **cfg})
     return build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"), web_config=config)
 
 
@@ -28,3 +29,11 @@ def test_mcp_still_needs_bearer(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         assert c.post("/mcp", json={}).status_code == 401
         assert c.get("/keys/me").status_code == 401
+
+
+def test_signup_closed_by_default_open_by_flag(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.post("/keys/signup", json={"email": "a@b.co"})
+        assert r.status_code == 404 and "/login" in r.json()["message"]
+    with TestClient(make_app(tmp_path, open_signup=True)) as c:
+        assert c.post("/keys/signup", json={"email": "a@b.co"}).status_code == 201

@@ -152,8 +152,8 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
         return JSONResponse({"ok": True, "version": __version__})
 
     async def signup(request: Request) -> JSONResponse:
-        if store is None:
-            return JSONResponse({"ok": False, "error": "unsupported", "message": "self-serve keys are not enabled on this server"}, status_code=404)
+        if store is None or not cfg.open_signup:
+            return JSONResponse({"ok": False, "error": "unsupported", "message": "self-serve signup is closed; sign in at /login to create a key"}, status_code=404)
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
@@ -233,7 +233,7 @@ def main(argv: list[str] | None = None) -> None:
     keys_db = os.environ.get("LEFTBRAIN_KEYS_URL") or os.environ.get("DATABASE_URL") or os.environ.get("LEFTBRAIN_KEYS_DB")
     if keys_db and args.workers > 1:
         print("note: the SQLite key store keeps per-minute rate windows in memory; with several workers the per-minute limit is per worker (daily quotas stay exact)", flush=True)
-    print(json.dumps({"leftbrain": __version__, "listen": f"http://{args.host}:{args.port}", "core": "/mcp", "external": None if args.no_external else "/external/mcp", "files": "/files/mcp" if args.files else None, "auth": "keys" if keys_db else ("bearer" if os.environ.get("LEFTBRAIN_API_KEY") else "none"), "signup": "/keys/signup" if keys_db else None}), flush=True)
+    print(json.dumps({"leftbrain": __version__, "listen": f"http://{args.host}:{args.port}", "core": "/mcp", "external": None if args.no_external else "/external/mcp", "files": "/files/mcp" if args.files else None, "auth": "keys" if keys_db else ("bearer" if os.environ.get("LEFTBRAIN_API_KEY") else "none"), "signup": "/keys/signup" if (keys_db and os.environ.get("LEFTBRAIN_OPEN_SIGNUP", "0") in ("1", "true", "yes")) else None}), flush=True)
     uvicorn.run("leftbrain.serve:app_from_env", host=args.host, port=args.port, workers=args.workers, factory=True, log_level="info")
 
 
