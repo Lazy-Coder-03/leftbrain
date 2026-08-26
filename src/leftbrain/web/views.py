@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from starlette.requests import Request
-from starlette.responses import RedirectResponse, Response
+from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
 from . import auth, templates
@@ -25,6 +25,26 @@ def error_page(request: Request, status: int, title: str, message: str) -> Respo
 
 
 def routes(store: Any, cfg: WebConfig) -> list[Any]:
+    from ..serve import _client_ip  # noqa: E402  (module-level import would be circular)
+    from . import demo as demo_mod
+
+    throttle = demo_mod.Throttle()
+
+    async def demo(request: Request) -> Response:
+        tool = request.path_params["tool"]
+        if tool not in demo_mod.DEMO_TOOLS:
+            return JSONResponse({"ok": False, "error": "unsupported", "message": f"demo supports {', '.join(demo_mod.DEMO_TOOLS)}"}, status_code=404)
+        ok, retry = throttle.allow(_client_ip(request.scope))
+        if not ok:
+            return JSONResponse({"ok": False, "error": "rate_limited", "message": "demo limit reached; get a free key for 5,000 calls/day"}, status_code=429, headers={"retry-after": str(retry)})
+        try:
+            args = await request.json()
+            if not isinstance(args, dict):
+                raise ValueError
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": "invalid_input", "message": "send a JSON object with a mode and the tool's arguments"}, status_code=400)
+        return JSONResponse(demo_mod.run(tool, args))
+
     async def login(request: Request) -> Response:
         if not cfg.oauth_ready:
             return render(
@@ -130,6 +150,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/dashboard", dashboard),
         Route("/dashboard/keys", create_key, methods=["POST"]),
         Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
+        Route("/demo/{tool}", demo, methods=["POST"]),
     ]
 
 

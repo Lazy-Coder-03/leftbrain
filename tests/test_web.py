@@ -290,3 +290,23 @@ def test_dashboard_csrf_and_ownership(tmp_path):
         assert c.post("/dashboard/keys", data={"name": "x", "csrf": "bogus"}).status_code == 403
         csrf = csrf_from(c.get("/dashboard").text)
         assert c.post("/dashboard/keys/lblz_notmine1/revoke", data={"csrf": csrf}).status_code == 403
+
+
+def test_demo_runs_real_tools_and_rejects_unknown(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.post("/demo/numbers", json={"mode": "compare", "values": ["9.11", "9.9"]})
+        assert r.status_code == 200 and r.json()["ok"] and r.json()["result"]["max"]["input"] == "9.9"
+        r = c.post("/demo/convert", json={"mode": "units", "value": 3, "from_unit": "oz", "to": "ml"})
+        assert r.json()["ok"] is False and "needs" in r.json()
+        assert c.post("/demo/math", json={"mode": "eval", "expr": "1+1"}).status_code == 404
+        assert c.post("/demo/numbers", content=b"not json", headers={"content-type": "application/json"}).status_code == 400
+
+
+def test_demo_throttle(tmp_path):
+    from leftbrain.web.demo import Throttle
+
+    t = Throttle(limit=2, window=60)
+    assert t.allow("1.1.1.1") == (True, 0) and t.allow("1.1.1.1")[0]
+    ok, retry = t.allow("1.1.1.1")
+    assert not ok and 0 < retry <= 60
+    assert t.allow("2.2.2.2")[0]
