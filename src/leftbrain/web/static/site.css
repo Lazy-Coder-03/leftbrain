@@ -57,7 +57,7 @@ table.keys{width:100%;border-collapse:collapse;font-size:.92rem}table.keys th{te
 .newkey{display:flex;gap:10px;margin:18px 0}.newkey input,.newkey select{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg);color:var(--ink)}.newkey input{flex:1}.newkey select{font-family:var(--mono);font-size:.88rem}
 .hint.warn{color:var(--bad)}.hint.warn a{color:inherit}.newkey+.hint.warn{margin:-8px 0 14px}.hint[hidden]{display:none}
 .keybar .hint.expiry{margin-left:0;flex-basis:100%;font-family:var(--body)}
-.reveal{margin:0 0 18px;padding:16px;border:1px dashed var(--accent);border-radius:var(--radius);background:var(--accent-soft);position:relative}.reveal code{display:block;font-size:1rem;margin:8px 0;word-break:break-all}.reveal .note{font-size:.85rem;color:var(--ink2)}.reveal .copy{position:absolute;top:12px;right:12px}
+.reveal{margin:0 0 18px;padding:16px;border:1px dashed var(--accent);border-radius:var(--radius);background:var(--accent-soft);position:relative}.reveal code{display:block;font-size:1rem;margin:8px 0;word-break:break-all}.reveal .note code{display:inline;font-size:inherit;margin:0}.reveal .note{font-size:.85rem;color:var(--ink2)}.reveal .copy{position:absolute;top:12px;right:12px}
 /* docs */
 
 .docs{padding:40px 0 80px;display:grid;grid-template-columns:240px minmax(0,1fr);gap:48px}

@@ -1214,8 +1214,12 @@ def test_dashboard_creates_with_the_chosen_lifetime(tmp_path):
         me2 = c.get("/keys/me", headers={"Authorization": f"Bearer {key2}"}).json()["result"]
         assert me2["expires_at"] is None
         page = c.get("/dashboard").text
-        assert "expires in 30 days" in page or "expires in 29 days" in page
+        assert "expires in 30 days" in page
         assert "never expires" in page
+        # a revoked key's expiry is moot: the row goes blank rather than counting down
+        c.post(f"/dashboard/keys/{key[:13]}/revoke", data={"csrf": csrf}, follow_redirects=False)
+        row = c.get("/dashboard").text.split(key[:13])[1].split("</tr>")[0]
+        assert "expires in" not in row and "revoked" in row
         # a missing lifetime (old form, scripted post) falls back to the default rather than never
         r = c.post("/dashboard/keys", data={"name": "default", "csrf": csrf})
         key3 = r.text.split('<code id="new-key">')[1].split("</code>")[0]

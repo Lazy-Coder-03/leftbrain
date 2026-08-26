@@ -30,6 +30,7 @@ import argparse
 import base64
 import hashlib
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -151,10 +152,11 @@ class KeyInfo:
 
     @property
     def days_left(self) -> int | None:
-        """Whole days until expiry (0 on the last day); None when the key never expires."""
+        """Days until expiry, rounded up (a fresh 30-day key has 30; 0 once it has passed); None when it never expires."""
         if self.expires_at is None:
             return None
-        return max(0, (datetime.fromisoformat(self.expires_at) - datetime.now(UTC)).days)
+        left = datetime.fromisoformat(self.expires_at) - datetime.now(UTC)
+        return max(0, math.ceil(left.total_seconds() / 86400))
 
     @property
     def usable(self) -> bool:

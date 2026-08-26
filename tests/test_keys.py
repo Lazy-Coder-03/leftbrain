@@ -167,7 +167,7 @@ def test_create_with_a_lifetime_sets_expires_at(tmp_path):
 
     store = KeyStore(str(tmp_path / "k.sqlite3"))
     raw, info = store.create("a@b.co", lifetime_days=30)
-    assert info.expires_at and not info.expired and info.days_left in (29, 30)
+    assert info.expires_at and not info.expired and info.days_left == 30  # rounds up: a fresh 30-day key has 30 days
     due = datetime.fromisoformat(info.expires_at)
     assert abs((due - datetime.now(UTC)) - timedelta(days=30)) < timedelta(minutes=1)
     assert store.get_by_prefix(info.prefix).expires_at == info.expires_at
@@ -212,7 +212,7 @@ def test_set_expiry_extends_or_removes(tmp_path):
     _expire(store, info.prefix, "2026-01-01T00:00:00.000000+00:00")
     assert store.verify_and_count(raw).status == 403
     assert store.set_expiry(info.prefix, 90)
-    assert store.verify_and_count(raw).ok and store.get_by_prefix(info.prefix).days_left in (89, 90)
+    assert store.verify_and_count(raw).ok and store.get_by_prefix(info.prefix).days_left == 90
     assert store.set_expiry(info.prefix, None)
     assert store.get_by_prefix(info.prefix).expires_at is None
     assert not store.set_expiry("lblz_nosuch1", 30)

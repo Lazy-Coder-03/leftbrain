@@ -15,7 +15,7 @@
       <select id="keypick" name="key">{% for k in keybar %}<option value="{{ k.prefix }}"{% if k.prefix == key_selected.prefix %} selected{% endif %}>{% if k.note %}{{ k.note }}{% else %}unnamed · {{ k.prefix }}…{% endif %}</option>{% endfor %}</select>
       <button class="linklike" type="submit">Use</button>
       <span class="hint">Your key is filled into every example on this page.</span>
-      {% if key_selected.expiring_soon %}<span class="hint warn expiry">This key {% if key_selected.days_left == 0 %}expires today{% else %}expires in {{ key_selected.days_left }} day{{ "" if key_selected.days_left == 1 else "s" }}{% endif %} — <a href="/dashboard">create a new one</a> before it does.</span>{% endif %}
+      {% if key_selected.expiring_soon %}<span class="hint warn expiry">This key {% if key_selected.days_left <= 1 %}expires today{% else %}expires in {{ key_selected.days_left }} days{% endif %} — <a href="/dashboard">create a new one</a> before it does.</span>{% endif %}
     </form>
     {% elif key_note %}
     <p class="keybar hint">{{ key_note|safe }}</p>
