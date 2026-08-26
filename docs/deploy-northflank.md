@@ -98,8 +98,8 @@ Turn on *Publicly accessible* on the `keys` addon only while you need it, copy t
 pip install "leftbrain[postgres]"
 LEFTBRAIN_KEYS_URL="postgresql://…external…" leftbrain-keys stats
 # set LEFTBRAIN_SECRET to the service's value too, so keys made here stay revealable
-leftbrain-keys create --owner partner@example.com --daily 50000 --rpm 300 --note "partner"
-leftbrain-keys list | disable <prefix> | revoke <prefix> | usage --days 7
+leftbrain-keys create --owner partner@example.com --daily 50000 --rpm 300 --expires 90d --note "partner"
+leftbrain-keys list | disable <prefix> | revoke <prefix> | set <prefix> --expires 30d | usage --days 7
 ```
 
 ## Limits and next steps

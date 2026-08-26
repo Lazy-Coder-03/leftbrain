@@ -160,15 +160,15 @@ With a store configured, `leftbrain-serve` also grows a web site:
 
 - `/` — landing page (browsers) or the JSON service description (`Accept: application/json`)
 - `/login` — GitHub OAuth; keys belong to the account's verified primary email
-- `/dashboard` — create up to 3 keys (shown once), see today's usage, revoke
+- `/dashboard` — create up to 3 active keys with a lifetime of 30 / 90 / 365 days (or never, with a warning), see today's usage and when each key expires, show a key again, revoke
 - `/docs` — quickstart with Windows PowerShell / macOS / Linux tabs, MCP client setup
 - `POST /demo/{numbers|convert|datetime|text}` — key-less demo, 30 req/min per IP
 
 and the key API behaves like this:
 
 - **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 5000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email. Anonymous signup is **off** unless `LEFTBRAIN_OPEN_SIGNUP=1`; with the web site, people sign in at `/login` instead.
-- **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key.
-- **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today.
+- **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key, and `403 {"error": "expired", "message": "key expired on 2026-11-25; create a new one at /dashboard"}` once a key's lifetime is up. Expired keys stop counting towards the 3-active cap.
+- **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`.
 
 Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars), `LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback), and `LEFTBRAIN_TRUSTED_PROXY_HOPS` (default `1`) — how many proxies append to `X-Forwarded-For` in front of the process, so per-IP limits are keyed on the entry *your* proxy wrote rather than the caller-supplied leftmost one. One reverse proxy (Northflank, Render, Fly, nginx) is `1`; add Cloudflare in front and it becomes `2`; `0` means nothing proxies it and no forwarding header is believed.
 
@@ -177,12 +177,12 @@ Defaults come from `LEFTBRAIN_DEFAULT_DAILY_QUOTA` (5000), `LEFTBRAIN_DEFAULT_RP
 Admin CLI (any DSN):
 
 ```bash
-leftbrain-keys create --owner you@example.com --daily 50000 --rpm 300 --note "partner"
-leftbrain-keys list
+leftbrain-keys create --owner you@example.com --daily 50000 --rpm 300 --expires 90d --note "partner"   # default 365d; --expires never warns
+leftbrain-keys list                                     # one JSON line per key, with expires_at / expired
 leftbrain-keys disable lblz_xxxxxxxx
 leftbrain-keys enable lblz_xxxxxxxx
 leftbrain-keys revoke lblz_xxxxxxxx
-leftbrain-keys set lblz_xxxxxxxx --daily 20000 --rpm 120
+leftbrain-keys set lblz_xxxxxxxx --daily 20000 --rpm 120 --expires 30d   # --expires counts from now; also revives an expired key
 leftbrain-keys usage --days 7
 leftbrain-keys stats
 ```

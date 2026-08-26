@@ -15,9 +15,13 @@ Northflank's ``DATABASE_URL`` is honoured automatically.
 
 CLI::
 
-    leftbrain-keys create --owner you@example.com [--daily 5000] [--rpm 60] [--note "..."]
+    leftbrain-keys create --owner you@example.com [--daily 5000] [--rpm 60] [--expires 90d|never] [--note "..."]
     leftbrain-keys list | disable <prefix> | enable <prefix> | revoke <prefix>
-    leftbrain-keys usage [<prefix>] [--days 7] | set <prefix> --daily N --rpm N | stats
+    leftbrain-keys usage [<prefix>] [--days 7] | set <prefix> --daily N --rpm N --expires 90d|never | stats
+
+Keys may carry an expiry (``expires_at``, UTC ISO). An expired key is refused with 403
+and no longer counts towards the owner's active-key cap; ``never`` is allowed but is a
+liability if the key leaks, so the dashboard and CLI warn when it is chosen.
 """
 
 from __future__ import annotations
@@ -29,10 +33,11 @@ import json
 import os
 import secrets
 import sqlite3
+import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 DEFAULT_DB = "leftbrain-keys.sqlite3"
@@ -42,6 +47,12 @@ KEY_PREFIX = "lblz_"
 PREFIX_LEN = len(KEY_PREFIX) + 8  # shown/stored identifier, e.g. lblz_pI5brWOG
 SIGNUPS_PER_IP_PER_DAY = int(os.environ.get("LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY", "3"))
 MAX_ACTIVE_KEYS_PER_EMAIL = int(os.environ.get("LEFTBRAIN_MAX_KEYS_PER_EMAIL", "3"))
+LIFETIME_CHOICES = (30, 90, 365)  # days offered at creation; None means never
+DEFAULT_LIFETIME_DAYS = 90
+EXPIRY_WARNING_DAYS = 7  # "expires soon" once this close
+NEVER_EXPIRES_WARNING = "Keys that never expire are a liability if leaked; prefer a lifetime and rotate."
+# ISO strings in one fixed shape compare correctly as text, in SQLite and Postgres alike
+_ACTIVE = "disabled=0 AND (expires_at IS NULL OR expires_at > ?)"
 
 _SCHEMA = [
     """CREATE TABLE IF NOT EXISTS keys (
@@ -54,7 +65,8 @@ _SCHEMA = [
         daily_quota INTEGER NOT NULL,
         rpm         INTEGER NOT NULL,
         last_used   TEXT,
-        secret_enc  TEXT
+        secret_enc  TEXT,
+        expires_at  TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_keys_owner ON keys(owner)",
     "CREATE INDEX IF NOT EXISTS idx_keys_prefix ON keys(prefix)",
@@ -102,6 +114,23 @@ def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="microseconds")
 
 
+def _expiry(lifetime_days: int | None) -> str | None:
+    if lifetime_days is None:
+        return None
+    return (datetime.now(UTC) + timedelta(days=lifetime_days)).isoformat(timespec="microseconds")
+
+
+def parse_lifetime(text: str) -> int | None:
+    """``"90d"`` / ``"90"`` -> 90; ``"never"`` -> None. Anything else is a ValueError."""
+    t = (text or "").strip().lower()
+    if t == "never":
+        return None
+    digits = t[:-1] if t.endswith("d") else t
+    if not digits.isdigit() or int(digits) < 1:
+        raise ValueError("lifetime must be a whole number of days like 90d, or never")
+    return int(digits)
+
+
 @dataclass
 class KeyInfo:
     prefix: str
@@ -114,10 +143,30 @@ class KeyInfo:
     last_used: str | None
     used_today: int = 0
     revealable: bool = False  # a decryptable copy of the key exists
+    expires_at: str | None = None  # UTC ISO; None never expires
+
+    @property
+    def expired(self) -> bool:
+        return self.expires_at is not None and self.expires_at <= _now()
+
+    @property
+    def days_left(self) -> int | None:
+        """Whole days until expiry (0 on the last day); None when the key never expires."""
+        if self.expires_at is None:
+            return None
+        return max(0, (datetime.fromisoformat(self.expires_at) - datetime.now(UTC)).days)
+
+    @property
+    def usable(self) -> bool:
+        return not self.disabled and not self.expired
+
+    @property
+    def expiring_soon(self) -> bool:
+        return self.days_left is not None and self.days_left <= EXPIRY_WARNING_DAYS and not self.expired
 
     def to_dict(self) -> dict[str, Any]:
         fields = {k: v for k, v in self.__dict__.items() if k != "revealable"}
-        return {**fields, "remaining_today": max(0, self.daily_quota - self.used_today)}
+        return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today)}
 
 
 @dataclass
@@ -125,6 +174,7 @@ class Verdict:
     ok: bool
     reason: str = ""
     status: int = 200
+    message: str = ""  # a fuller explanation for the caller, when the reason alone is terse
     key: KeyInfo | None = None
     remaining: int | None = None
     retry_after: int | None = None
@@ -199,28 +249,37 @@ class KeyStore:
 
     def _migrate(self) -> None:
         """Add columns that older databases predate. Guarded, so it is safe to re-run."""
+        added = ("secret_enc", "expires_at")
         if self.db.pg:
-            self.db.run("ALTER TABLE keys ADD COLUMN IF NOT EXISTS secret_enc TEXT")
-        elif "secret_enc" not in {c["name"] for c in self.db.all("PRAGMA table_info(keys)")}:
-            self.db.run("ALTER TABLE keys ADD COLUMN secret_enc TEXT")
+            for col in added:
+                self.db.run(f"ALTER TABLE keys ADD COLUMN IF NOT EXISTS {col} TEXT")
+            return
+        have = {c["name"] for c in self.db.all("PRAGMA table_info(keys)")}
+        for col in added:
+            if col not in have:
+                self.db.run(f"ALTER TABLE keys ADD COLUMN {col} TEXT")
 
     def _encrypt(self, raw: str) -> str | None:
         return self._crypto.encrypt(raw.encode()).decode() if self._crypto else None
 
     # -- issue / manage ------------------------------------------------------
 
-    def create(self, owner: str, *, note: str | None = None, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM) -> tuple[str, KeyInfo]:
+    def create(self, owner: str, *, note: str | None = None, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM, lifetime_days: int | None = None) -> tuple[str, KeyInfo]:
         raw = KEY_PREFIX + secrets.token_urlsafe(30)
         prefix = raw[:PREFIX_LEN]
         now = _now()
         enc = self._encrypt(raw)
+        expires_at = _expiry(lifetime_days)
         with self._lock:
-            self.db.run("INSERT INTO keys(key_hash, prefix, owner, note, created_at, disabled, daily_quota, rpm, secret_enc) VALUES (?,?,?,?,?,0,?,?,?)", (_hash(raw), prefix, owner.strip().lower(), note, now, daily_quota, rpm, enc))
-        return raw, KeyInfo(prefix, owner, note, now, False, daily_quota, rpm, None, revealable=enc is not None)
+            self.db.run("INSERT INTO keys(key_hash, prefix, owner, note, created_at, disabled, daily_quota, rpm, secret_enc, expires_at) VALUES (?,?,?,?,?,0,?,?,?,?)", (_hash(raw), prefix, owner.strip().lower(), note, now, daily_quota, rpm, enc, expires_at))
+        return raw, KeyInfo(prefix, owner, note, now, False, daily_quota, rpm, None, revealable=enc is not None, expires_at=expires_at)
 
     def _info(self, row: dict[str, Any]) -> KeyInfo:
         used = self.db.scalar("SELECT count FROM usage WHERE key_hash=? AND day=?", (row["key_hash"], _today()))
-        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0), revealable=bool(row.get("secret_enc")) and self.can_reveal)
+        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0), revealable=bool(row.get("secret_enc")) and self.can_reveal, expires_at=row.get("expires_at"))
+
+    def _active_count(self, owner: str) -> int:
+        return int(self.db.scalar(f"SELECT COUNT(*) FROM keys WHERE owner=? AND {_ACTIVE}", (owner, _now())) or 0)
 
     def get_by_prefix(self, prefix: str) -> KeyInfo | None:
         row = self.db.one("SELECT * FROM keys WHERE prefix = ?", (prefix,))
@@ -259,6 +318,11 @@ class KeyStore:
         with self._lock:
             return self.db.run(f"UPDATE keys SET {', '.join(sets)} WHERE prefix=?", tuple(args)) > 0
 
+    def set_expiry(self, prefix: str, lifetime_days: int | None) -> bool:
+        """Expire the key ``lifetime_days`` from now, or never (None). Works on an expired key too."""
+        with self._lock:
+            return self.db.run("UPDATE keys SET expires_at=? WHERE prefix=?", (_expiry(lifetime_days), prefix)) > 0
+
     # -- verify + meter ------------------------------------------------------
 
     def verify_and_count(self, raw_key: str) -> Verdict:
@@ -271,6 +335,8 @@ class KeyStore:
         if row["disabled"]:
             return Verdict(False, "key disabled", 403)
         info = self._info(row)
+        if info.expired:
+            return Verdict(False, "expired", 403, message=f"key expired on {info.expires_at[:10]}; create a new one at /dashboard")
         now = time.monotonic()
         with self._lock:
             window = [t for t in self._rpm_window.get(h, []) if now - t < 60]
@@ -302,22 +368,21 @@ class KeyStore:
             n = self.db.scalar("SELECT count FROM signups WHERE ip=? AND day=?", (ip, day))
             if n and int(n) >= SIGNUPS_PER_IP_PER_DAY:
                 return None, f"signup limit reached for this address today ({SIGNUPS_PER_IP_PER_DAY}/day)"
-            existing = int(self.db.scalar("SELECT COUNT(*) FROM keys WHERE owner=? AND disabled=0", (email,)) or 0)
+            existing = self._active_count(email)
             if existing >= MAX_ACTIVE_KEYS_PER_EMAIL:
                 return None, f"this email already has {MAX_ACTIVE_KEYS_PER_EMAIL} active keys; disable one first"
             self.db.run("INSERT INTO signups(ip, day, count) VALUES (?,?,1) ON CONFLICT(ip, day) DO UPDATE SET count = signups.count + 1", (ip, day))
-        raw, _ = self.create(email, note="self-serve signup", daily_quota=daily_quota, rpm=rpm)
+        raw, _ = self.create(email, note="self-serve signup", daily_quota=daily_quota, rpm=rpm, lifetime_days=DEFAULT_LIFETIME_DAYS)
         return raw, "ok"
 
-    def create_for_owner(self, email: str, name: str | None, *, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM) -> tuple[str | None, Any]:
+    def create_for_owner(self, email: str, name: str | None, *, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM, lifetime_days: int | None = DEFAULT_LIFETIME_DAYS) -> tuple[str | None, Any]:
         """Dashboard key creation: verified owner, enforce the active-key cap, no IP throttle."""
         email = (email or "").strip().lower()
         with self._lock:
-            active = int(self.db.scalar("SELECT COUNT(*) FROM keys WHERE owner=? AND disabled=0", (email,)) or 0)
-            if active >= MAX_ACTIVE_KEYS_PER_EMAIL:
+            if self._active_count(email) >= MAX_ACTIVE_KEYS_PER_EMAIL:
                 return None, f"you already have {MAX_ACTIVE_KEYS_PER_EMAIL} active keys; revoke one first"
         note = (name or "").strip()[:40] or None
-        return self.create(email, note=note, daily_quota=daily_quota, rpm=rpm)
+        return self.create(email, note=note, daily_quota=daily_quota, rpm=rpm, lifetime_days=lifetime_days)
 
     def owns(self, email: str, prefix: str) -> bool:
         row = self.db.one("SELECT owner FROM keys WHERE prefix = ?", (prefix,))
@@ -326,14 +391,14 @@ class KeyStore:
     def reveal(self, owner: str, prefix: str) -> str | None:
         """The full key back, for its owner only.
 
-        None when the caller does not own it, the key is disabled, the store has no
-        secret configured, the key predates encryption, or ``LEFTBRAIN_SECRET`` has
-        been rotated since the key was issued.
+        None when the caller does not own it, the key is disabled or expired, the store
+        has no secret configured, the key predates encryption, or ``LEFTBRAIN_SECRET``
+        has been rotated since the key was issued.
         """
         if self._crypto is None:
             return None
-        row = self.db.one("SELECT owner, disabled, secret_enc FROM keys WHERE prefix = ?", (prefix,))
-        if not row or row["disabled"] or not row["secret_enc"]:
+        row = self.db.one(f"SELECT owner, secret_enc FROM keys WHERE prefix = ? AND {_ACTIVE}", (prefix, _now()))
+        if not row or not row["secret_enc"]:
             return None
         if row["owner"] != (owner or "").strip().lower():
             return None
@@ -352,7 +417,7 @@ class KeyStore:
         return {
             "backend": self.backend,
             "keys": int(self.db.scalar("SELECT COUNT(*) FROM keys") or 0),
-            "active": int(self.db.scalar("SELECT COUNT(*) FROM keys WHERE disabled=0") or 0),
+            "active": int(self.db.scalar(f"SELECT COUNT(*) FROM keys WHERE {_ACTIVE}", (_now(),)) or 0),
             "requests_today": int(self.db.scalar("SELECT COALESCE(SUM(count),0) FROM usage WHERE day=?", (_today(),)) or 0),
         }
 
@@ -371,6 +436,7 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--note")
     c.add_argument("--daily", type=int, default=DEFAULT_DAILY)
     c.add_argument("--rpm", type=int, default=DEFAULT_RPM)
+    c.add_argument("--expires", type=parse_lifetime, default=365, metavar="90d|never", help="lifetime in days, or never (default 365d)")
     ls = sub.add_parser("list")
     ls.add_argument("--owner")
     for name in ("disable", "enable", "revoke"):
@@ -380,6 +446,7 @@ def main(argv: list[str] | None = None) -> None:
     st.add_argument("prefix")
     st.add_argument("--daily", type=int)
     st.add_argument("--rpm", type=int)
+    st.add_argument("--expires", type=parse_lifetime, default=argparse.SUPPRESS, metavar="90d|never", help="new expiry counted from now, or never")
     u = sub.add_parser("usage")
     u.add_argument("prefix", nargs="?")
     u.add_argument("--days", type=int, default=7)
@@ -388,9 +455,11 @@ def main(argv: list[str] | None = None) -> None:
 
     store = KeyStore(args.db, secret=os.environ.get("LEFTBRAIN_SECRET"))
     if args.cmd == "create":
-        raw, info = store.create(args.owner, note=args.note, daily_quota=args.daily, rpm=args.rpm)
+        raw, info = store.create(args.owner, note=args.note, daily_quota=args.daily, rpm=args.rpm, lifetime_days=args.expires)
         print(json.dumps({"key": raw, **info.to_dict()}, indent=2))
         print("\nStore this key now." if store.can_reveal else "\nStore this key now - it cannot be shown again.")
+        if args.expires is None:
+            print("Warning: " + NEVER_EXPIRES_WARNING, file=sys.stderr)
     elif args.cmd == "list":
         for k in store.list(args.owner):
             print(json.dumps(k.to_dict()))
@@ -399,7 +468,12 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "revoke":
         print("revoked" if store.revoke(args.prefix) else "no such key")
     elif args.cmd == "set":
-        print("ok" if store.set_limits(args.prefix, daily_quota=args.daily, rpm=args.rpm) else "nothing changed")
+        changed = store.set_limits(args.prefix, daily_quota=args.daily, rpm=args.rpm)
+        if hasattr(args, "expires"):
+            changed = store.set_expiry(args.prefix, args.expires) or changed
+            if args.expires is None:
+                print("Warning: " + NEVER_EXPIRES_WARNING, file=sys.stderr)
+        print("ok" if changed else "nothing changed")
     elif args.cmd == "usage":
         for row in store.usage(args.prefix, args.days):
             print(json.dumps(row, default=str))

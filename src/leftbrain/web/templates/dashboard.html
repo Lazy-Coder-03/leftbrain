@@ -18,26 +18,29 @@
     <form class="newkey" method="post" action="/dashboard/keys">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input name="name" placeholder="Name this key (e.g. laptop, prod-agent)" maxlength="40" autocomplete="off">
+      <select name="lifetime" aria-label="Lifetime" data-warn-never>{% for d in lifetimes %}<option value="{{ d }}"{% if d == default_lifetime %} selected{% endif %}>{{ d }} days</option>{% endfor %}<option value="never">never expires</option></select>
       <button class="btn primary" type="submit">Create key</button>
     </form>
+    <p class="hint warn" data-never-warning hidden>{{ never_warning }}</p>
     {% if error %}<p class="notice bad" role="alert">{{ error }}</p>{% endif %}
     {% if new_key %}
     <div class="reveal" role="status"><strong>{% if revealed %}Your key. Anyone who has it can spend your quota.{% elif can_reveal %}Your new key. Copy it now — Show on the row below brings it back later.{% else %}Copy it now — it won't be shown again.{% endif %}</strong><code id="new-key">{{ new_key }}</code><button class="copy" type="button" data-copy="#new-key">copy</button><div class="note">Use it as <code>Authorization: Bearer &lt;key&gt;</code> on <code>/mcp</code> and <code>/external/mcp</code>. <a href="/docs/quickstart">Quickstart →</a></div></div>
     {% endif %}
     <table class="keys">
-      <thead><tr><th>Key</th><th>Name</th><th>Created</th><th>Today</th><th>Status</th><th></th></tr></thead>
+      <thead><tr><th>Key</th><th>Name</th><th>Created</th><th>Expires</th><th>Today</th><th>Status</th><th></th></tr></thead>
       <tbody>
       {% for k in keys %}
       <tr>
         <td class="mono">{{ k.prefix }}…</td>
         <td>{{ k.note or "—" }}</td>
         <td class="num">{{ k.created_at[:10] }}</td>
+        <td class="num">{% if k.expires_at is none %}never expires{% elif k.expired %}expired {{ k.expires_at[:10] }}{% elif k.days_left == 0 %}expires today{% else %}expires in {{ k.days_left }} day{{ "" if k.days_left == 1 else "s" }}{% endif %}</td>
         <td class="num">{{ "{:,}".format(k.used_today) }} / {{ "{:,}".format(k.daily_quota) }}</td>
-        <td><span class="pill {{ 'off' if k.disabled else 'ok' }}">{{ "revoked" if k.disabled else "active" }}</span></td>
-        <td class="right">{% if not k.disabled %}<div class="rowacts">{% if k.revealable %}<form method="post" action="/dashboard/keys/{{ k.prefix }}/reveal"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="linklike" type="submit">Show</button></form>{% else %}<span class="hint">created before reveal was enabled</span>{% endif %}<form method="post" action="/dashboard/keys/{{ k.prefix }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="linklike" type="submit">Revoke</button></form></div>{% endif %}</td>
+        <td>{% if k.disabled %}<span class="pill off">revoked</span>{% elif k.expired %}<span class="pill off">expired</span>{% elif k.expiring_soon %}<span class="pill soon">expiring</span>{% else %}<span class="pill ok">active</span>{% endif %}</td>
+        <td class="right">{% if not k.disabled %}<div class="rowacts">{% if k.expired %}{% elif k.revealable %}<form method="post" action="/dashboard/keys/{{ k.prefix }}/reveal"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="linklike" type="submit">Show</button></form>{% else %}<span class="hint">created before reveal was enabled</span>{% endif %}<form method="post" action="/dashboard/keys/{{ k.prefix }}/revoke"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="linklike" type="submit">Revoke</button></form></div>{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="6" class="empty">No keys yet. Create one above.</td></tr>
+      <tr><td colspan="7" class="empty">No keys yet. Create one above.</td></tr>
       {% endfor %}
       </tbody>
     </table>

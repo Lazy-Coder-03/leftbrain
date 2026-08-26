@@ -45,20 +45,20 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         """An error page that still shows who is signed in, so the nav does not flip to Sign in."""
         return error_page(request, status, title, message, user=auth.current_user(request, cfg))
 
-    def docs_shell(request: Request, title: str, html: str, slug: str, tool: str | None = None, *, user: auth.User | None = None, keys: Any = (), selected: str | None = None, note: str = "") -> Response:
+    def docs_shell(request: Request, title: str, html: str, slug: str, tool: str | None = None, *, user: auth.User | None = None, keys: Any = (), selected: Any = None, note: str = "") -> Response:
         return render(request, "docs.html", 200, page="docs", user=user, title=title, body=html, slug=slug, pages=docs_mod.PAGES, tools=toolref_mod.tool_names(), tool=tool, keybar=keys, key_selected=selected, key_note=note)
 
-    def docs_key(request: Request, user: auth.User | None) -> tuple[list[Any], str | None, str | None]:
-        """The reader's own revealable keys, which one the page uses, and its plaintext."""
+    def docs_key(request: Request, user: auth.User | None) -> tuple[list[Any], Any, str | None]:
+        """The reader's own usable, revealable keys, which one the page uses, and its plaintext."""
         if user is None or store is None:
             return [], None, None
-        keys = [k for k in store.list(user.email) if not k.disabled and k.revealable]
+        keys = [k for k in store.list(user.email) if k.usable and k.revealable]
         if not keys:
             return [], None, None
         wanted = request.query_params.get("key")
         # store.list() is newest first; a prefix they do not own simply falls back to that
         chosen = next((k for k in keys if k.prefix == wanted), keys[0])
-        return keys, chosen.prefix, store.reveal(user.email, chosen.prefix)
+        return keys, chosen, store.reveal(user.email, chosen.prefix)
 
     def docs_note(user: auth.User | None) -> str:
         if store is None:
@@ -196,10 +196,29 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         return auth.current_user(request, cfg)
 
     def dashboard_ctx(request: Request, user: auth.User, **extra: Any) -> dict[str, Any]:
-        from ..keys import DEFAULT_DAILY, MAX_ACTIVE_KEYS_PER_EMAIL
+        from ..keys import (
+            DEFAULT_DAILY,
+            DEFAULT_LIFETIME_DAYS,
+            LIFETIME_CHOICES,
+            MAX_ACTIVE_KEYS_PER_EMAIL,
+            NEVER_EXPIRES_WARNING,
+        )
 
         keys = store.list(user.email) if store else []
-        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if not k.disabled), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "new_key": None, "revealed": False, "can_reveal": bool(store and store.can_reveal), "error": None, **extra}
+        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if k.usable), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "lifetimes": LIFETIME_CHOICES, "default_lifetime": DEFAULT_LIFETIME_DAYS, "never_warning": NEVER_EXPIRES_WARNING, "new_key": None, "revealed": False, "can_reveal": bool(store and store.can_reveal), "error": None, **extra}
+
+    def parse_form_lifetime(value: str) -> tuple[bool, int | None]:
+        """The create form's lifetime: one of the offered day counts, ``never``, or the default when absent."""
+        from ..keys import DEFAULT_LIFETIME_DAYS, LIFETIME_CHOICES
+
+        value = (value or "").strip().lower()
+        if not value:
+            return True, DEFAULT_LIFETIME_DAYS
+        if value == "never":
+            return True, None
+        if value.isdigit() and int(value) in LIFETIME_CHOICES:
+            return True, int(value)
+        return False, None
 
     def keys_unavailable(request: Request) -> Response:
         return fail_page(request, 503, "Keys unavailable", "This server has no key store configured.")
@@ -221,7 +240,10 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
         if store is None:
             return keys_unavailable(request)
-        raw, info = store.create_for_owner(user.email, str(form.get("name") or ""))
+        ok, lifetime = parse_form_lifetime(str(form.get("lifetime") or ""))
+        if not ok:
+            return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error="Pick a lifetime from the list: 30, 90 or 365 days, or never.")))
+        raw, info = store.create_for_owner(user.email, str(form.get("name") or ""), lifetime_days=lifetime)
         if raw is None:
             return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=info)))
         return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw)))

@@ -1004,7 +1004,7 @@ def test_readme_defaults_match_the_code():
     assert f"`LEFTBRAIN_DEFAULT_DAILY_QUOTA` ({keys_mod.DEFAULT_DAILY})" in readme
     assert f"`LEFTBRAIN_DEFAULT_RPM` ({keys_mod.DEFAULT_RPM})" in readme
     assert f"`LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY` ({keys_mod.SIGNUPS_PER_IP_PER_DAY})" in readme
-    assert f"create up to {keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL} keys" in readme
+    assert f"create up to {keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL} active keys" in readme
 
 
 def test_landing_cta_reflects_signed_in_user(tmp_path):
@@ -1169,3 +1169,104 @@ def test_demo_rejects_deep_nesting_with_contract_error(tmp_path):
         # a sane shape is unaffected
         ok = c.post("/demo/numbers", json={"mode": "compare", "values": ["9.11", "9.9"]})
         assert ok.status_code == 200 and ok.json()["ok"]
+
+
+# -- key expiry -------------------------------------------------------------
+
+
+def backdate(tmp_path, prefix: str, iso: str = "2026-01-02T00:00:00.000000+00:00") -> None:
+    """Expire a key in the past through a second handle on the same database."""
+    from leftbrain.keys import KeyStore
+
+    KeyStore(str(tmp_path / "k.sqlite3")).db.run("UPDATE keys SET expires_at=? WHERE prefix=?", (iso, prefix))
+
+
+def set_days_left(tmp_path, prefix: str, days: int) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from leftbrain.keys import KeyStore
+
+    iso = (datetime.now(UTC) + timedelta(days=days, hours=1)).isoformat(timespec="microseconds")
+    KeyStore(str(tmp_path / "k.sqlite3")).db.run("UPDATE keys SET expires_at=? WHERE prefix=?", (iso, prefix))
+
+
+def test_dashboard_create_form_offers_lifetimes_and_warns_about_never(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        page = c.get("/dashboard").text
+        assert 'name="lifetime"' in page
+        for v in ("30", "90", "365", "never"):
+            assert f'value="{v}"' in page, v
+        assert 'value="90" selected' in page  # the default
+        assert "Keys that never expire are a liability" in page
+
+
+def test_dashboard_creates_with_the_chosen_lifetime(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        csrf = csrf_from(c.get("/dashboard").text)
+        r = c.post("/dashboard/keys", data={"name": "short", "lifetime": "30", "csrf": csrf})
+        key = r.text.split('<code id="new-key">')[1].split("</code>")[0]
+        me = c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]
+        assert me["expires_at"] and me["expired"] is False
+        r = c.post("/dashboard/keys", data={"name": "forever", "lifetime": "never", "csrf": csrf})
+        key2 = r.text.split('<code id="new-key">')[1].split("</code>")[0]
+        me2 = c.get("/keys/me", headers={"Authorization": f"Bearer {key2}"}).json()["result"]
+        assert me2["expires_at"] is None
+        page = c.get("/dashboard").text
+        assert "expires in 30 days" in page or "expires in 29 days" in page
+        assert "never expires" in page
+        # a missing lifetime (old form, scripted post) falls back to the default rather than never
+        r = c.post("/dashboard/keys", data={"name": "default", "csrf": csrf})
+        key3 = r.text.split('<code id="new-key">')[1].split("</code>")[0]
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key3}"}).json()["result"]["expires_at"]
+
+
+def test_dashboard_rejects_an_unlisted_lifetime(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        csrf = csrf_from(c.get("/dashboard").text)
+        r = c.post("/dashboard/keys", data={"name": "x", "lifetime": "7", "csrf": csrf})
+        assert r.status_code == 200 and "new-key" not in r.text and "lifetime" in r.text.lower()
+        assert "No keys yet" in r.text
+
+
+def test_expired_key_is_403_with_a_dated_message_and_frees_a_slot(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        csrf = csrf_from(c.get("/dashboard").text)
+        keys = [new_key(c, f"k{i}", csrf) for i in range(3)]
+        assert "3 active" in c.post("/dashboard/keys", data={"name": "no", "csrf": csrf}).text
+        backdate(tmp_path, keys[0][:13])
+        r = c.get("/keys/me", headers={"Authorization": f"Bearer {keys[0]}"})
+        assert r.status_code == 403
+        assert r.json() == {"ok": False, "error": "expired", "message": "key expired on 2026-01-02; create a new one at /dashboard"}
+        page = c.get("/dashboard").text
+        assert "expired 2026-01-02" in page and "2 <span" in page  # active count drops
+        assert f"/dashboard/keys/{keys[0][:13]}/reveal" not in page  # no Show for an expired key
+        assert f"/dashboard/keys/{keys[0][:13]}/revoke" in page  # but it can still be cleaned up
+        assert "new-key" in c.post("/dashboard/keys", data={"name": "again", "csrf": csrf}).text
+
+
+def test_dashboard_flags_a_key_expiring_soon(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        raw = new_key(c, "soon", csrf_from(c.get("/dashboard").text))
+        set_days_left(tmp_path, raw[:13], 3)
+        page = c.get("/dashboard").text
+        assert "expires in 3 days" in page and 'class="pill soon"' in page
+
+
+def test_docs_picker_excludes_expired_keys_and_reminds_near_expiry(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        older, newer = two_keys(c)
+        set_days_left(tmp_path, newer[:13], 5)
+        page = c.get("/docs/quickstart").text
+        assert newer in page and "expires in 5 days" in page and "/dashboard" in page
+        backdate(tmp_path, newer[:13])
+        page = c.get("/docs/quickstart").text
+        assert newer not in page and older in page and f'value="{newer[:13]}"' not in page
+        backdate(tmp_path, older[:13])
+        page = c.get("/docs/quickstart").text
+        assert older not in page and 'id="keypick"' not in page and "Create a key" in page

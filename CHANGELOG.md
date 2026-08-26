@@ -6,6 +6,18 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Key expiry.** Keys are created with a lifetime — 30, 90 (default) or 365 days, or never
+  (the dashboard and CLI warn that a key which never expires is a liability if leaked).
+  An expired key is refused with `403 {"error": "expired", "message": "key expired on <date>; create a new one at /dashboard"}`,
+  drops out of the 3-active cap, and can no longer be shown again. The dashboard shows
+  when each key expires and flags one within 7 days; the docs key picker skips expired
+  keys and reminds you when the selected one is about to expire. `GET /keys/me` reports
+  `expires_at` and `expired`; `leftbrain-keys create --expires 90d|never` and
+  `set <prefix> --expires …` manage it from the CLI. Existing keys are migrated with no
+  expiry.
+
 ### Fixed
 
 - Demo endpoint: the 8 KB body cap now applies to chunked requests too, and deeply nested arguments return a contract `invalid_input` instead of a bare 500.

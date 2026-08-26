@@ -56,6 +56,7 @@ def test_http_server_with_keys(tmp_path):
         assert r.json()["daily_quota"] == 5000 and r.json()["rpm"] == 60
         me = c.get("/keys/me", headers={"Authorization": f"Bearer {key}"})
         assert me.status_code == 200 and me.json()["result"]["owner"] == "dev@example.com"
+        assert me.json()["result"]["expires_at"]  # self-serve keys get the default lifetime, not forever
         init = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "0"}}}
         r = c.post("/mcp", json=init, headers={"Authorization": f"Bearer {key}", "Accept": "application/json, text/event-stream"})
         assert r.status_code == 200 and "x-ratelimit-remaining-today" in r.headers
@@ -154,3 +155,116 @@ def test_migration_adds_secret_enc_to_an_existing_database(tmp_path):
     raw, info = store.create("a@b.co")
     assert store.reveal("a@b.co", info.prefix) == raw
     KeyStore(path, secret="s" * 20)  # the migration is guarded: opening it again is a no-op
+
+
+def _expire(store, prefix, iso):
+    """Backdate a key's expiry directly; the public API only ever sets one in the future."""
+    store.db.run("UPDATE keys SET expires_at=? WHERE prefix=?", (iso, prefix))
+
+
+def test_create_with_a_lifetime_sets_expires_at(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    raw, info = store.create("a@b.co", lifetime_days=30)
+    assert info.expires_at and not info.expired and info.days_left in (29, 30)
+    due = datetime.fromisoformat(info.expires_at)
+    assert abs((due - datetime.now(UTC)) - timedelta(days=30)) < timedelta(minutes=1)
+    assert store.get_by_prefix(info.prefix).expires_at == info.expires_at
+    d = info.to_dict()
+    assert d["expires_at"] == info.expires_at and d["expired"] is False
+    _, forever = store.create("a@b.co")  # the default is no expiry
+    assert forever.expires_at is None and forever.days_left is None and forever.to_dict()["expired"] is False
+
+
+def test_expired_key_is_rejected_with_403_and_a_dated_message(tmp_path):
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    raw, info = store.create("a@b.co", lifetime_days=1)
+    assert store.verify_and_count(raw).ok
+    _expire(store, info.prefix, "2026-01-02T03:04:05.000000+00:00")
+    v = store.verify_and_count(raw)
+    assert not v.ok and v.status == 403 and v.reason == "expired"
+    assert "expired on 2026-01-02" in v.message and "/dashboard" in v.message
+    assert store.get_by_prefix(info.prefix).expired
+
+
+def test_expired_keys_do_not_count_towards_the_active_cap(tmp_path):
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    made = [store.create_for_owner("me@example.com", f"k{i}", lifetime_days=30) for i in range(3)]
+    assert store.create_for_owner("me@example.com", "full")[0] is None
+    _expire(store, made[0][1].prefix, "2026-01-01T00:00:00.000000+00:00")
+    raw, info = store.create_for_owner("me@example.com", "replacement", lifetime_days=None)
+    assert raw and info.expires_at is None
+    assert store.stats()["active"] == 3
+
+
+def test_expired_key_is_not_revealed(tmp_path):
+    store = KeyStore(str(tmp_path / "k.sqlite3"), secret="s" * 20)
+    raw, info = store.create("a@b.co", lifetime_days=7)
+    assert store.reveal("a@b.co", info.prefix) == raw
+    _expire(store, info.prefix, "2026-01-01T00:00:00.000000+00:00")
+    assert store.reveal("a@b.co", info.prefix) is None
+
+
+def test_set_expiry_extends_or_removes(tmp_path):
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    raw, info = store.create("a@b.co", lifetime_days=1)
+    _expire(store, info.prefix, "2026-01-01T00:00:00.000000+00:00")
+    assert store.verify_and_count(raw).status == 403
+    assert store.set_expiry(info.prefix, 90)
+    assert store.verify_and_count(raw).ok and store.get_by_prefix(info.prefix).days_left in (89, 90)
+    assert store.set_expiry(info.prefix, None)
+    assert store.get_by_prefix(info.prefix).expires_at is None
+    assert not store.set_expiry("lblz_nosuch1", 30)
+
+
+def test_parse_lifetime():
+    from leftbrain.keys import parse_lifetime
+
+    assert parse_lifetime("90d") == 90 and parse_lifetime("30") == 30 and parse_lifetime("never") is None
+    import pytest
+
+    for bad in ("", "0d", "-3d", "soon", "1.5d"):
+        with pytest.raises(ValueError):
+            parse_lifetime(bad)
+
+
+def test_migration_adds_expires_at_to_an_existing_database(tmp_path):
+    import sqlite3
+
+    path = str(tmp_path / "old.sqlite3")
+    con = sqlite3.connect(path)
+    con.execute(
+        "CREATE TABLE keys (key_hash TEXT PRIMARY KEY, prefix TEXT NOT NULL, owner TEXT NOT NULL,"
+        " note TEXT, created_at TEXT NOT NULL, disabled INTEGER NOT NULL DEFAULT 0,"
+        " daily_quota INTEGER NOT NULL, rpm INTEGER NOT NULL, last_used TEXT, secret_enc TEXT)"
+    )
+    con.execute("INSERT INTO keys VALUES ('h', 'lblz_oldkey01', 'a@b.co', NULL, '2026-01-01T00:00:00+00:00', 0, 5, 5, NULL, NULL)")
+    con.commit()
+    con.close()
+
+    store = KeyStore(path)
+    old = store.get_by_prefix("lblz_oldkey01")
+    assert old.expires_at is None and not old.expired  # pre-expiry keys never expire
+    KeyStore(path)  # guarded: re-running is a no-op
+
+
+def test_cli_create_expires_and_set(tmp_path, capsys):
+    import json as _json
+
+    from leftbrain.keys import main
+
+    db = str(tmp_path / "k.sqlite3")
+    main(["--db", db, "create", "--owner", "a@b.co", "--expires", "30d"])
+    out = capsys.readouterr().out
+    made = _json.loads(out[: out.index("\n\n")])
+    assert made["expires_at"] and made["expired"] is False
+    main(["--db", db, "create", "--owner", "a@b.co", "--expires", "never"])
+    err = capsys.readouterr()
+    assert _json.loads(err.out[: err.out.index("\n\n")])["expires_at"] is None
+    assert "never expire" in (err.out + err.err).lower()
+    main(["--db", db, "set", made["prefix"], "--expires", "never"])
+    assert capsys.readouterr().out.strip() == "ok"
+    main(["--db", db, "list"])
+    rows = [_json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert all(r["expires_at"] is None for r in rows)

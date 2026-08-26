@@ -153,7 +153,7 @@ class AuthMiddleware:
                 await self._with_headers(scope, receive, send, {"x-ratelimit-remaining-today": str(verdict.remaining), "x-ratelimit-limit-day": str(verdict.key.daily_quota), "x-ratelimit-limit-minute": str(verdict.key.rpm)})
                 return
             extra = {"retry-after": str(verdict.retry_after)} if verdict.retry_after else {}
-            await self._reject(scope, receive, send, verdict.status, verdict.reason, "key rejected", extra)
+            await self._reject(scope, receive, send, verdict.status, verdict.reason, verdict.message or "key rejected", extra)
             return
         await self._reject(scope, receive, send, 401, "invalid key", "key not recognised")
 

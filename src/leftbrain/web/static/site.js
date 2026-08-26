@@ -43,6 +43,13 @@
     b.addEventListener('click', function () { copyText(pre.textContent); }); w.appendChild(b);
   });
 
+  // key lifetime: the never-expires warning appears only while that option is chosen
+  var lifetime = $('[data-warn-never]'), neverWarning = $('[data-never-warning]');
+  if (lifetime && neverWarning) {
+    var syncWarning = function () { neverWarning.hidden = lifetime.value !== 'never'; };
+    lifetime.addEventListener('change', syncWarning); syncWarning();
+  }
+
   // docs key picker: choosing a key reloads the page with that key filled in
   var keypick = $('#keypick');
   if (keypick) keypick.addEventListener('change', function () { keypick.form.submit(); });
