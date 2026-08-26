@@ -1,4 +1,5 @@
 import httpx
+import pytest
 from starlette.testclient import TestClient
 
 from leftbrain.serve import build_app
@@ -387,7 +388,64 @@ def test_render_markdown_os_block_unterminated_fails_open():
     assert "<h1>T</h1>" in html
 
 
-# --- the custom-agents page ---------------------------------------------------
+# --- the set-it-up prompt and the custom-agents page --------------------------
+
+
+def _quickstart_prompt() -> str:
+    """The one fenced block a human is meant to hand to their coding agent."""
+    from leftbrain.web import HERE
+
+    md = (HERE / "docs" / "quickstart.md").read_text(encoding="utf-8")
+    body = md.split('<h2 id="set-it-up-for-me">')[1]
+    return body.split("```text\n")[1].split("\n```")[0]
+
+
+def test_the_setup_prompt_is_self_contained_and_short():
+    prompt = _quickstart_prompt()
+    lines = prompt.split("\n")
+    assert len(lines) <= 60, f"the prompt block is {len(lines)} lines; keep it pasteable"
+    # what the agent needs without asking anyone
+    for token in (
+        "https://leftbrain.idlesync.in/mcp",
+        "https://leftbrain.idlesync.in/external/mcp",
+        "MCP Streamable HTTP",
+        "Authorization: Bearer",
+        "$LB_KEY",
+        "ask me for it",
+    ):
+        assert token in prompt, token
+    assert "Never print" in prompt  # the key must not be echoed back
+    # it ends by proving the connection
+    assert "numbers" in prompt and '"values": ["9.11", "9.9"]' in prompt
+
+
+@pytest.mark.parametrize(
+    ("client", "marker"),
+    [
+        ("Claude Code", "claude mcp add --transport http"),
+        ("Copilot CLI", "copilot mcp add --transport http"),
+        ("Gemini CLI", "gemini mcp add --transport http"),
+        ("Cursor", ".cursor/mcp.json"),
+        ("Windsurf", "~/.codeium/windsurf/mcp_config.json"),
+        ("VS Code", ".vscode/mcp.json"),
+        ("Cline", "streamableHttp"),
+        ("Continue", "streamable-http"),
+        ("Codex CLI", "[mcp_servers.leftbrain]"),
+        ("Claude Desktop", "mcp-remote"),
+    ],
+)
+def test_the_setup_prompt_covers_each_client(client, marker):
+    prompt = _quickstart_prompt()
+    assert client in prompt, client
+    assert marker in prompt, f"{client}: {marker}"
+
+
+def test_quickstart_and_clients_point_at_the_prompt_and_custom_agents(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        clients = c.get("/docs/clients").text
+        assert "/docs/quickstart#set-it-up-for-me" in clients
+        assert 'href="/docs/custom-agents"' in clients
+        assert 'id="set-it-up-for-me"' in c.get("/docs/quickstart").text
 
 
 def test_custom_agents_page_covers_every_language_and_the_no_sdk_path(tmp_path):
