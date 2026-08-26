@@ -22,7 +22,7 @@
     {% if user %}<a class="btn ghost" href="/dashboard">{{ user.login }}</a>{% else %}<a class="btn primary" href="/login">Get an API key</a>{% endif %}
   </nav>
   {% block content %}{% endblock %}
-  <footer><span>© 2026 leftbrain · MIT · v{{ version }}</span><span><a href="https://github.com/Lazy-Coder-03/leftbrain">GitHub</a> · <a href="https://pypi.org/project/leftbrain/">PyPI</a> · <a href="/healthz">Status</a></span></footer>
+  <footer><span>© 2026 leftbrain · MIT · <a href="/docs/changelog">v{{ version }}</a></span><span><a href="https://github.com/Lazy-Coder-03/leftbrain">GitHub</a> · <a href="https://pypi.org/project/leftbrain/">PyPI</a> · <a href="/healthz">Status</a></span></footer>
 </div>
 <script src="/static/site.js?v={{ asset_v }}" defer></script>
 </body>

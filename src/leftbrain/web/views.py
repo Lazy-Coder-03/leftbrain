@@ -73,8 +73,12 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             return fail_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
         title, html = page
         user = auth.current_user(request, cfg)
-        keys, selected, raw = docs_key(request, user)
-        resp = docs_shell(request, title, docs_mod.fill_key(html, raw), slug, user=user, keys=keys, selected=selected, note="" if raw else docs_note(user))
+        # Only a page that actually asks for a key gets the picker; the tool index and the
+        # changelog would otherwise offer to fill in examples they do not have.
+        wants_key = docs_mod.KEY_PLACEHOLDER in html
+        keys, selected, raw = docs_key(request, user) if wants_key else ([], None, None)
+        note = "" if raw or not wants_key else docs_note(user)
+        resp = docs_shell(request, title, docs_mod.fill_key(html, raw), slug, user=user, keys=keys, selected=selected, note=note)
         return no_store(resp) if raw else resp  # a page carrying a real key is never cached
 
     async def tool_page(request: Request) -> Response:

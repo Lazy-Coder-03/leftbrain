@@ -15,7 +15,12 @@ PAGES: list[tuple[str, str]] = [
     ("clients", "MCP clients"),
     ("custom-agents", "Custom agents"),
     ("tools", "Tools"),
+    ("changelog", "Changelog"),
 ]
+# Pages whose single source of truth is a file at the repo root. The wheel gets a copy
+# under docs/ (see [tool.hatch.build.targets.wheel.force-include] in pyproject.toml); a
+# dev checkout has no copy, so read the original instead of shipping a second one.
+ROOT_SOURCES: dict[str, Path] = {"changelog": Path(__file__).resolve().parents[3] / "CHANGELOG.md"}
 OS_LABELS = [("windows", "Windows · PowerShell"), ("macos", "macOS"), ("linux", "Linux")]
 # Every key in every example is written as this literal, so one replace personalises a page.
 KEY_PLACEHOLDER = "lblz_YOUR_KEY"
@@ -98,6 +103,15 @@ def fill_key(html: str, key: str | None) -> str:
     return html.replace(KEY_PLACEHOLDER, escape(key) if key else ANON_KEY)
 
 
+def page_source(slug: str) -> Path | None:
+    """The markdown file behind a page: the shipped copy, else its repo-root original."""
+    path = DOCS_DIR / f"{slug}.md"
+    if path.is_file():
+        return path
+    root = ROOT_SOURCES.get(slug)
+    return root if root is not None and root.is_file() else None
+
+
 @lru_cache(maxsize=32)
 def load_page(slug: str) -> tuple[str, str] | None:
     if slug == "tools":
@@ -105,7 +119,7 @@ def load_page(slug: str) -> tuple[str, str] | None:
 
         return index_page()
     title = dict(PAGES).get(slug)
-    path = DOCS_DIR / f"{slug}.md"
-    if not title or not path.is_file():
+    path = page_source(slug) if title else None
+    if not title or path is None:
         return None
     return title, render_markdown(path.read_text(encoding="utf-8"))

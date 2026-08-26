@@ -56,6 +56,12 @@ Issues = "https://github.com/Lazy-Coder-03/leftbrain/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/leftbrain"]
 
+# The root CHANGELOG.md is the only copy; the site serves it at /docs/changelog, so the
+# wheel needs it next to the other docs pages. A dev checkout has no copy and falls back
+# to the root file (leftbrain.web.docs.ROOT_SOURCES).
+[tool.hatch.build.targets.wheel.force-include]
+"CHANGELOG.md" = "leftbrain/web/docs/changelog.md"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

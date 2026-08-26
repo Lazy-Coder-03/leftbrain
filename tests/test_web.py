@@ -342,6 +342,53 @@ def test_docs_pages_and_os_tabs(tmp_path):
         assert c.get("/docs/nope").status_code == 404
 
 
+def test_docs_changelog_page(tmp_path):
+    from leftbrain import __version__
+
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/docs/changelog")
+        assert r.status_code == 200
+        body = article(r.text)
+        assert "0.1.0" in body and __version__ in body
+        assert "Keep a Changelog" in body
+        assert 'href="/docs/changelog" class="cur"' in r.text  # the sidebar lists it last
+        assert r.text.index('href="/docs/changelog" class="cur"') > r.text.index('href="/docs/tools"')
+
+
+def test_footer_version_links_to_the_changelog(tmp_path):
+    from leftbrain import __version__
+
+    with TestClient(make_app(tmp_path)) as c:
+        for path, headers in (("/docs", {}), ("/", {"Accept": "text/html"})):
+            assert f'<a href="/docs/changelog">v{__version__}</a>' in c.get(path, headers=headers).text, path
+
+
+def test_pages_without_examples_get_no_key_picker(tmp_path):
+    """The changelog and the tool index ask for no key, so they must not offer one."""
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        two_keys(c)
+        for slug in ("changelog", "tools"):
+            r = c.get(f"/docs/{slug}")
+            assert r.status_code == 200, slug
+            assert 'id="keypick"' not in r.text, slug
+            assert 'class="keybar' not in r.text, slug  # neither the picker nor the sign-in note
+            assert r.headers.get("cache-control") != "no-store", slug
+
+
+def test_changelog_page_reads_the_one_copy_that_exists():
+    """The wheel ships a copy under web/docs; a dev checkout reads the repo-root original."""
+    import pathlib
+
+    from leftbrain.web import HERE
+    from leftbrain.web.docs import ROOT_SOURCES, page_source
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "CHANGELOG.md"
+    shipped = HERE / "docs" / "changelog.md"
+    assert ROOT_SOURCES["changelog"] == root
+    assert page_source("changelog") == (shipped if shipped.is_file() else root)
+
+
 def test_render_markdown_os_block():
     from leftbrain.web.docs import render_markdown
 
