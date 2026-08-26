@@ -34,15 +34,15 @@
   var demo = $('[data-demo]'); if (!demo) return;
   var FIELDS = {
     numbers: [['values', 'Values (comma separated)', '9.11, 9.9, 10']],
-    convert: [['value', 'Value', '3'], ['from_unit', 'From unit', 'oz'], ['to', 'To unit', 'ml']],
-    datetime: [['from', 'From (YYYY-MM-DD)', '2026-08-26'], ['to', 'To (YYYY-MM-DD)', '2026-12-25']],
+    convert: [['value', 'Value', '3'], ['from_unit', 'From unit', 'oz'], ['to_unit', 'To unit', 'ml']],
+    datetime: [['start', 'Start (YYYY-MM-DD)', '2026-08-26'], ['end', 'End (YYYY-MM-DD)', '2026-12-25']],
     text: [['text', 'Text', 'strawberry 🍓 naïve café']]
   };
   var MODE = { numbers: 'compare', convert: 'units', datetime: 'diff', text: 'count' };
   function args(tool, v) {
     if (tool === 'numbers') return { mode: 'compare', values: v.values.split(',').map(function (s) { return s.trim(); }).filter(Boolean) };
-    if (tool === 'convert') return { mode: 'units', value: v.value, from_unit: v.from_unit, to: v.to };
-    if (tool === 'datetime') return { mode: 'diff', from: v.from, to: v.to };
+    if (tool === 'convert') return { mode: 'units', value: v.value, from_unit: v.from_unit, to_unit: v.to_unit };
+    if (tool === 'datetime') return { mode: 'diff', start: v.start, end: v.end };
     return { mode: 'count', text: v.text };
   }
   function pretty(o) {

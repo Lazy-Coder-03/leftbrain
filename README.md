@@ -85,7 +85,7 @@ lb.math_tool("eval", expr="(3+4i)*(1-2i)")["result"]["decimal"]      # '11 - 2i'
 lb.math_tool("solve", equations=["x^2+1=0"])                          # ±i
 lb.datetime_tool("convert_tz", value="2026-03-08 09:30", from_tz="Asia/Kolkata", to_tz="America/New_York")
 lb.datetime_tool("parse", value="03/04/2025")                         # ok: False, needs.options = DD/MM or MM/DD
-lb.datetime_tool("business_days", **{"from": "2026-10-01", "to": "2026-10-31"}, region="IN")
+lb.datetime_tool("business_days", start="2026-10-01", end="2026-10-31", region="IN")
 lb.scale_tool(from_qty=4, to_qty=7, entities=[{"name": "flour", "qty": "2.5", "unit": "cup"}])
 lb.convert_tool(value=2, from_unit="ton", to_unit="kg")               # ambiguous: metric / short / long
 lb.numbers_tool("allocate", total=100, parts=3)                       # 33.34 / 33.33 / 33.33

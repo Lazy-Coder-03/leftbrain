@@ -24,7 +24,7 @@ DEMO_TOOLS: dict[str, Callable[..., dict[str, Any]]] = {"numbers": numbers, "con
 
 # Allow-list: exactly the modes and argument names static/site.js sends.
 DEMO_MODES: dict[str, set[str]] = {"numbers": {"compare"}, "convert": {"units"}, "datetime": {"diff"}, "text": {"count"}}
-DEMO_ARGS: dict[str, set[str]] = {"numbers": {"values"}, "convert": {"value", "from_unit", "to"}, "datetime": {"from", "to"}, "text": {"text"}}
+DEMO_ARGS: dict[str, set[str]] = {"numbers": {"values"}, "convert": {"value", "from_unit", "to_unit"}, "datetime": {"start", "end"}, "text": {"text"}}
 
 MAX_BODY = 8192  # bytes; checked against content-length before the body is read
 MAX_STRING = 2000  # characters per string argument (or list item)

@@ -119,14 +119,8 @@ def _params_table(params: tuple[Param, ...]) -> list[str]:
     return out
 
 
-def _mcp_args(args: dict[str, Any]) -> dict[str, Any]:
-    """Argument names as an MCP client must send them: ``from`` is a Python keyword, so the
-    MCP tool signatures spell it ``from_`` (the library and the demo endpoint accept ``from``)."""
-    return {("from_" if k == "from" else k): v for k, v in args.items()}
-
-
 def _example_block(tool: ToolDoc, example: Example) -> list[str]:
-    request = {"name": tool.name, "arguments": _mcp_args(example.args)}
+    request = {"name": tool.name, "arguments": example.args}
     response = run_example(tool, example)
     out = [example.caption, "", _json_block(request), "", _json_block(response), ""]
     if example.volatile:
@@ -158,7 +152,7 @@ CONTRACT_NOTE = (
 )
 
 _PAGE_LEAD = (
-    "Each example below shows the `tools/call` request first and the exact response underneath.  Over MCP the `from` argument is spelled `from_` (a Python keyword); the Python library and the landing-page demo accept `from`."
+    "Each example below shows the `tools/call` request first and the exact response underneath.  "
     "Responses are produced by running the real tool when this page is built, so they cannot drift "
     "from what the server returns."
 )
@@ -464,7 +458,7 @@ MATH = ToolDoc(
             name="integrate",
             purpose="Definite and indefinite integrals.",
             description=(
-                "With `from` and `to`, computes a definite integral; without them, an indefinite one "
+                "With `lower` and `upper`, computes a definite integral; without them, an indefinite one "
                 "(the result carries an explicit `+ C`). If no closed form exists, the definite case "
                 "falls back to a numeric value and says so in `warnings`. Passing only one bound is an "
                 "error, not a guess."
@@ -472,16 +466,16 @@ MATH = ToolDoc(
             params=(
                 Param("expr", "string", True, "The integrand."),
                 Param("var", "string", False, "The variable of integration. Inferred when unambiguous."),
-                Param("from_", "number \\| string", False, "Lower bound. Required together with `to`."),
-                Param("to", "number \\| string", False, "Upper bound. Required together with `from`."),
+                Param("lower", "number \\| string", False, "Lower bound. Required together with `upper`."),
+                Param("upper", "number \\| string", False, "Upper bound. Required together with `lower`."),
                 Param("precision", "integer", False, "Significant digits in the decimal form.", "15"),
             ),
             examples=(
                 Example("An indefinite integral, returned with `+ C`.", {"mode": "integrate", "expr": "x^2", "var": "x"}),
-                Example("A definite integral with symbolic bounds.", {"mode": "integrate", "expr": "sin(x)", "var": "x", "from": 0, "to": "pi"}),
+                Example("A definite integral with symbolic bounds.", {"mode": "integrate", "expr": "sin(x)", "var": "x", "lower": 0, "upper": "pi"}),
             ),
             failures=(
-                Example("Half a range is not a range.", {"mode": "integrate", "expr": "x^2", "var": "x", "from": 0}),
+                Example("Half a range is not a range.", {"mode": "integrate", "expr": "x^2", "var": "x", "lower": 0}),
                 Example("`expr` is required.", {"mode": "integrate"}),
             ),
         ),
@@ -489,26 +483,26 @@ MATH = ToolDoc(
             name="limit",
             purpose="Limits, one-sided or two-sided.",
             description=(
-                "Evaluates the limit of `expr` as `var` approaches `to`. Without `side` the limit is "
+                "Evaluates the limit of `expr` as `var` approaches `point`. Without `side` the limit is "
                 "two-sided; when the two sides disagree the response stays `ok` but reports "
-                "`exists: false` together with both one-sided limits. `to` accepts `oo` for infinity."
+                "`exists: false` together with both one-sided limits. `point` accepts `oo` for infinity."
             ),
             params=(
                 Param("expr", "string", True, "The expression."),
                 Param("var", "string", False, "The variable. Inferred when unambiguous."),
-                Param("to", "number \\| string", False, "The point approached; `oo` for infinity.", "0"),
+                Param("point", "number \\| string", False, "The point approached; `oo` for infinity.", "0"),
                 Param("side", "`+` \\| `-` \\| `left` \\| `right`", False, "One-sided limit.", "two-sided"),
             ),
             examples=(
-                Example("The classic removable singularity.", {"mode": "limit", "expr": "sin(x)/x", "var": "x", "to": 0}),
-                Example("A one-sided limit that diverges.", {"mode": "limit", "expr": "1/x", "var": "x", "to": 0, "side": "+"}),
+                Example("The classic removable singularity.", {"mode": "limit", "expr": "sin(x)/x", "var": "x", "point": 0}),
+                Example("A one-sided limit that diverges.", {"mode": "limit", "expr": "1/x", "var": "x", "point": 0, "side": "+"}),
                 Example(
                     "A two-sided limit that does not exist: still `ok`, with both sides reported.",
-                    {"mode": "limit", "expr": "1/x", "var": "x", "to": 0},
+                    {"mode": "limit", "expr": "1/x", "var": "x", "point": 0},
                 ),
             ),
             failures=(
-                Example("An unrecognised `side`.", {"mode": "limit", "expr": "1/x", "var": "x", "to": 0, "side": "up"}),
+                Example("An unrecognised `side`.", {"mode": "limit", "expr": "1/x", "var": "x", "point": 0, "side": "up"}),
                 Example("`expr` is required.", {"mode": "limit"}),
             ),
         ),
@@ -627,26 +621,26 @@ MATH = ToolDoc(
             name="convert_form",
             purpose="Re-present one value: polar, rectangular, fraction, scientific, LaTeX.",
             description=(
-                "Takes one expression and returns it in a different representation, chosen with `to`: "
+                "Takes one expression and returns it in a different representation, chosen with `form`: "
                 "`polar`, `rect`, `latex`, `decimal`, `fraction`, `scientific`, `percent`. This is a "
                 "presentation change, not a computation — the value is unchanged."
             ),
             params=(
                 Param("expr", "string", True, "The value to re-present."),
-                Param("to", "string", False, "Target form.", "`decimal`"),
-                Param("significant", "integer", False, "Significant digits, for `to: scientific`.", "6"),
-                Param("tolerance", "number", False, "Rounding tolerance, for `to: fraction`."),
+                Param("form", "string", False, "Target form.", "`decimal`"),
+                Param("significant", "integer", False, "Significant digits, for `form: scientific`.", "6"),
+                Param("tolerance", "number", False, "Rounding tolerance, for `form: fraction`."),
                 Param("precision", "integer", False, "Significant digits in the decimal forms.", "15"),
             ),
             examples=(
-                Example("A complex number in polar form, with the phasor notation spelled out.", {"mode": "convert_form", "expr": "3 + 4i", "to": "polar"}),
-                Example("A decimal recovered as an exact fraction.", {"mode": "convert_form", "expr": "0.375", "to": "fraction"}),
-                Example("Scientific notation to three significant figures.", {"mode": "convert_form", "expr": "0.000123456", "to": "scientific", "significant": 3}),
+                Example("A complex number in polar form, with the phasor notation spelled out.", {"mode": "convert_form", "expr": "3 + 4i", "form": "polar"}),
+                Example("A decimal recovered as an exact fraction.", {"mode": "convert_form", "expr": "0.375", "form": "fraction"}),
+                Example("Scientific notation to three significant figures.", {"mode": "convert_form", "expr": "0.000123456", "form": "scientific", "significant": 3}),
             ),
             failures=(
-                Example("Scientific notation is undefined for a complex number.", {"mode": "convert_form", "expr": "3 + 4i", "to": "scientific"}),
-                Example("An unknown target form.", {"mode": "convert_form", "expr": "2", "to": "binary"}),
-                Example("`expr` is required.", {"mode": "convert_form", "to": "polar"}),
+                Example("Scientific notation is undefined for a complex number.", {"mode": "convert_form", "expr": "3 + 4i", "form": "scientific"}),
+                Example("An unknown target form.", {"mode": "convert_form", "expr": "2", "form": "binary"}),
+                Example("`expr` is required.", {"mode": "convert_form", "form": "polar"}),
             ),
         ),
         Mode(
@@ -823,14 +817,14 @@ DATETIME = ToolDoc(
             name="diff",
             purpose="The distance between two instants, every way at once.",
             description=(
-                "Returns the gap between `from` and `to` as a calendar breakdown (years/months/days/…), "
+                "Returns the gap between `start` and `end` as a calendar breakdown (years/months/days/…), "
                 "as totals in every unit, as whole months, and as a human string — plus a `sign` and a "
                 "plain-English `direction`, so a negative result cannot be misread. Pass "
                 "`unit: business_days` (with an optional `region`) to count working days instead."
             ),
             params=(
-                Param("from_", "string", True, "Start instant."),
-                Param("to", "string", False, "End instant.", "`now`"),
+                Param("start", "string", True, "Start instant."),
+                Param("end", "string", False, "End instant.", "`now`"),
                 Param("unit", "string", False, "Report one unit in `value`; `business_days` counts working days.", "`auto`"),
                 Param("region", "string", False, "ISO country code for holidays, with `business_days`."),
                 Param("weekend", "string[]", False, "Which weekdays are non-working.", "`[saturday, sunday]`"),
@@ -838,14 +832,14 @@ DATETIME = ToolDoc(
                 Param("locale", "string", False, "Country code for reading numeric dates."),
             ),
             examples=(
-                Example("Calendar breakdown and totals between two dates.", {"mode": "diff", "from": "2025-01-01", "to": "2025-03-15"}),
-                Example("Working days between the same two dates, excluding Indian public holidays.", {"mode": "diff", "from": "2025-01-01", "to": "2025-03-15", "unit": "business_days", "region": "IN"}),
-                Example("A backwards range: `sign` is −1 and `direction` says so in words.", {"mode": "diff", "from": "2025-03-15T18:00:00", "to": "2025-03-15T09:30:00"}),
+                Example("Calendar breakdown and totals between two dates.", {"mode": "diff", "start": "2025-01-01", "end": "2025-03-15"}),
+                Example("Working days between the same two dates, excluding Indian public holidays.", {"mode": "diff", "start": "2025-01-01", "end": "2025-03-15", "unit": "business_days", "region": "IN"}),
+                Example("A backwards range: `sign` is −1 and `direction` says so in words.", {"mode": "diff", "start": "2025-03-15T18:00:00", "end": "2025-03-15T09:30:00"}),
             ),
             failures=(
-                Example("`from` is required.", {"mode": "diff", "to": "2025-01-01"}),
-                Example("An unknown unit.", {"mode": "diff", "from": "2025-01-01", "to": "2025-02-01", "unit": "moons"}),
-                Example("An ambiguous numeric date on either side is refused, exactly as in `parse`.", {"mode": "diff", "from": "01/02/2025", "to": "2025-03-01"}),
+                Example("`start` is required.", {"mode": "diff", "end": "2025-01-01"}),
+                Example("An unknown unit.", {"mode": "diff", "start": "2025-01-01", "end": "2025-02-01", "unit": "moons"}),
+                Example("An ambiguous numeric date on either side is refused, exactly as in `parse`.", {"mode": "diff", "start": "01/02/2025", "end": "2025-03-01"}),
             ),
         ),
         Mode(
@@ -909,8 +903,8 @@ DATETIME = ToolDoc(
                 "every working date."
             ),
             params=(
-                Param("from_", "string", True, "Start of the range."),
-                Param("to", "string", True, "End of the range."),
+                Param("start", "string", True, "Start of the range."),
+                Param("end", "string", True, "End of the range."),
                 Param("region", "string", False, "ISO country code whose public holidays to exclude."),
                 Param("subdiv", "string", False, "State/province code for regional holidays."),
                 Param("weekend", "string[]", False, "Non-working weekdays.", "`[saturday, sunday]`"),
@@ -919,14 +913,14 @@ DATETIME = ToolDoc(
                 Param("include_end", "boolean", False, "Count the end date.", "`true`"),
             ),
             examples=(
-                Example("Working days in an Indian August, with the Independence Day holiday named.", {"mode": "business_days", "from": "2025-08-11", "to": "2025-08-22", "region": "IN"}),
-                Example("A Friday/Saturday weekend, as used across the Gulf.", {"mode": "business_days", "from": "2025-08-11", "to": "2025-08-22", "weekend": ["friday", "saturday"], "region": "AE"}),
-                Example("Regional holidays via `subdiv`, plus a company shutdown day of your own.", {"mode": "business_days", "from": "2025-10-01", "to": "2025-10-10", "region": "IN", "subdiv": "WB", "extra_holidays": ["2025-10-06"]}),
+                Example("Working days in an Indian August, with the Independence Day holiday named.", {"mode": "business_days", "start": "2025-08-11", "end": "2025-08-22", "region": "IN"}),
+                Example("A Friday/Saturday weekend, as used across the Gulf.", {"mode": "business_days", "start": "2025-08-11", "end": "2025-08-22", "weekend": ["friday", "saturday"], "region": "AE"}),
+                Example("Regional holidays via `subdiv`, plus a company shutdown day of your own.", {"mode": "business_days", "start": "2025-10-01", "end": "2025-10-10", "region": "IN", "subdiv": "WB", "extra_holidays": ["2025-10-06"]}),
             ),
             failures=(
-                Example("Both ends are required.", {"mode": "business_days", "from": "2025-08-01"}),
-                Example("An unknown weekday in `weekend`.", {"mode": "business_days", "from": "2025-08-01", "to": "2025-08-10", "weekend": ["funday"]}),
-                Example("An unsupported holiday region.", {"mode": "business_days", "from": "2025-08-01", "to": "2025-08-10", "region": "XX"}),
+                Example("Both ends are required.", {"mode": "business_days", "start": "2025-08-01"}),
+                Example("An unknown weekday in `weekend`.", {"mode": "business_days", "start": "2025-08-01", "end": "2025-08-10", "weekend": ["funday"]}),
+                Example("An unsupported holiday region.", {"mode": "business_days", "start": "2025-08-01", "end": "2025-08-10", "region": "XX"}),
             ),
         ),
         Mode(
@@ -1020,13 +1014,13 @@ DATETIME = ToolDoc(
             params=(
                 Param("expr", "string", True, "Cron expression or `@`-alias."),
                 Param("tz", "string", False, "Zone the schedule runs in.", "`UTC`"),
-                Param("from_", "string", False, "Start searching after this instant.", "now"),
+                Param("start", "string", False, "Start searching after this instant.", "now"),
                 Param("n", "integer", False, "How many fire times to return, 1..500.", "5"),
             ),
             examples=(
-                Example("Weekday mornings in Kolkata.", {"mode": "cron_next", "expr": "0 9 * * 1-5", "tz": "Asia/Kolkata", "from": "2025-08-15T00:00:00", "n": 3}),
-                Example("An alias, and a step field.", {"mode": "cron_next", "expr": "@monthly", "from": "2025-01-15T00:00:00", "n": 3}),
-                Example("Every 15 minutes during office hours.", {"mode": "cron_next", "expr": "*/15 9-10 * * *", "from": "2025-08-15T09:00:00", "n": 4}),
+                Example("Weekday mornings in Kolkata.", {"mode": "cron_next", "expr": "0 9 * * 1-5", "tz": "Asia/Kolkata", "start": "2025-08-15T00:00:00", "n": 3}),
+                Example("An alias, and a step field.", {"mode": "cron_next", "expr": "@monthly", "start": "2025-01-15T00:00:00", "n": 3}),
+                Example("Every 15 minutes during office hours.", {"mode": "cron_next", "expr": "*/15 9-10 * * *", "start": "2025-08-15T09:00:00", "n": 4}),
             ),
             failures=(
                 Example("A cron expression must have five fields.", {"mode": "cron_next", "expr": "0 9 * *"}),
@@ -2818,18 +2812,18 @@ GEO = ToolDoc(
                 "is straight-line distance, never driving distance."
             ),
             params=(
-                Param("from_", "object \\| number[] \\| string", True, "Origin: coordinates or a place name."),
-                Param("to", "object \\| number[] \\| string", True, "Destination: coordinates or a place name."),
+                Param("origin", "object \\| number[] \\| string", True, "Origin: coordinates or a place name."),
+                Param("destination", "object \\| number[] \\| string", True, "Destination: coordinates or a place name."),
             ),
             examples=(
-                Example("Mumbai to Delhi, by coordinates.", {"mode": "distance", "from": [19.076, 72.8777], "to": [28.6139, 77.209]}),
-                Example("Coordinates as strings, Bengaluru to Chennai.", {"mode": "distance", "from": "12.9716,77.5946", "to": "13.0827,80.2707"}),
-                Example("Place names, with the approximation stated in `assumptions`.", {"mode": "distance", "from": "Kolkata", "to": "London"}),
+                Example("Mumbai to Delhi, by coordinates.", {"mode": "distance", "origin": [19.076, 72.8777], "destination": [28.6139, 77.209]}),
+                Example("Coordinates as strings, Bengaluru to Chennai.", {"mode": "distance", "origin": "12.9716,77.5946", "destination": "13.0827,80.2707"}),
+                Example("Place names, with the approximation stated in `assumptions`.", {"mode": "distance", "origin": "Kolkata", "destination": "London"}),
             ),
             failures=(
-                Example("A place name that spans several zones is not specific enough to be a point.", {"mode": "distance", "from": "Australia", "to": "Kolkata"}),
-                Example("An unknown place.", {"mode": "distance", "from": "Atlantis", "to": "Kolkata"}),
-                Example("`to` is required.", {"mode": "distance", "from": [19.076, 72.8777]}),
+                Example("A place name that spans several zones is not specific enough to be a point.", {"mode": "distance", "origin": "Australia", "destination": "Kolkata"}),
+                Example("An unknown place.", {"mode": "distance", "origin": "Atlantis", "destination": "Kolkata"}),
+                Example("`destination` is required.", {"mode": "distance", "origin": [19.076, 72.8777]}),
             ),
         ),
         Mode(
