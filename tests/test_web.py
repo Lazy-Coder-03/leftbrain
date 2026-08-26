@@ -318,3 +318,22 @@ def test_landing_content(tmp_path):
         assert "left brain" in html and 'id="demo"' in html and "geo_offline" in html
         assert 'href="/login"' in html and 'href="/docs"' in html
         assert "9.11" in html  # proof strip
+
+
+def test_docs_pages_and_os_tabs(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/docs")
+        assert r.status_code == 200 and "Quickstart" in r.text and 'class="ostabs"' in r.text
+        assert 'data-os="windows"' in r.text and "curl.exe" in r.text and "Invoke-RestMethod" in r.text
+        assert "leftbrain.idlesync.in" in r.text
+        assert c.get("/docs/clients").status_code == 200 and "claude mcp add" in c.get("/docs/clients").text
+        assert c.get("/docs/nope").status_code == 404
+
+
+def test_render_markdown_os_block():
+    from leftbrain.web.docs import render_markdown
+
+    md = "# T\n\n:::os\n### windows\n```powershell\ncurl.exe -s X\n```\n### macos\n```bash\ncurl -s X\n```\n### linux\n```bash\ncurl -s X\n```\n:::\n\nafter\n"
+    html = render_markdown(md)
+    assert html.count('class="os-block"') == 3 and 'data-os="macos"' in html and "<p>after</p>" in html
+    assert '<button type="button" data-os="windows"' in html

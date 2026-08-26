@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} · leftbrain docs{% endblock %}
+{% block content %}
+<div class="docs">
+  <nav class="toc" aria-label="Docs">
+    <div class="grp">Start</div>
+    {% for s, t in pages %}<a href="/docs/{{ s }}" class="{{ 'cur' if s == slug else '' }}">{{ t }}</a>{% endfor %}
+    <div class="grp">Reference</div>
+    <a href="https://github.com/Lazy-Coder-03/leftbrain#tools">Tool list (README)</a>
+  </nav>
+  <article class="doc">{{ body|safe }}</article>
+</div>
+{% endblock %}

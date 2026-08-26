@@ -27,8 +27,17 @@ def error_page(request: Request, status: int, title: str, message: str) -> Respo
 def routes(store: Any, cfg: WebConfig) -> list[Any]:
     from ..serve import _client_ip  # noqa: E402  (module-level import would be circular)
     from . import demo as demo_mod
+    from . import docs as docs_mod
 
     throttle = demo_mod.Throttle()
+
+    async def docs_page(request: Request) -> Response:
+        slug = request.path_params.get("slug", "quickstart")
+        page = docs_mod.load_page(slug)
+        if page is None:
+            return error_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
+        title, html = page
+        return render(request, "docs.html", 200, page="docs", user=auth.current_user(request, cfg), title=title, body=html, slug=slug, pages=docs_mod.PAGES)
 
     async def demo(request: Request) -> Response:
         tool = request.path_params["tool"]
@@ -151,6 +160,8 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/dashboard/keys", create_key, methods=["POST"]),
         Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
         Route("/demo/{tool}", demo, methods=["POST"]),
+        Route("/docs", docs_page),
+        Route("/docs/{slug}", docs_page),
     ]
 
 
