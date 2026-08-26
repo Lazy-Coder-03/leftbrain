@@ -1,6 +1,7 @@
 from starlette.testclient import TestClient
 
 from leftbrain.serve import build_app
+from leftbrain.web import auth
 from leftbrain.web.config import WebConfig
 
 
@@ -37,3 +38,21 @@ def test_signup_closed_by_default_open_by_flag(tmp_path):
         assert r.status_code == 404 and "/login" in r.json()["message"]
     with TestClient(make_app(tmp_path, open_signup=True)) as c:
         assert c.post("/keys/signup", json={"email": "a@b.co"}).status_code == 201
+
+
+def test_session_roundtrip_and_tamper():
+    u = auth.User(login="octo", email="octo@example.com", avatar_url=None)
+    tok = auth.sign_session("s3cret", u)
+    assert auth.read_session("s3cret", tok) == u
+    assert auth.read_session("other", tok) is None
+    assert auth.read_session("s3cret", tok + "x") is None
+    assert auth.read_session("s3cret", None) is None
+    assert auth.read_session("s3cret", tok, max_age=-1) is None  # expired
+
+
+def test_csrf():
+    u = auth.User("octo", "octo@example.com", None)
+    t = auth.csrf_token("s3cret", u)
+    assert auth.csrf_ok("s3cret", u, t)
+    assert not auth.csrf_ok("s3cret", auth.User("x", "x@example.com", None), t)
+    assert not auth.csrf_ok("s3cret", u, None) and not auth.csrf_ok("s3cret", u, "nope")
