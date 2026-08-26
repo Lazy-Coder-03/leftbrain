@@ -146,8 +146,28 @@ async def fetch_github_user(cfg: WebConfig, code: str, redirect_uri: str) -> Use
             emails = await client.get(f"{GITHUB_API}/user/emails", headers=h)
             emails.raise_for_status()
             u = user.json()
+            emails_data = emails.json()
+            if not isinstance(u, dict) or not isinstance(emails_data, list):
+                raise OAuthError("GitHub returned an unexpected response. Please try again.")
             primary = next(
-                (e for e in emails.json() if e.get("primary") and e.get("verified")), None
+                (
+                    e
+                    for e in emails_data
+                    if isinstance(e, dict)
+                    and e.get("primary")
+                    and e.get("verified")
+                    and e.get("email")
+                ),
+                None,
+            )
+            if not primary:
+                raise OAuthError(
+                    "verify your GitHub email address, then sign in again", status=403
+                )
+            return User(
+                login=str(u.get("login") or ""),
+                email=str(primary["email"]).lower(),
+                avatar_url=u.get("avatar_url"),
             )
         except OAuthError:
             raise
@@ -155,6 +175,3 @@ async def fetch_github_user(cfg: WebConfig, code: str, redirect_uri: str) -> Use
             raise OAuthError("GitHub could not be reached. Please try again in a minute.") from None
         except (ValueError, AttributeError, TypeError):
             raise OAuthError("GitHub returned an unexpected response. Please try again.") from None
-    if not primary:
-        raise OAuthError("verify your GitHub email address, then sign in again", status=403)
-    return User(login=str(u.get("login") or ""), email=str(primary["email"]).lower(), avatar_url=u.get("avatar_url"))
