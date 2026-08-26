@@ -57,10 +57,7 @@ table.keys{width:100%;border-collapse:collapse;font-size:.92rem}table.keys th{te
 .newkey{display:flex;gap:10px;margin:18px 0}.newkey input{flex:1;font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg);color:var(--ink)}
 .reveal{margin:0 0 18px;padding:16px;border:1px dashed var(--accent);border-radius:var(--radius);background:var(--accent-soft);position:relative}.reveal code{display:block;font-size:1rem;margin:8px 0;word-break:break-all}.reveal .note{font-size:.85rem;color:var(--ink2)}.reveal .copy{position:absolute;top:12px;right:12px}
 /* docs */
-.keybar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 24px;padding:10px 14px;border:1px solid var(--line2);border-radius:var(--radius);background:var(--bg2);max-width:none}
-.keybar label{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink2)}
-.keybar select{font:inherit;font-size:.9rem;padding:5px 8px;max-width:100%;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg);color:var(--ink)}
-.keybar .hint{margin-left:auto}.js .keybar button{display:none}
+
 .docs{padding:40px 0 80px;display:grid;grid-template-columns:240px minmax(0,1fr);gap:48px}
 .toc{position:sticky;top:16px;align-self:start;display:grid;gap:2px;font-size:.92rem}.toc .grp{font-family:var(--mono);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink2);margin:14px 0 6px}
 .toc a{padding:6px 10px;border-radius:var(--radius);text-decoration:none;color:var(--ink2);border-left:2px solid transparent}.toc a.cur{color:var(--ink);border-left-color:var(--accent);font-weight:600}
@@ -77,3 +74,13 @@ pre,.out{scrollbar-width:thin}pre::-webkit-scrollbar{height:8px}pre::-webkit-scr
 @media (max-width:860px){.hero,.contract,.dash,.docs{grid-template-columns:1fr}.tgrid{grid-template-columns:1fr 1fr}.proof{grid-template-columns:1fr}.proof>div{border-right:0;border-bottom:1px solid var(--line2);padding-left:0}.toc{position:static}.sec-h{flex-direction:column;align-items:flex-start}.sec-h p{text-align:left}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 .toast{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(20px);opacity:0;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:6px;font-size:.9rem;transition:.25s;pointer-events:none}.toast.show{opacity:1;transform:translateX(-50%)}
+/* docs key picker */
+.keybar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:0 0 28px;padding:12px 14px;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--radius);background:var(--bg2);max-width:none}
+.keybar label{font-family:var(--mono);font-size:.72rem;letter-spacing:.1em;text-transform:uppercase;color:var(--ink2)}
+.keybar select{font:inherit;font-family:var(--mono);font-size:.88rem;padding:7px 34px 7px 10px;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%234b5a58' stroke-width='1.6'/%3E%3C/svg%3E") no-repeat right 11px center;color:var(--ink);appearance:none;-webkit-appearance:none;max-width:100%;cursor:pointer}
+.keybar .linklike{font-size:.85rem}
+.js .keybar button{display:none}
+.keybar .hint{font-family:var(--body);font-size:.85rem;color:var(--ink2);margin-left:auto}
+p.keybar.hint{display:block;font-family:var(--body);font-size:.92rem;color:var(--ink2)}
+p.keybar.hint a{color:var(--accent)}
+@media (max-width:860px){.keybar .hint{margin-left:0;flex-basis:100%}}

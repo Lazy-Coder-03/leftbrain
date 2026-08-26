@@ -19,6 +19,22 @@ templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.globals["version"] = __version__
 
 
+def _asset_stamp() -> str:
+    """Short content hash of the static assets: cache-bust on every change, not only on releases."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for name in ("site.css", "site.js", "logo.svg"):
+        try:
+            h.update((HERE / "static" / name).read_bytes())
+        except OSError:
+            pass
+    return h.hexdigest()[:10]
+
+
+templates.env.globals["asset_v"] = _asset_stamp()
+
+
 class CachedStaticFiles(StaticFiles):
     """Static assets, cached for a day.
 
