@@ -16,7 +16,7 @@ TOOLS: list[tuple[str, str, str]] = [
     ("numbers", "Compare, round, format, allocate exactly", "compare · round · format · allocate · sequence · parse …"),
     ("finance", "EMI, compound growth, CAGR, NPV/IRR, GST", "emi · compound · cagr · npv_irr · gst · percent"),
     ("text", "Count, slice, case, diff — by codepoint", "count · regex_match · regex_replace · diff · sort · dedupe …"),
-    ("collections", "Sort, dedupe, group, set ops", "set_ops · group_by · pick_fields · flatten · unflatten · paginate …"),
+    ("collections", "Sort, group, filter, pivot — records or CSV", "set_ops · group_by · sort_by · filter · pivot · summarize · to_csv …"),
     ("validate", "Assert rules over JSON, emails, IBANs, schemas", "json_schema · assert · id · email · url · phone …"),
     ("random", "Seeded, reproducible randomness", "uuid · int · float · pick · shuffle · token …"),
     ("geo_offline", "Distance, bearing, bounding boxes", "tz_for_place · tz_for_coords · distance · country · zone_info"),

@@ -2038,14 +2038,22 @@ COLLECTIONS = ToolDoc(
         "Exact list and record logic — the operations a model starts quietly dropping items from "
         "somewhere past twenty entries. Compare two lists and get both differences named, group "
         "records with real aggregates computed as decimals, sort on several keys, find duplicates, "
-        "paginate, chunk, and flatten or rebuild nested JSON. Fields are addressed with dotted paths "
-        "(`rep.name`, `items[0].sku`)."
+        "paginate, chunk, and flatten or rebuild nested JSON — plus the table arithmetic a spreadsheet "
+        "would do: filter rows, pivot, running totals, IQR outliers, a per-field summary and CSV out. "
+        "Records may arrive as JSON objects or as CSV text: the delimiter is sniffed, the header row "
+        "detected (the first row when it has no numeric, date or boolean cell; `has_header` overrides), "
+        "every field typed as number, ISO date, boolean or text, and blank rows and `N/A`-style cells "
+        "skipped and counted — each reading stated in `assumptions`. Numbers loaded from CSV are exact "
+        "decimals returned as strings. Tables above 5,000 rows are refused. The list modes address "
+        "fields with dotted paths (`rep.name`, `items[0].sku`); the table modes — `filter`, `pivot`, "
+        "`running`, `outliers`, `summarize`, `to_csv` — work on flat records, top-level fields only."
     ),
     when=(
         "“What is in list A but not list B?” — and the reverse, in the same answer.",
         "Grouping records by a field with sum/avg/min/max that must be exact.",
         "Multi-key sorting, deduplication and duplicate hunting over records.",
-        "Reshaping JSON: flatten for a spreadsheet, unflatten from a form payload.",
+        "A CSV export pasted in: summarise every column, filter rows, pivot, running totals, spot outliers.",
+        "Reshaping JSON: flatten for a spreadsheet, unflatten from a form payload, records to CSV.",
         "Pagination and chunking before handing work to another system.",
     ),
     related=(
@@ -2063,14 +2071,17 @@ COLLECTIONS = ToolDoc(
                 "`in_both`, counts, and whether the two are equal as sets — regardless of which `op` "
                 "you asked for. `op` additionally puts one specific result in `result`. Objects are "
                 "compared structurally, or on one field via `key`. Duplicates inside a list are "
-                "collapsed, and that is stated in `assumptions`."
+                "collapsed, and that is stated in `assumptions`. Either side may be CSV text, read as "
+                "records; how each was read is stated with an `a:`/`b:` prefix."
             ),
             params=(
-                Param("a", "First list.", required=True),
-                Param("b", "Second list.", required=True),
+                Param("a", "First list, or CSV text.", required=True),
+                Param("b", "Second list, or CSV text.", required=True),
                 Param("op", "Which result to highlight.", default="`compare`"),
                 Param("key", "Dotted path to compare on, for objects."),
                 Param("case_insensitive", "Fold case on string comparisons.", default="`false`"),
+                Param("delimiter", "CSV delimiter, when a side is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2083,11 +2094,13 @@ COLLECTIONS = ToolDoc(
                 "not drift. Members are included unless `include_items` is false."
             ),
             params=(
-                Param("items", "The records.", required=True),
+                Param("items", "The records, or CSV text.", required=True),
                 Param("key", "Dotted path to group on.", required=True),
                 Param("agg_field", "Dotted path the aggregates are computed over."),
                 Param("agg", "Which aggregates to compute.", default="`[count]`"),
                 Param("include_items", "Include each group's members.", default="`true`"),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2097,12 +2110,15 @@ COLLECTIONS = ToolDoc(
                 "The whole-list version of `group_by`'s aggregates: `count`, `count_distinct`, `sum`, "
                 "`avg`, `min`, `max`, `first`, `last`, `list`. Numeric aggregates are computed as "
                 "decimals and returned as strings; non-numeric values are ignored for them and that is "
-                "stated in `assumptions`. Omit `field` to aggregate the items themselves."
+                "stated in `assumptions`. Omit `field` to aggregate the items themselves. For every "
+                "numeric field at once, see `summarize`."
             ),
             params=(
-                Param("items", "The records or values.", required=True),
+                Param("items", "The records or values, or CSV text.", required=True),
                 Param("field", "Dotted path to aggregate; omit to use the items themselves."),
                 Param("ops", "Which aggregates to compute.", default="`[count, sum, avg, min, max]`"),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2114,10 +2130,12 @@ COLLECTIONS = ToolDoc(
                 "`short_names` uses the last path segment as the key."
             ),
             params=(
-                Param("items", "The records.", required=True),
+                Param("items", "The records, or CSV text.", required=True),
                 Param("fields", "Dotted paths to keep.", required=True),
                 Param("rename", "Map of path to output name."),
                 Param("short_names", "Use the last path segment as the key.", default="`false`"),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2127,13 +2145,15 @@ COLLECTIONS = ToolDoc(
                 "Given an object, produces a single-level map whose keys are dotted paths "
                 "(`rep.name`, `tags[0]`) — the shape a CSV or a form encoder wants. Given a list, "
                 "flattens nested lists instead. `depth` limits how far it descends; `separator` changes "
-                "the joining character."
+                "the joining character. CSV text is read as a list of records first."
             ),
             params=(
-                Param("data", "The structure to flatten.", required=True),
+                Param("data", "The structure to flatten, or CSV text.", required=True),
                 Param("depth", "Maximum levels to descend.", default="unlimited"),
                 Param("separator", "Key separator.", default="`.`"),
                 Param("flatten_lists", "Index into lists as well as objects.", default="`true`"),
+                Param("delimiter", "CSV delimiter, when `data` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2159,9 +2179,11 @@ COLLECTIONS = ToolDoc(
                 "happened."
             ),
             params=(
-                Param("items", "The full list.", required=True),
+                Param("items", "The full list, or CSV text.", required=True),
                 Param("page", "1-based page number.", default="1"),
                 Param("per_page", "Items per page.", default="20"),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2173,9 +2195,11 @@ COLLECTIONS = ToolDoc(
                 "record; `case_insensitive` folds case on strings."
             ),
             params=(
-                Param("items", "The list to inspect.", required=True),
+                Param("items", "The list to inspect, or CSV text.", required=True),
                 Param("key", "Dotted path to compare, for objects."),
                 Param("case_insensitive", "Fold case on string comparisons.", default="`false`"),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2184,14 +2208,18 @@ COLLECTIONS = ToolDoc(
             description=(
                 "Sorts records by several keys at once, each with its own direction: "
                 "`keys: [{field: region}, {field: amount, order: desc}]`. The sort is stable, nulls "
-                "sort last, numeric strings compare as numbers, and other strings compare "
-                "case-insensitively. `changed` says whether the order actually moved."
+                "sort last, JSON numbers compare as numbers, and strings — numeric-looking ones "
+                "included — compare case-insensitively as text. Fields loaded from CSV text are typed "
+                "first, so a numeric column sorts numerically. `changed` says whether the order "
+                "actually moved."
             ),
             params=(
-                Param("items", "The records.", required=True),
+                Param("items", "The records, or CSV text.", required=True),
                 Param("keys", "Sort keys: `{field, order}` or bare field names."),
                 Param("key", "A single sort field, as a shorthand for `keys`."),
                 Param("order", "Direction for the `key` shorthand.", default="`asc`"),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
         Mode(
@@ -2203,9 +2231,124 @@ COLLECTIONS = ToolDoc(
                 "their sizes, which is what a batching loop actually needs."
             ),
             params=(
-                Param("items", "The list to split.", required=True),
+                Param("items", "The list to split, or CSV text.", required=True),
                 Param("size", "Maximum items per chunk."),
                 Param("n", "Number of chunks; sizes differ by at most 1."),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
+            ),
+        ),
+        Mode(
+            name="filter",
+            purpose="Keep the rows that satisfy every predicate.",
+            description=(
+                "Keeps the records for which every `where` predicate holds (AND). Each predicate is "
+                "`{field, op, value}` with the `validate.assert` vocabulary — `eq`, `ne`, `gt`, `gte`, "
+                "`lt`, `lte`, `in`, `not_in`, `contains`, `starts_with`, `ends_with`, `empty`, "
+                "`not_empty` — and the comparison is made in the field's inferred type: `500` against a "
+                "numeric field is a numeric comparison, `2026-01-07` against a date field a date one. "
+                "Text comparisons are case-sensitive. Returns the kept `items`, their `count` and how "
+                "many were `removed`; more than 500 rows are echoed in part, with a warning."
+            ),
+            params=(
+                Param("items", "The records, or CSV text.", required=True),
+                Param("where", "Predicates `{field, op, value}`, all of which must hold.", required=True),
+                Param("columns", "Fields to echo.", default="all"),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
+            ),
+        ),
+        Mode(
+            name="pivot",
+            purpose="Cross-tabulate: row keys × one field's values, one aggregate each.",
+            description=(
+                "A pivot table: `by` names the row key(s), `pivot_columns` the field whose distinct "
+                "values become the columns, and each cell holds one aggregate (`agg`: `sum` by default, "
+                "or `avg`, `min`, `max`, `median`, `count`) of `column`. Without `column` the cells count "
+                "rows. A combination with no rows is `null`, not zero. Every row carries a `total`, and "
+                "`totals` holds the column totals and the grand total — the same aggregate over every "
+                "underlying value, so an `avg` total is the true mean, not a mean of means."
+            ),
+            params=(
+                Param("items", "The records, or CSV text.", required=True),
+                Param("by", "Field(s) forming the row keys.", required=True),
+                Param("pivot_columns", "Field whose values become the columns.", required=True),
+                Param("column", "Numeric field aggregated into each cell; omit to count rows."),
+                Param("agg", "The single aggregate to use.", default="`sum`, or `count` without `column`"),
+                Param("decimals", "Round computed values to this many places, half-up."),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
+            ),
+        ),
+        Mode(
+            name="running",
+            purpose="Cumulative total down the rows.",
+            description=(
+                "Adds a `running` field to every record: the cumulative total of `column` in the order "
+                "given. With `by`, the total restarts for each group and `totals` reports where each "
+                "group ended. A blank cell adds nothing. When the table has exactly one numeric field "
+                "it is used and that is stated; with several the call is `ambiguous` and lists them."
+            ),
+            params=(
+                Param("items", "The records, or CSV text.", required=True),
+                Param("column", "Numeric field to accumulate.", default="the only numeric field"),
+                Param("by", "Field(s) whose change restarts the total."),
+                Param("columns", "Fields to echo alongside `running`.", default="all"),
+                Param("decimals", "Round the running values to this many places, half-up."),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
+            ),
+        ),
+        Mode(
+            name="outliers",
+            purpose="Flag values outside the 1.5×IQR fences.",
+            description=(
+                "Tukey's rule: Q1 and Q3 are his hinges — the medians of the lower and upper halves of "
+                "the sorted values, the middle value included in both when the count is odd — and anything below "
+                "`Q1 − 1.5×IQR` or above `Q3 + 1.5×IQR` is an outlier. Reports `q1`, `q3`, `iqr`, both "
+                "fences and each flagged row with its 1-based `row`, `value` and `side`. Needs at least "
+                "four numeric values. `column` defaults to the only numeric field, if there is one."
+            ),
+            params=(
+                Param("items", "The records, or CSV text.", required=True),
+                Param("column", "Numeric field to inspect.", default="the only numeric field"),
+                Param("decimals", "Round the quartiles and fences to this many places, half-up."),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
+            ),
+        ),
+        Mode(
+            name="summarize",
+            purpose="Every field at once: counts, totals, ranges.",
+            description=(
+                "One entry per field with its inferred `type`, the `count` of filled cells and the "
+                "`nulls`. Numeric fields add `sum`, `avg`, `min`, `max` and `median` as exact decimals; "
+                "date fields their `min` and `max`; boolean fields `true`/`false` counts; text fields "
+                "the number of `distinct` values. This is `aggregate` for the whole table in one call."
+            ),
+            params=(
+                Param("items", "The records, or CSV text.", required=True),
+                Param("columns", "Fields to summarise.", default="all"),
+                Param("decimals", "Round computed values to this many places, half-up."),
+                Param("delimiter", "CSV delimiter, when `items` is CSV text.", default="sniffed"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
+            ),
+        ),
+        Mode(
+            name="to_csv",
+            purpose="Records out as CSV text.",
+            description=(
+                "Writes the records as CSV text with a header row: numbers in plain decimal form (no "
+                "thousands separators or symbols), booleans as `true`/`false`, blanks as empty cells, "
+                "and quoting only where the delimiter or a quote appears in a value. `columns` chooses "
+                "and orders the fields. Every row is written — this mode is exempt from the 500-row echo "
+                "cap."
+            ),
+            params=(
+                Param("items", "The records, or CSV text to re-shape.", required=True),
+                Param("columns", "Fields to write, in order.", default="all"),
+                Param("delimiter", "Delimiter to write with — and to read `items` with, when it is CSV text.", default="`,`"),
+                Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
             ),
         ),
     ),

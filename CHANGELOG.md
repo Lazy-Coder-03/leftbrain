@@ -8,6 +8,19 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- `collections`: every record input (`items`, `a`/`b`, `data`) also accepts CSV text — the
+  delimiter is sniffed, the header row detected (first row with no numeric, date or boolean cell;
+  `has_header` overrides), each field typed as number (exact `Decimal`, via `numbers.parse`),
+  ISO date, boolean or text, and blank rows and `N/A`/`-`/`null` cells skipped and counted, all
+  stated in `assumptions`; above 5,000 rows the call is refused. New table modes over the same
+  input: `filter` (`where` predicates with the `validate.assert` vocabulary, compared in the
+  field's type), `pivot` (`by` × `pivot_columns`, one aggregate of `column`, row and grand
+  totals, empty cells `null`), `running` (cumulative total, restarting per `by`), `outliers`
+  (Tukey hinges, 1.5×IQR, fences reported, at least 4 values), `summarize` (count/nulls/sum/avg/
+  min/max/median for every numeric field, distinct counts for text, range for dates) and `to_csv`
+  (`delimiter`, chosen `columns`). A lone numeric field is assumed for `running`/`outliers` and
+  said so; several are `ambiguous`. `decimals` rounds computed values only; row-shaped results
+  echo at most 500 rows with a warning, except `to_csv`.
 - **`color` tool** (14th core tool): `convert` between hex (3/4/6/8-digit), RGB, HSL, HSV/HSB,
   naive CMYK and Lab with alpha preserved; `describe` names the nearest of the 148 CSS colours
   by CIE76 ΔE and words the colour from fixed HSL bands; `swatch` returns a real PNG (stdlib
