@@ -6,8 +6,62 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-08-27
+
+Two new core tools — fourteen in all — and new modes on seven of the existing ones, plus a
+dashboard that lets you delete old keys and a hosted free tier of 1,000 calls per key per day.
+Everything is additive: every call that worked on 0.1.0 returns the same shape on 0.2.0.
+
 ### Added
 
+#### New tools
+
+- **`finance` tool** (13th core tool): `emi` (instalment, totals and amortisation schedule that
+  reconciles to zero), `compound` (future value with optional per-period contributions and the
+  effective annual rate), `cagr`, `npv_irr` (IRR by bisection), `gst` (inclusive/exclusive split
+  into CGST/SGST or IGST, rounding difference reported) and `percent` (change vs percentage
+  points, stacked vs additive discounts, exact bill splits). The rate's period and whether an
+  amount is GST-inclusive are required, not guessed.
+- **`color` tool** (14th core tool): `convert` between hex (3/4/6/8-digit), RGB, HSL, HSV/HSB,
+  naive CMYK and Lab with alpha preserved; `describe` names the nearest of the 148 CSS colours
+  by CIE76 ΔE and words the colour from fixed HSL bands; `swatch` returns a real PNG (stdlib
+  zlib, 16–256 px, one colour or two side by side); `contrast` gives the WCAG 2.x ratio,
+  AA/AAA for normal and large text and the smallest lightness change that passes; `mix`
+  blends in sRGB or Lab; `harmony` rotates hue for complementary, analogous, triadic and
+  split-complementary sets; `nearest` snaps to a caller's palette with the runner-up;
+  `simulate` shows deuteranopia, protanopia and tritanopia (Viénot–Brettel–Mollon 1999);
+  `grayscale` greys by rec709, rec601, lab, average or hsl with an optional ramp and strip.
+  Bare triples such as `58, 26, 241` are refused with `needs.options` (rgb, hsl, hsv).
+
+#### New modes and parameters
+
+- `datetime` `now` takes a list as `tz` — zone names or `{tz, label}` objects — and answers with
+  the shared instant as `utc` plus one full per-zone entry under `zones`, each carrying its
+  `label` back. `convert_tz` accepts the same `{tz, label}` entries in `to_tz`. One round-trip
+  for "what time is it in each of our offices right now"; the single-`tz` form is unchanged.
+- `datetime` `free_slots`: common free slots for two or more participants in different time
+  zones, from weekly windows (`09:00`–`17:00` on `mon`…`fri`) or one-off local ranges, intersected
+  in UTC through `zoneinfo`. Each slot is shown in every participant's local time and in UTC,
+  `per_day` totals the overlap per date, a window spanning a DST change is expanded to its real
+  length with a note in `assumptions`, and no common time is `ok: true` with `slots: []` and a
+  warning naming who never overlaps.
+- `convert` `fuel_economy`: `mpg_us` / `mpg_uk` / `km_per_l` / `l_per_100km` with exact
+  constants; a bare `mpg` is `ambiguous` (US or imperial gallon), and any conversion that crosses
+  L/100 km states the inverse relation in `assumptions`.
+- `convert` `cooking`: cups, tbsp, tsp, ml, fl oz ↔ g, kg, oz, lb. Mass ↔ volume needs
+  `ingredient`, looked up in a built-in density table (18 staples; the grams-per-cup used are
+  stated); a missing or unknown ingredient returns the table as `needs.options`. `cup` selects the
+  US (240 ml, default and declared), metric, UK or Australian (20 ml tablespoon) system.
+- `convert` `sizes`: `category=shoe` converts US men / US women / UK / EU / cm on a generic
+  adult chart, snapping to the nearest half size with a warning; `category=clothing` maps XS–XXL
+  to chest and waist cm bands for a chart chosen by `region` (`us` inch-based, `eu` EN 13402-3)
+  and `gender`, both required. Every result warns that sizes are approximate and names the chart.
+- `numbers` `semver`: compare or sort version strings as versions (`1.10` > `1.9`), with
+  SemVer 2.0 pre-release precedence, build metadata carried but ignored for ordering, and a
+  leading `v` / missing minor or patch tolerated and recorded in `assumptions`.
+- `text` `similarity`: Levenshtein distance and a 0–1 ratio for a pair, or `text` + `items` to
+  rank candidates and return the best match with its index — mapping typed input onto a menu,
+  spotting near-duplicate names. Case-folded and whitespace-normalised by default, both stated.
 - `collections`: every record input (`items`, `a`/`b`, `data`) also accepts CSV text — the
   delimiter is sniffed, the header row detected (first row with no numeric, date or boolean cell;
   `has_header` overrides), each field typed as number (exact `Decimal`, via `numbers.parse`),
@@ -21,33 +75,6 @@ All notable changes to leftbrain are recorded here. The format follows
   (`delimiter`, chosen `columns`). A lone numeric field is assumed for `running`/`outliers` and
   said so; several are `ambiguous`. `decimals` rounds computed values only; row-shaped results
   echo at most 500 rows with a warning, except `to_csv`.
-- **`color` tool** (14th core tool): `convert` between hex (3/4/6/8-digit), RGB, HSL, HSV/HSB,
-  naive CMYK and Lab with alpha preserved; `describe` names the nearest of the 148 CSS colours
-  by CIE76 ΔE and words the colour from fixed HSL bands; `swatch` returns a real PNG (stdlib
-  zlib, 16–256 px, one colour or two side by side); `contrast` gives the WCAG 2.x ratio,
-  AA/AAA for normal and large text and the smallest lightness change that passes; `mix`
-  blends in sRGB or Lab; `harmony` rotates hue for complementary, analogous, triadic and
-  split-complementary sets; `nearest` snaps to a caller's palette with the runner-up;
-  `simulate` shows deuteranopia, protanopia and tritanopia (Viénot–Brettel–Mollon 1999);
-  `grayscale` greys by rec709, rec601, lab, average or hsl with an optional ramp and strip.
-  Bare triples such as `58, 26, 241` are refused with `needs.options` (rgb, hsl, hsv).
-- `convert` `fuel_economy`: `mpg_us` / `mpg_uk` / `km_per_l` / `l_per_100km` with exact
-  constants; a bare `mpg` is `ambiguous` (US or imperial gallon), and any conversion that crosses
-  L/100 km states the inverse relation in `assumptions`.
-- `convert` `cooking`: cups, tbsp, tsp, ml, fl oz ↔ g, kg, oz, lb. Mass ↔ volume needs
-  `ingredient`, looked up in a built-in density table (18 staples; the grams-per-cup used are
-  stated); a missing or unknown ingredient returns the table as `needs.options`. `cup` selects the
-  US (240 ml, default and declared), metric, UK or Australian (20 ml tablespoon) system.
-- `convert` `sizes`: `category=shoe` converts US men / US women / UK / EU / cm on a generic
-  adult chart, snapping to the nearest half size with a warning; `category=clothing` maps XS–XXL
-  to chest and waist cm bands for a chart chosen by `region` (`us` inch-based, `eu` EN 13402-3)
-  and `gender`, both required. Every result warns that sizes are approximate and names the chart.
-- `datetime` `free_slots`: common free slots for two or more participants in different time
-  zones, from weekly windows (`09:00`–`17:00` on `mon`…`fri`) or one-off local ranges, intersected
-  in UTC through `zoneinfo`. Each slot is shown in every participant's local time and in UTC,
-  `per_day` totals the overlap per date, a window spanning a DST change is expanded to its real
-  length with a note in `assumptions`, and no common time is `ok: true` with `slots: []` and a
-  warning naming who never overlaps.
 - `validate` `cidr`: membership (`network` + `value` → `contains`, for an address or a smaller
   block) and overlap (a list of networks → every pair with `equal` / `a_contains_b` /
   `b_contains_a` / `disjoint`), plus a block's size, usable hosts, bounds and masks. Host bits
@@ -61,26 +88,12 @@ All notable changes to leftbrain are recorded here. The format follows
 - `files` `file_hash`: sha256 (default) / sha1 / md5 / blake2b / crc32 and the other hashlib
   algorithms, streamed in 1 MiB chunks so a file's size is bounded only by `LEFTBRAIN_FILE_ROOTS`,
   with `bytes`, the algorithm used, and `expected` → `matches` for verifying a download.
-- `numbers` `semver`: compare or sort version strings as versions (`1.10` > `1.9`), with
-  SemVer 2.0 pre-release precedence, build metadata carried but ignored for ordering, and a
-  leading `v` / missing minor or patch tolerated and recorded in `assumptions`.
-- `text` `similarity`: Levenshtein distance and a 0–1 ratio for a pair, or `text` + `items` to
-  rank candidates and return the best match with its index — mapping typed input onto a menu,
-  spotting near-duplicate names. Case-folded and whitespace-normalised by default, both stated.
-- `datetime` `now` takes a list as `tz` — zone names or `{tz, label}` objects — and answers with
-  the shared instant as `utc` plus one full per-zone entry under `zones`, each carrying its
-  `label` back. `convert_tz` accepts the same `{tz, label}` entries in `to_tz`. One round-trip
-  for "what time is it in each of our offices right now"; the single-`tz` form is unchanged.
+
+#### Keys and dashboard
+
 - `leftbrain-keys set --all --daily N [--rpm N] [--from-daily N]` changes limits on every key —
   or, with `--from-daily`, only on keys still at an old default — so a moved default can be
   migrated without a database shell or touching keys set by hand. Prints how many keys changed.
-- **`finance` tool** (13th core tool): `emi` (instalment, totals and amortisation schedule that
-  reconciles to zero), `compound` (future value with optional per-period contributions and the
-  effective annual rate), `cagr`, `npv_irr` (IRR by bisection), `gst` (inclusive/exclusive split
-  into CGST/SGST or IGST, rounding difference reported) and `percent` (change vs percentage
-  points, stacked vs additive discounts, exact bill splits). The rate's period and whether an
-  amount is GST-inclusive are required, not guessed.
-
 - Dashboard **Delete** for a revoked or expired key: removes the row and its usage history for
   good (with a confirm). A key that still works must be revoked first; deletion is owner- and
   CSRF-checked like the other key routes.
@@ -100,7 +113,6 @@ All notable changes to leftbrain are recorded here. The format follows
 - Free tier is **1,000 calls per key per day** (was 5,000); `LEFTBRAIN_DEFAULT_DAILY_QUOTA` still overrides it. Every place the site quotes the limit — landing, sign-in, quickstart, the demo's 429 — now reads the configured value instead of a hard-coded number.
 - Site shows loading skeletons on navigation, form submits and demo runs; the colour legend on docs pages was dropped.
 - Docs key picker shows the key name only (prefix only for unnamed keys).
-
 - Docs examples are labelled Request/Response and colour-coded: blue blocks are what you
   send, green blocks are what comes back, and a neutral block marks a setup command.
 
@@ -197,5 +209,6 @@ still change before 1.0, so pin an exact version if you build on it.
   cookie, every mutation is CSRF-checked, and any page carrying a key is sent
   `Cache-Control: no-store`.
 
-[Unreleased]: https://github.com/Lazy-Coder-03/leftbrain/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/Lazy-Coder-03/leftbrain/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Lazy-Coder-03/leftbrain/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/Lazy-Coder-03/leftbrain/releases/tag/v0.1.0

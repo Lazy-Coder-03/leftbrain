@@ -28,7 +28,7 @@ from .core import (
     validate,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Friendly aliases: leftbrain.math_tool(...), leftbrain.datetime_tool(...)
 math_tool = mathx.math
