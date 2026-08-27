@@ -79,7 +79,12 @@ CODES: dict[str, bool] = {
     "resource_exhausted": False,  # hit a memory or CPU limit
     "forbidden": False,  # the key may not call this tool or mode
     "busy": True,  # nothing was computed; the server was saturated
-    "internal": True,  # something broke unexpectedly
+    # `internal` is the catch-all for an exception no mode anticipated, and most of those
+    # are a deterministic consequence of the input (`finance.compound years=1000000` raises
+    # InvalidOperation every single time). Defaulting it to retryable told an agent to loop
+    # on exactly those. A site that genuinely means "the worker died" - #28 SS1 step 3 - says
+    # `retryable=True` at the raise. A wrong `false` costs one retry; a wrong `true` is a storm.
+    "internal": False,
 }
 
 _OFF = {"", "0", "false", "no", "off"}

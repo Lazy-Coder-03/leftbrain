@@ -5,7 +5,7 @@ endpoint is one HTTP POST away in any language. This page goes from the raw prot
 JSON-RPC calls, an MCP client in eight languages, the framework wiring, and a plain-HTTP fallback
 for everything else.
 
-<div class="callout">Every tool answers with the same contract: <code>{ok: true, result, assumptions[], warnings[]}</code>, or <code>{ok: false, error, message, retryable}</code> with an optional <code>needs</code> block when the input was ambiguous. <code>retryable</code> is <code>false</code> for every failure except <code>busy</code> and <code>internal</code>, so an agent knows when repeating the call is pointless. That object is the <code>structuredContent</code> of the MCP result, and the same JSON is repeated as text in <code>content[0].text</code> for clients that only read text.</div>
+<div class="callout">Every tool answers with the same contract: <code>{ok: true, result, assumptions[], warnings[]}</code>, or <code>{ok: false, error, message, retryable}</code> with an optional <code>needs</code> block when the input was ambiguous. <code>retryable</code> is <code>false</code> for almost every failure — only <code>busy</code> invites a retry — so an agent knows when repeating the call is pointless. That object is the <code>structuredContent</code> of the MCP result, and the same JSON is repeated as text in <code>content[0].text</code> for clients that only read text.</div>
 
 Every snippet below is labelled. **Executed** ones were run, unchanged apart from the URL and the
 key, against a running leftbrain server while this page was written. **From the SDK docs** ones were

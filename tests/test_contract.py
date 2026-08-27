@@ -36,11 +36,26 @@ from leftbrain.contract import (
         ("resource_exhausted", False),
         ("forbidden", False),
         ("busy", True),
-        ("internal", True),
+        ("internal", False),
     ],
 )
 def test_every_code_says_whether_an_identical_retry_could_help(code, retryable):
     assert fail(code, "…")["retryable"] is retryable
+
+
+def test_an_input_driven_crash_does_not_invite_a_retry_loop():
+    """`finance.compound years=1000000` raises InvalidOperation every time it is called."""
+
+    @tool
+    def deterministic_crash():
+        raise ArithmeticError("the same input fails the same way, forever")
+
+    r = deterministic_crash()
+    assert r["error"] == "internal" and r["retryable"] is False
+
+
+def test_a_site_that_knows_the_failure_is_transient_can_say_so():
+    assert fail("internal", "the worker died", retryable=True)["retryable"] is True
 
 
 def test_an_unknown_code_is_not_retryable_and_an_explicit_flag_wins():
@@ -110,7 +125,7 @@ def _crashes():
 def test_an_internal_error_ships_no_traceback_by_default(monkeypatch):
     monkeypatch.delenv("LEFTBRAIN_DEBUG", raising=False)
     r = _crashes()
-    assert r["error"] == "internal" and r["retryable"] is True
+    assert r["error"] == "internal" and r["retryable"] is False
     assert "trace" not in r
 
 

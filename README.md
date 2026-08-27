@@ -84,7 +84,11 @@ change) are present when the tool has something concrete to say.
 | `resource_exhausted` | a memory or CPU limit was hit rather than the clock | `false` |
 | `forbidden` | the key's scope does not include this tool or mode | `false` |
 | `busy` | the server was saturated; nothing was computed | `true` |
-| `internal` | something broke unexpectedly | `true` |
+| `internal` | something broke unexpectedly | `false` |
+
+`internal` is `false` because it is the catch-all for an exception no mode anticipated, and most
+of those are a deterministic consequence of the input — the same call fails the same way every
+time. A site that genuinely knows its failure was transient says so at the raise.
 
 A call whose arguments fail the tool's input schema never reaches the tool, and still answers in
 this shape: `invalid_input`, the offending parameters under `details.parameters`, and
