@@ -376,9 +376,9 @@ def text(
 @server.tool(name="collections")
 def collections(
     mode: str = "set_ops",
-    items: list[Any] | None = None,
-    a: list[Any] | None = None,
-    b: list[Any] | None = None,
+    items: list[Any] | str | None = None,
+    a: list[Any] | str | None = None,
+    b: list[Any] | str | None = None,
     op: str | None = None,
     key: str | None = None,
     keys: list[Any] | None = None,
@@ -400,14 +400,26 @@ def collections(
     rename: dict[str, str] | None = None,
     short_names: bool | None = None,
     flatten_lists: bool | None = None,
+    where: list[dict[str, Any]] | None = None,
+    by: list[str] | str | None = None,
+    pivot_columns: str | None = None,
+    column: str | None = None,
+    columns: list[str] | None = None,
+    delimiter: str | None = None,
+    has_header: bool | None = None,
+    decimals: int | None = None,
 ) -> dict[str, Any]:
     """Use for exact list/record logic that models get wrong past ~20 items: compare two lists
     (what's missing where), union/intersection/difference, group records by a field with
-    sum/avg/count, multi-key sorting, duplicates, pagination, chunking, flatten/unflatten JSON.
-    mode: set_ops | group_by | aggregate | pick_fields | flatten | unflatten | paginate | find_duplicates | sort_by | chunk
+    sum/avg/count, multi-key sorting, duplicates, pagination, chunking, flatten/unflatten JSON,
+    and table arithmetic — filter rows, pivot, running totals, IQR outliers, a per-field summary,
+    CSV out. Records may be given as JSON objects or as CSV text: the delimiter, header row and
+    field types (number, date, boolean, text) are detected and stated in `assumptions`.
+    mode: set_ops | group_by | aggregate | pick_fields | flatten | unflatten | paginate | find_duplicates | sort_by | chunk |
+    filter | pivot | running | outliers | summarize | to_csv
     Paths use dotted syntax: "user.address.city", "items[0].sku".
     """
-    return collections_.collections(mode, **_clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists)))
+    return collections_.collections(mode, **_clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists, where=where, by=by, pivot_columns=pivot_columns, column=column, columns=columns, delimiter=delimiter, has_header=has_header, decimals=decimals)))
 
 
 @server.tool(name="validate")

@@ -1,16 +1,33 @@
-"""collections - exact set logic, grouping, sorting and reshaping of lists/records."""
+"""collections - exact set logic, grouping, sorting, reshaping and table arithmetic over lists/records or CSV text."""
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import re
 from collections import Counter, defaultdict
-from decimal import Decimal
+from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..contract import ToolError, ok, tool
+from ..contract import Ambiguous, ToolError, ok, tool
+from .numbers import _dec_str, parse_number
 
-MODES = ("set_ops", "group_by", "pick_fields", "flatten", "unflatten", "paginate", "find_duplicates", "sort_by", "aggregate", "chunk")
+MODES = ("set_ops", "group_by", "pick_fields", "flatten", "unflatten", "paginate", "find_duplicates", "sort_by", "aggregate", "chunk", "filter", "pivot", "running", "outliers", "summarize", "to_csv")
+
+#: Above this many rows a CSV or record table is refused rather than answered slowly or partially.
+MAX_ROWS = 5000
+#: Row-shaped results of the table modes echo at most this many rows (`to_csv` is exempt: the rows are the answer).
+ECHO_ROWS = 500
+
+AGGS = ("sum", "avg", "min", "max", "count", "median")
+FILTER_OPS = ("eq", "ne", "gt", "gte", "lt", "lte", "in", "not_in", "contains", "starts_with", "ends_with", "empty", "not_empty")
+
+_EMPTY = {"", "na", "n/a", "-", "\u2014", "null", "none", "nan"}
+_TRUE, _FALSE = {"true", "yes"}, {"false", "no"}
+_ISO_DATE = re.compile(r"\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?)?")
+_IQR_MULTIPLIER = Decimal("1.5")
 
 _PATH_TOKEN = re.compile(r"\.?([^.\[\]]+)|\[(\d+)\]")
 
@@ -89,6 +106,8 @@ def _set_ops(p: dict[str, Any]) -> dict[str, Any]:
 def _num(v: Any) -> Decimal | None:
     if isinstance(v, bool) or v is None:
         return None
+    if isinstance(v, Decimal):  # only ever a cell loaded from CSV text; JSON input never carries one
+        return v
     if isinstance(v, (int, float)):
         return Decimal(repr(v)) if isinstance(v, float) else Decimal(v)
     if isinstance(v, str):
@@ -315,15 +334,537 @@ def _chunk(p: dict[str, Any]) -> dict[str, Any]:
     return ok({"chunks": chunks, "count": len(chunks), "sizes": [len(c) for c in chunks]})
 
 
+# --------------------------------------------------------------------------- #
+# Tables: CSV text or a list of records, loaded into typed cells
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class Table:
+    """A loaded table: typed cells (`Decimal`, `bool`, ISO date string, text or `None`)."""
+
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    types: dict[str, str]
+    assumptions: list[str] = field(default_factory=list)
+
+
+def _kind(v: Any) -> str:
+    """What one raw cell looks like: empty, bool, number, date or text."""
+    if v is None:
+        return "empty"
+    if isinstance(v, bool):
+        return "bool"
+    if isinstance(v, (int, float, Decimal)):
+        return "number"
+    if not isinstance(v, str):
+        return "text"
+    s = v.strip()
+    if not s or s.casefold() in _EMPTY:
+        return "empty"
+    if s.casefold() in _TRUE or s.casefold() in _FALSE:
+        return "bool"
+    if _ISO_DATE.fullmatch(s):
+        return "date"
+    try:
+        parse_number(s)
+    except Exception:
+        return "text"
+    return "number"
+
+
+def _coerce(v: Any, kind: str, notes: set[str]) -> Any:
+    if kind == "number":
+        if isinstance(v, bool):
+            return Decimal(int(v))
+        if isinstance(v, (int, Decimal)):
+            return Decimal(v)
+        if isinstance(v, float):
+            return Decimal(repr(v))
+        d, assumptions = parse_number(str(v).strip())
+        notes.update(assumptions)
+        return d
+    if kind == "bool":
+        return v if isinstance(v, bool) else str(v).strip().casefold() in _TRUE
+    if kind == "date":
+        return str(v).strip()
+    if isinstance(v, Decimal):
+        return _dec_str(v)
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return v if isinstance(v, (str, dict, list)) else str(v)
+
+
+def _csv_rows(text: str, key: str, delimiter: str | None, assumptions: list[str]) -> list[list[Any]]:
+    text = text.lstrip("﻿")
+    if not text.strip():
+        raise ToolError(f"'{key}' is empty")
+    if delimiter is None:
+        try:
+            delimiter = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|").delimiter
+            assumptions.append(f"delimiter {delimiter!r} detected")
+        except csv.Error:
+            delimiter = ","
+            assumptions.append("delimiter ',' assumed (could not be detected)")
+    elif len(delimiter) != 1:
+        raise ToolError("'delimiter' must be a single character")
+    return [list(r) for r in csv.reader(io.StringIO(text), delimiter=delimiter)]
+
+
+def _split_header(rows: list[list[Any]], has_header: bool | None, assumptions: list[str]) -> tuple[list[str], list[list[Any]]]:
+    first = rows[0]
+    if has_header is None:
+        typed = [c for c in first if _kind(c) in ("number", "date", "bool")]
+        has_header = not typed and any(_kind(c) != "empty" for c in first)
+        assumptions.append("first row read as the header (no numeric, date or boolean cells in it)" if has_header else "no header row: the first row holds data, so columns are named col1..colN")
+    if has_header:
+        names = [str(c).strip() or f"col{i + 1}" for i, c in enumerate(first)]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ToolError(f"duplicate column name(s) in the header: {', '.join(dupes)}")
+        return names, rows[1:]
+    width = max(len(r) for r in rows)
+    return [f"col{i + 1}" for i in range(width)], rows
+
+
+def _load(p: dict[str, Any], key: str = "items") -> Table:
+    """Load `p[key]` - CSV text or a list of records - into a typed `Table`, stating every reading made."""
+    data = p.get(key)
+    if data is None:
+        raise ToolError(f"'{key}' is required: CSV text or a list of records")
+    assumptions: list[str] = []
+    if isinstance(data, str):
+        columns, raw = _split_header(_csv_rows(data, key, p.get("delimiter"), assumptions), p.get("has_header"), assumptions)
+    elif isinstance(data, list) and data and all(isinstance(r, dict) for r in data):
+        columns = [str(k) for k in dict.fromkeys(k for r in data for k in r)]
+        raw = [[r.get(c) for c in columns] for r in data]
+    elif isinstance(data, list) and not data:
+        raise ToolError(f"'{key}' has no rows")
+    else:
+        raise ToolError(f"'{key}' must be CSV text or a list of records")
+    if len(raw) > MAX_ROWS:
+        raise ToolError(f"{len(raw):,} rows exceeds the {MAX_ROWS:,}-row cap; split the table or pre-aggregate it")
+
+    cells: list[list[Any]] = []
+    blank = 0
+    sentinels: dict[str, int] = {}
+    for i, r in enumerate(raw, 1):
+        if len(r) > len(columns):
+            raise ToolError(f"row {i} has {len(r)} cells but the header has {len(columns)}")
+        r = list(r) + [None] * (len(columns) - len(r))
+        if all(_kind(c) == "empty" for c in r):
+            blank += 1
+            continue
+        row = []
+        for c in r:
+            if isinstance(c, str) and c.strip() and c.strip().casefold() in _EMPTY:
+                sentinels[c.strip()] = sentinels.get(c.strip(), 0) + 1
+                c = None
+            elif isinstance(c, str) and not c.strip():
+                c = None
+            row.append(c)
+        cells.append(row)
+    if blank:
+        assumptions.append(f"{blank} blank row{'s' if blank > 1 else ''} skipped")
+    if sentinels:
+        assumptions.append("cells reading " + ", ".join(f"{k!r}" for k in sentinels) + f" treated as empty ({sum(sentinels.values())})")
+
+    types: dict[str, str] = {}
+    notes: dict[str, set[str]] = {}
+    for j, name in enumerate(columns):
+        kinds = {_kind(r[j]) for r in cells} - {"empty"}
+        types[name] = kinds.pop() if len(kinds) == 1 else "text"
+        notes[name] = set()
+    rows = [{name: (None if r[j] is None else _coerce(r[j], types[name], notes[name])) for j, name in enumerate(columns)} for r in cells]
+    assumptions.append("inferred types: " + ", ".join(f"{c}={t}" for c, t in types.items()))
+    for name in columns:
+        for note in sorted(notes[name]):
+            assumptions.append(f"field '{name}': {note}")
+    return Table(columns, rows, types, assumptions)
+
+
+def _plain(v: Any) -> Any:
+    return _dec_str(v) if isinstance(v, Decimal) else v
+
+
+def _records(t: Table) -> list[dict[str, Any]]:
+    """The table as records for the list modes: numbers stay `Decimal` (normalised) so they sort and sum as numbers."""
+    return [{c: (Decimal(_dec_str(r[c])) if isinstance(r[c], Decimal) else r[c]) for c in t.columns} for r in t.rows]
+
+
+def _jsonify(v: Any) -> Any:
+    """Back to the module's convention for the wire: every `Decimal` becomes a plain decimal string."""
+    if isinstance(v, Decimal):
+        return _dec_str(v)
+    if isinstance(v, dict):
+        return {k: _jsonify(x) for k, x in v.items()}
+    if isinstance(v, list):
+        return [_jsonify(x) for x in v]
+    return v
+
+
+#: Which parameters of the list modes may carry CSV text instead of a list.
+_CSV_INPUTS = {"set_ops": ("a", "b"), "flatten": ("data",)}
+
+
+def _inline_csv(mode: str, p: dict[str, Any]) -> list[str]:
+    """Replace CSV text in the list modes' inputs with records; returns how each one was read."""
+    notes: list[str] = []
+    keys = _CSV_INPUTS.get(mode, ("items",))
+    for key in keys:
+        if isinstance(p.get(key), str):
+            t = _load(p, key)
+            p[key] = _records(t)
+            notes.extend(t.assumptions if len(keys) == 1 else [f"{key}: {a}" for a in t.assumptions])
+    return notes
+
+
+# --------------------------------------------------------------------------- #
+# Table helpers
+# --------------------------------------------------------------------------- #
+
+
+def _out(d: Decimal, decimals: int | None) -> str:
+    if decimals is None:
+        return _dec_str(d)
+    return format(d.quantize(Decimal(1).scaleb(-int(decimals)), rounding=ROUND_HALF_UP), "f")
+
+
+def _label(v: Any) -> str:
+    if v is None:
+        return "(blank)"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return _dec_str(v) if isinstance(v, Decimal) else str(v)
+
+
+def _echo(rows: list[dict[str, Any]], columns: list[str], warnings: list[str], limit: int | None = ECHO_ROWS) -> list[dict[str, Any]]:
+    shown = rows if limit is None else rows[:limit]
+    if limit is not None and len(rows) > limit:
+        warnings.append(f"showing the first {limit} of {len(rows)} rows")
+    return [{c: _plain(r.get(c)) for c in columns} for r in shown]
+
+
+def _check(t: Table, names: list[str]) -> None:
+    missing = [n for n in names if n not in t.types]
+    if missing:
+        raise ToolError(f"unknown field(s) {', '.join(repr(m) for m in missing)}; the table has {', '.join(t.columns)}")
+
+
+def _cols(t: Table, p: dict[str, Any]) -> list[str]:
+    names = p.get("columns")
+    if names is None:
+        return list(t.columns)
+    names = [names] if isinstance(names, str) else [str(n) for n in names]
+    _check(t, names)
+    return names
+
+
+def _by(t: Table, p: dict[str, Any], required: bool = True) -> list[str]:
+    by = p.get("by")
+    if by is None:
+        if required:
+            raise ToolError("'by' names the field(s) to group on")
+        return []
+    names = [by] if isinstance(by, str) else [str(b) for b in by]
+    _check(t, names)
+    return names
+
+
+def _aggs(p: dict[str, Any]) -> list[str] | None:
+    agg = p.get("agg")
+    if agg is None:
+        return None
+    aggs = [agg] if isinstance(agg, str) else list(agg)
+    aggs = ["avg" if str(a).lower() == "mean" else str(a).lower() for a in aggs]
+    bad = [a for a in aggs if a not in AGGS]
+    if bad:
+        raise ToolError(f"unknown aggregate {', '.join(repr(b) for b in bad)}; use {', '.join(AGGS)}")
+    return aggs
+
+
+def _metric(t: Table, p: dict[str, Any], assumptions: list[str]) -> str:
+    """The numeric field to work on: `column`, or the only numeric field there is - never a guess between two."""
+    column = p.get("column")
+    if column is None:
+        numeric = [c for c in t.columns if t.types[c] == "number"]
+        if not numeric:
+            raise ToolError("no numeric field to use; pass 'column'")
+        if len(numeric) > 1:
+            raise Ambiguous("more than one numeric field; say which with 'column'", "column", numeric)
+        column = numeric[0]
+        assumptions.append(f"'{column}' used: it is the only numeric field")
+    _check(t, [column])
+    if t.types[column] != "number":
+        raise ToolError(f"field '{column}' is {t.types[column]}, not numeric")
+    return column
+
+
+def _dec_note(p: dict[str, Any], assumptions: list[str]) -> int | None:
+    decimals = p.get("decimals")
+    if decimals is not None:
+        assumptions.append(f"computed values rounded to {int(decimals)} decimals, half-up")
+    return decimals
+
+
+def _median(nums: list[Decimal]) -> Decimal:
+    s = sorted(nums)
+    mid = len(s) // 2
+    return s[mid] if len(s) % 2 else (s[mid - 1] + s[mid]) / 2
+
+
+def _agg_value(values: list[Any], agg: str, decimals: int | None) -> Any:
+    """One aggregate over a list of typed cells; `count` counts rows, the rest skip blanks."""
+    if agg == "count":
+        return len(values)
+    nums = [v for v in values if isinstance(v, Decimal)]
+    if not nums:
+        return None
+    if agg == "sum":
+        d = sum(nums, Decimal(0))
+    elif agg == "avg":
+        d = sum(nums, Decimal(0)) / len(nums)
+    elif agg == "min":
+        d = min(nums)
+    elif agg == "max":
+        d = max(nums)
+    else:
+        d = _median(nums)
+    return _out(d, decimals)
+
+
+def _sort_key(v: Any) -> Any:
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, str):
+        return v.casefold()
+    return v
+
+
+def _group_order(key: tuple[Any, ...]) -> tuple[Any, ...]:
+    return tuple((v is None, _sort_key(v) if v is not None else 0) for v in key)
+
+
+# --------------------------------------------------------------------------- #
+# Table modes
+# --------------------------------------------------------------------------- #
+
+
+def _summarize(t: Table, p: dict[str, Any]) -> dict[str, Any]:
+    a = list(t.assumptions)
+    cols = _cols(t, p)
+    decimals = _dec_note(p, a)
+    out: dict[str, Any] = {}
+    for c in cols:
+        values = [r[c] for r in t.rows]
+        present = [v for v in values if v is not None]
+        entry: dict[str, Any] = {"type": t.types[c], "count": len(present), "nulls": len(values) - len(present)}
+        if t.types[c] == "number":
+            entry.update({agg: _agg_value(present, agg, decimals) for agg in ("sum", "avg", "min", "max", "median")})
+        elif t.types[c] == "date":
+            entry.update({"min": min(present) if present else None, "max": max(present) if present else None})
+        elif t.types[c] == "bool":
+            entry.update({"true": sum(1 for v in present if v), "false": sum(1 for v in present if not v)})
+        else:
+            entry["distinct"] = len({_hashable(v) for v in present})
+        out[c] = entry
+    return ok({"count": len(t.rows), "fields": out, "types": {c: t.types[c] for c in cols}}, assumptions=a)
+
+
+def _expected(kind: str, op: str, value: Any) -> Any:
+    if op in ("empty", "not_empty"):
+        return None
+    if op in ("contains", "starts_with", "ends_with"):
+        return _label(value)
+    if op in ("in", "not_in"):
+        if not isinstance(value, list):
+            raise ToolError(f"'{op}' needs a list as value")
+        return [_expected(kind, "eq", v) for v in value]
+    if kind == "number":
+        if isinstance(value, bool) or value is None:
+            raise ToolError(f"cannot compare a number with {value!r}")
+        return _coerce(value, "number", set())
+    if kind == "bool":
+        return _coerce(value, "bool", set())
+    return _label(value)
+
+
+def _holds(actual: Any, op: str, expected: Any) -> bool:
+    if op == "empty":
+        return actual is None
+    if op == "not_empty":
+        return actual is not None
+    if actual is None:
+        return op in ("ne", "not_in")
+    if op == "eq":
+        return actual == expected
+    if op == "ne":
+        return actual != expected
+    if op == "in":
+        return actual in expected
+    if op == "not_in":
+        return actual not in expected
+    if op in ("contains", "starts_with", "ends_with"):
+        s = _label(actual)
+        return {"contains": expected in s, "starts_with": s.startswith(expected), "ends_with": s.endswith(expected)}[op]
+    if isinstance(actual, bool) or isinstance(expected, bool):
+        raise ToolError(f"'{op}' does not apply to a boolean field")
+    return {"gt": actual > expected, "gte": actual >= expected, "lt": actual < expected, "lte": actual <= expected}[op]
+
+
+def _filter(t: Table, p: dict[str, Any]) -> dict[str, Any]:
+    a, w = list(t.assumptions), []
+    where = p.get("where")
+    if not isinstance(where, list) or not where:
+        raise ToolError("'where' is a non-empty list of {field, op, value} predicates")
+    preds = []
+    for pred in where:
+        if not isinstance(pred, dict) or not pred.get("field"):
+            raise ToolError("each predicate is {field, op, value}")
+        fld, op = str(pred["field"]), str(pred.get("op", "eq")).lower()
+        _check(t, [fld])
+        if op not in FILTER_OPS:
+            raise ToolError(f"unknown op {op!r}; use {', '.join(FILTER_OPS)}")
+        preds.append((fld, op, _expected(t.types[fld], op, pred.get("value"))))
+    kept = [r for r in t.rows if all(_holds(r[f], op, v) for f, op, v in preds)]
+    a.append("every predicate must hold (AND); text comparisons are case-sensitive")
+    return ok({"items": _echo(kept, _cols(t, p), w), "count": len(kept), "removed": len(t.rows) - len(kept)}, assumptions=a, warnings=w)
+
+
+def _pivot(t: Table, p: dict[str, Any]) -> dict[str, Any]:
+    a = list(t.assumptions)
+    by = _by(t, p)
+    across = p.get("pivot_columns")
+    if across is None:
+        raise ToolError("'pivot_columns' names the field whose values become the pivot columns")
+    across = str(across)
+    _check(t, [across])
+    column = p.get("column")
+    aggs = _aggs(p)
+    if aggs is not None and len(aggs) != 1:
+        raise ToolError("pivot takes a single aggregate")
+    agg = aggs[0] if aggs else ("sum" if column is not None else "count")
+    if column is None:
+        if agg != "count":
+            raise ToolError("'column' is required for sum, avg, min, max or median")
+        a.append("no 'column' given, so each cell counts rows")
+    else:
+        _check(t, [column])
+        if t.types[column] != "number" and agg != "count":
+            raise ToolError(f"field '{column}' is {t.types[column]}, not numeric; only count applies")
+    decimals = _dec_note(p, a)
+    cells: dict[tuple[Any, ...], dict[str, list[Any]]] = {}
+    labels: dict[str, Any] = {}
+    for r in t.rows:
+        label = _label(r[across])
+        labels.setdefault(label, r[across])
+        cells.setdefault(tuple(r[b] for b in by), {}).setdefault(label, []).append(r[column] if column is not None else r)
+    ordered = sorted(labels, key=lambda lb: (labels[lb] is None, _sort_key(labels[lb]) if labels[lb] is not None else 0))
+    clash = [lb for lb in ordered if lb in by or lb == "total"]
+    if clash:
+        raise ToolError(f"pivot value(s) {', '.join(repr(c) for c in clash)} collide with the row key or 'total' column names")
+    rows = []
+    col_values: dict[str, list[Any]] = {lb: [] for lb in ordered}
+    grand: list[Any] = []
+    for key in sorted(cells, key=_group_order):
+        entry: dict[str, Any] = {b: _plain(v) for b, v in zip(by, key, strict=True)}
+        row_values: list[Any] = []
+        for lb in ordered:
+            vals = cells[key].get(lb)
+            entry[lb] = _agg_value(vals, agg, decimals) if vals else None
+            if vals:
+                row_values.extend(vals)
+                col_values[lb].extend(vals)
+        entry["total"] = _agg_value(row_values, agg, decimals)
+        grand.extend(row_values)
+        rows.append(entry)
+    totals = {lb: (_agg_value(v, agg, decimals) if v else None) for lb, v in col_values.items()}
+    totals["total"] = _agg_value(grand, agg, decimals)
+    a.append(f"cells are {agg} of '{column}'" if column is not None else "cells are row counts")
+    a.append("an empty cell (no rows for that combination) is null; totals use the same aggregate over every underlying value")
+    return ok({"columns": by + ordered + ["total"], "rows": rows, "totals": totals, "row_count": len(rows)}, assumptions=a)
+
+
+def _running(t: Table, p: dict[str, Any]) -> dict[str, Any]:
+    a, w = list(t.assumptions), []
+    column = _metric(t, p, a)
+    by = _by(t, p, required=False)
+    decimals = _dec_note(p, a)
+    acc: dict[tuple[Any, ...], Decimal] = {}
+    rows = []
+    for r in t.rows:
+        key = tuple(r[b] for b in by)
+        acc[key] = acc.get(key, Decimal(0)) + (r[column] if r[column] is not None else Decimal(0))
+        rows.append({**r, "running": Decimal(_out(acc[key], decimals))})
+    a.append("rows are accumulated in the order given; a blank cell adds nothing")
+    result: dict[str, Any] = {"items": _echo(rows, _cols(t, p) + ["running"], w), "count": len(rows), "column": column, "total": _out(sum(acc.values(), Decimal(0)), decimals)}
+    if by:
+        result["by"] = by
+        result["totals"] = [{**{b: _plain(v) for b, v in zip(by, key, strict=True)}, "total": _out(v, decimals)} for key, v in acc.items()]
+    return ok(result, assumptions=a, warnings=w)
+
+
+def _outliers(t: Table, p: dict[str, Any]) -> dict[str, Any]:
+    a, w = list(t.assumptions), []
+    column = _metric(t, p, a)
+    decimals = _dec_note(p, a)
+    present = [(i, r) for i, r in enumerate(t.rows, 1) if r[column] is not None]
+    if len(present) < 4:
+        raise ToolError(f"the IQR rule needs at least 4 numeric values; '{column}' has {len(present)}")
+    xs = sorted(r[column] for _i, r in present)
+    n = len(xs)
+    q1, q3 = _median(xs[: n // 2]), _median(xs[(n + 1) // 2 :])
+    iqr = q3 - q1
+    lo, hi = q1 - _IQR_MULTIPLIER * iqr, q3 + _IQR_MULTIPLIER * iqr
+    flagged = [{"row": i, "value": _dec_str(r[column]), "side": "low" if r[column] < lo else "high", **r} for i, r in present if r[column] < lo or r[column] > hi]
+    a.append("Tukey hinges: Q1 and Q3 are the medians of the lower and upper halves (the middle value excluded for an odd count); fences are Q1 - 1.5*IQR and Q3 + 1.5*IQR")
+    result = {"column": column, "count": n, "q1": _out(q1, decimals), "q3": _out(q3, decimals), "iqr": _out(iqr, decimals), "lower_fence": _out(lo, decimals), "upper_fence": _out(hi, decimals), "multiplier": _dec_str(_IQR_MULTIPLIER), "outliers": _echo(flagged, ["row", "value", "side"] + t.columns, w), "outlier_count": len(flagged)}
+    return ok(result, assumptions=a, warnings=w)
+
+
+def _to_csv(t: Table, p: dict[str, Any]) -> dict[str, Any]:
+    a = list(t.assumptions)
+    cols = _cols(t, p)
+    delimiter = p.get("delimiter") or ","
+    if len(delimiter) != 1:
+        raise ToolError("'delimiter' must be a single character")
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
+    writer.writerow(cols)
+    for r in t.rows:
+        writer.writerow(["" if r[c] is None else _label(r[c]) for c in cols])
+    a.append("numbers are written in plain decimal form (no thousands separators or symbols); blanks are empty cells")
+    return ok({"csv": buf.getvalue(), "count": len(t.rows), "columns": cols}, assumptions=a)
+
+
+_LIST_MODES = {"set_ops": _set_ops, "group_by": _group_by, "aggregate": _aggregate, "pick_fields": _pick_fields, "flatten": _flatten, "unflatten": _unflatten, "paginate": _paginate, "find_duplicates": _find_duplicates, "sort_by": _sort_by, "chunk": _chunk}
+_TABLE_MODES = {"filter": _filter, "pivot": _pivot, "running": _running, "outliers": _outliers, "summarize": _summarize, "to_csv": _to_csv}
+
+
 @tool
 def collections(mode: str = "set_ops", **params: Any) -> dict[str, Any]:
-    """List/record utilities. Modes: set_ops, group_by, aggregate, pick_fields, flatten, unflatten, paginate, find_duplicates, sort_by, chunk."""
+    """List/record utilities. Modes: set_ops, group_by, aggregate, pick_fields, flatten, unflatten, paginate, find_duplicates, sort_by, chunk, filter, pivot, running, outliers, summarize, to_csv."""
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
-    return {"set_ops": _set_ops, "group_by": _group_by, "aggregate": _aggregate, "pick_fields": _pick_fields, "flatten": _flatten, "unflatten": _unflatten, "paginate": _paginate, "find_duplicates": _find_duplicates, "sort_by": _sort_by, "chunk": _chunk}[mode](p)
+    if mode in _TABLE_MODES:
+        return _TABLE_MODES[mode](_load(p), p)
+    notes = _inline_csv(mode, p)
+    out = _LIST_MODES[mode](p)
+    if notes:
+        out = _jsonify(out)
+        out["assumptions"] = notes + out["assumptions"]
+    return out
 
-#: Shared fixture for the documented examples below.
+#: Shared fixtures for the documented examples below.
+_EX_CSV = """region,rep,amount,date
+north,Asha,"1,200.50",2026-01-05
+south,Bo,890.00,2026-01-06
+north,Asha,430.25,2026-01-07
+east,Chen,2100.00,2026-01-08
+south,Bo,75.75,2026-01-09
+"""
+_EX_SALES = "day,sales\n" + "\n".join(f"d{i},{v}" for i, v in enumerate([12, 15, 11, 14, 13, 16, 12, 15, 14, 95], 1)) + "\n"
 _EX_ORDERS = [{"id": "A-1", "region": "north", "amount": "1200.50", "rep": {"name": "Asha"}}, {"id": "A-2", "region": "south", "amount": "890.00", "rep": {"name": "Bo"}}, {"id": "A-3", "region": "north", "amount": "430.25", "rep": {"name": "Asha"}}, {"id": "A-4", "region": "east", "amount": "2100.00", "rep": {"name": "Chen"}}, {"id": "A-5", "region": "south", "amount": "75.75", "rep": {"name": "Bo"}}]
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
@@ -346,8 +887,8 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "set_ops", "a": [{"sku": "A1", "qty": 2}, {"sku": "B2", "qty": 1}], "b": [{"sku": "B2", "qty": 9}], "op": "difference", "key": "sku"},
         },
         {
-            "caption": "Both sides must be lists.",
-            "args": {"mode": "set_ops", "a": ["x"], "b": "y"},
+            "caption": "Both sides must be lists or CSV text.",
+            "args": {"mode": "set_ops", "a": ["x"], "b": {"y": 1}},
         },
         {
             "caption": "An unknown operation.",
@@ -362,6 +903,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Grouping on a nested path, keeping the members.",
             "args": {"mode": "group_by", "items": _EX_ORDERS, "key": "rep.name", "include_items": True},
+        },
+        {
+            "caption": "The same grouping over CSV text: delimiter, header and field types are detected and stated.",
+            "args": {"mode": "group_by", "items": _EX_CSV, "key": "region", "agg_field": "amount", "agg": ["sum", "count"], "include_items": False},
         },
         {
             "caption": "`items` must be a list.",
@@ -382,8 +927,8 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "aggregate", "items": _EX_ORDERS, "field": "region", "ops": ["count", "count_distinct", "list"]},
         },
         {
-            "caption": "`items` must be a list.",
-            "args": {"mode": "aggregate", "items": "1,2,3"},
+            "caption": "`items` must be a list or CSV text.",
+            "args": {"mode": "aggregate", "items": {"a": 1}},
         },
         {
             "caption": "An unknown aggregate.",
@@ -454,8 +999,8 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "paginate", "items": _EX_ORDERS, "per_page": 0},
         },
         {
-            "caption": "`items` must be a list.",
-            "args": {"mode": "paginate", "items": "abc"},
+            "caption": "`items` must be a list or CSV text.",
+            "args": {"mode": "paginate", "items": {"a": 1}},
         },
     ],
     "find_duplicates": [
@@ -468,8 +1013,8 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "find_duplicates", "items": _EX_ORDERS, "key": "rep.name"},
         },
         {
-            "caption": "`items` must be a list.",
-            "args": {"mode": "find_duplicates", "items": "abc"},
+            "caption": "`items` must be a list or CSV text.",
+            "args": {"mode": "find_duplicates", "items": {"a": 1}},
         },
     ],
     "sort_by": [
@@ -486,8 +1031,8 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "sort_by", "items": _EX_ORDERS},
         },
         {
-            "caption": "`items` must be a list.",
-            "args": {"mode": "sort_by", "items": "abc", "key": "id"},
+            "caption": "`items` must be a list or CSV text.",
+            "args": {"mode": "sort_by", "items": {"a": 1}, "key": "id"},
         },
     ],
     "chunk": [
@@ -504,8 +1049,92 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "chunk", "items": [1, 2, 3]},
         },
         {
-            "caption": "`items` must be a list.",
-            "args": {"mode": "chunk", "items": "abc", "size": 2},
+            "caption": "`items` must be a list or CSV text.",
+            "args": {"mode": "chunk", "items": {"a": 1}, "size": 2},
+        },
+    ],
+    "filter": [
+        {
+            "caption": "Rows where the amount is at least 500 — compared as numbers, not strings.",
+            "args": {"mode": "filter", "items": _EX_CSV, "where": [{"field": "amount", "op": "gte", "value": 500}]},
+        },
+        {
+            "caption": "Two predicates, both required, over records; only some fields echoed.",
+            "args": {"mode": "filter", "items": _EX_ORDERS, "where": [{"field": "region", "op": "in", "value": ["north", "south"]}, {"field": "amount", "op": "lt", "value": "1000"}], "columns": ["id", "amount"]},
+        },
+        {
+            "caption": "An op the tool does not know.",
+            "args": {"mode": "filter", "items": _EX_CSV, "where": [{"field": "rep", "op": "like", "value": "A%"}]},
+        },
+    ],
+    "pivot": [
+        {
+            "caption": "Regions down, reps across, amounts summed, with row and column totals.",
+            "args": {"mode": "pivot", "items": _EX_CSV, "by": "region", "pivot_columns": "rep", "column": "amount"},
+        },
+        {
+            "caption": "Counting rows instead of summing: reps down, regions across.",
+            "args": {"mode": "pivot", "items": _EX_CSV, "by": "rep", "pivot_columns": "region", "agg": "count"},
+        },
+        {
+            "caption": "`pivot_columns` is required.",
+            "args": {"mode": "pivot", "items": _EX_CSV, "by": "region", "column": "amount"},
+        },
+    ],
+    "running": [
+        {
+            "caption": "A cumulative total down the table.",
+            "args": {"mode": "running", "items": _EX_CSV, "column": "amount", "columns": ["date", "amount"]},
+        },
+        {
+            "caption": "Restarting the running total per region.",
+            "args": {"mode": "running", "items": _EX_CSV, "column": "amount", "by": "region", "columns": ["region", "amount"]},
+        },
+        {
+            "caption": "A text field cannot accumulate.",
+            "args": {"mode": "running", "items": _EX_CSV, "column": "rep"},
+        },
+    ],
+    "outliers": [
+        {
+            "caption": "Ten days of sales, one of them wildly off: the IQR fences and the row that breaks them.",
+            "args": {"mode": "outliers", "items": _EX_SALES, "column": "sales"},
+        },
+        {
+            "caption": "Fences rounded to two decimals; the only numeric field is assumed.",
+            "args": {"mode": "outliers", "items": "v\n1.5\n2.25\n2.5\n3.75\n4\n40\n", "decimals": 2},
+        },
+        {
+            "caption": "Too few values for quartiles.",
+            "args": {"mode": "outliers", "items": "v\n1\n2\n3\n", "column": "v"},
+        },
+    ],
+    "summarize": [
+        {
+            "caption": "A CSV with thousands separators: every field typed, every numeric field totalled exactly.",
+            "args": {"mode": "summarize", "items": _EX_CSV},
+        },
+        {
+            "caption": "Blank rows and `N/A` cells are skipped and counted, not silently zeroed.",
+            "args": {"mode": "summarize", "items": "name,score\nAnn,10\n,\nBob,N/A\n\nCid,30\n"},
+        },
+        {
+            "caption": "A field the table does not have.",
+            "args": {"mode": "summarize", "items": _EX_CSV, "columns": ["amount", "total"]},
+        },
+    ],
+    "to_csv": [
+        {
+            "caption": "Records out as CSV text, numbers in plain decimal form.",
+            "args": {"mode": "to_csv", "items": _EX_ORDERS, "columns": ["id", "region", "amount"]},
+        },
+        {
+            "caption": "Only some fields, semicolon-separated.",
+            "args": {"mode": "to_csv", "items": _EX_ORDERS, "columns": ["id", "amount"], "delimiter": ";"},
+        },
+        {
+            "caption": "A field the records do not have.",
+            "args": {"mode": "to_csv", "items": _EX_ORDERS, "columns": ["id", "total"]},
         },
     ],
 }
