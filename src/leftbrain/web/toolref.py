@@ -1036,7 +1036,7 @@ DATETIME = ToolDoc(
                 "NETWORKDAYS). Weekends are configurable — pass `weekend: [friday, saturday]` for the "
                 "Gulf working week — and a `region` (plus optional `subdiv`) pulls in that country’s "
                 "public holidays. The response lists the holidays it skipped and, for short ranges, "
-                "every working date."
+                "every working date. The range is capped at 3 660 days (about ten years)."
             ),
             params=(
                 Param("start", "Start of the range.", required=True),
@@ -1108,8 +1108,9 @@ DATETIME = ToolDoc(
             description=(
                 "Takes an RFC 5545 RRULE, or a plain-English phrase it converts to one — `every weekday`, "
                 "`every other tuesday`, `every 2nd tuesday`, `every 15th of month`, `month end` — and "
-                "lists the occurrences from `start`. Bound it with `count` or `until`; otherwise output "
-                "stops at `limit` and says so in `warnings`. The RRULE actually used is echoed back."
+                "lists the occurrences from `start`. Bound it with `count` or `until`. Output stops at "
+                "`limit` whatever `count` says — a `count` of 1 000 000 returns 100 — and then "
+                "`truncated` is `true` and `warnings` says so. The RRULE actually used is echoed back."
             ),
             params=(
                 Param("rule", "RRULE string or a recognised phrase.", required=True),
@@ -1610,7 +1611,7 @@ NUMBERS = ToolDoc(
                 "(a list, or a `{label: weight}` map) or `percentages`. Leftover minor units go to the "
                 "largest fractional remainders by default; `method: first` or `last` puts them all in "
                 "one place instead. Each item reports its exact unrounded share and whether it was "
-                "adjusted, so the arithmetic is auditable."
+                "adjusted, so the arithmetic is auditable. `parts` is capped at 10 000."
             ),
             params=(
                 Param("total", "The amount to divide.", required=True),
@@ -1629,7 +1630,9 @@ NUMBERS = ToolDoc(
                 "Builds a sequence and returns its terms, count, sum and last term — all as exact "
                 "decimals. `kind` selects the family: `arithmetic`, `geometric`, `range`, `fibonacci`, "
                 "`primes`, `squares`. Arithmetic sequences take either `n` or an `end`; sequences are "
-                "capped at 10 000 terms."
+                "capped at 10 000 terms, and separately at 1 000 digits in the largest term — "
+                "`geometric` with ratio 2 and n 10 000 ends at 2^10000, which is refused with "
+                "`too_large`."
             ),
             params=(
                 Param("kind", "`arithmetic`, `geometric`, `range`, `fibonacci`, `primes`, `squares`.", default="`arithmetic`"),
@@ -1900,8 +1903,9 @@ TEXT = ToolDoc(
             description=(
                 "Runs a regular expression over the text and returns each match with its span, "
                 "positional groups and named groups, plus whether the pattern matched the whole string. "
-                "Flags are given as letters: `i`, `m`, `s`, `x`, `u`, `a`. Output is capped by `limit` "
-                "and the cap is reported in `warnings`."
+                "Flags are given as letters: `i`, `m`, `s`, `x`, `u`, `a`. `count` is the total number of "
+                "matches in the text, not the number listed: when there are more than `limit`, "
+                "`returned` says how many came back, `truncated` is `true` and `warnings` says so."
             ),
             params=(
                 Param("text", "The text to search.", required=True),
@@ -1916,7 +1920,9 @@ TEXT = ToolDoc(
             description=(
                 "Replaces matches and reports how many substitutions were made and whether anything "
                 "changed at all — the part a blind `sub()` never tells you. Backreferences (`\\1`) and "
-                "named references work in the replacement; `count` limits how many are replaced."
+                "named references work in the replacement; `count` limits how many are replaced. A "
+                "replacement that would produce more than 200 000 characters is refused with "
+                "`too_large` rather than returned."
             ),
             params=(
                 Param("text", "The text to transform.", required=True),
@@ -1933,7 +1939,8 @@ TEXT = ToolDoc(
                 "Compares two strings by line, word or character and returns a similarity ratio, the "
                 "number of units added and removed, an operation list with both sides and their ranges, "
                 "and — for line granularity — a unified diff. Use it instead of asking a model whether "
-                "two documents differ."
+                "two documents differ. Comparison is quadratic, so each side is capped at 10 000 "
+                "lines, words or characters."
             ),
             params=(
                 Param("a", "The original text.", required=True),
@@ -2270,7 +2277,9 @@ COLLECTIONS = ToolDoc(
                 "or `avg`, `min`, `max`, `median`, `count`) of `column`. Without `column` the cells count "
                 "rows. A combination with no rows is `null`, not zero. Every row carries a `total`, and "
                 "`totals` holds the column totals and the grand total — the same aggregate over every "
-                "underlying value, so an `avg` total is the true mean, not a mean of means."
+                "underlying value, so an `avg` total is the true mean, not a mean of means. "
+                "`pivot_columns` with more than 200 distinct values is refused with `too_large`: "
+                "the table would have that many columns."
             ),
             params=(
                 Param("items", "The records, or CSV text.", required=True),
@@ -2394,7 +2403,8 @@ VALIDATE = ToolDoc(
                 "checking on. Every violation comes back with its JSON path, the validator that "
                 "failed and the message — a failing document is a successful call (`ok: true`, "
                 "`valid: false`), because “the document is invalid” is an answer, not an error. A "
-                "schema that is itself malformed *is* an error."
+                "schema that is itself malformed *is* an error, as is one that nests more than 50 levels "
+                "deep or refers to itself (`{\"$ref\": \"#\"}`), which no validator can terminate on."
             ),
             params=(
                 Param("schema", "The JSON Schema.", required=True),

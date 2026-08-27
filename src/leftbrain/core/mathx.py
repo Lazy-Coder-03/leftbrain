@@ -11,7 +11,10 @@ attribute access) and evaluated under a timeout.
 
 from __future__ import annotations
 
+import ast
+import math as _pymath
 import re
+import sys
 import threading
 from collections.abc import Callable
 from fractions import Fraction
@@ -27,7 +30,7 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
-from ..contract import Ambiguous, Timeout, ToolError, Unsupported, ok, tool
+from ..contract import Ambiguous, Timeout, TooLarge, ToolError, Unsupported, ok, tool
 
 MODES = (
     "eval",
@@ -48,6 +51,15 @@ MODES = (
 )
 DEFAULT_TIMEOUT = 20.0
 MAX_EXPR_LEN = 5000
+
+#: Digits a result can be rendered with at all. CPython refuses to ``str()`` an integer
+#: longer than this (``sys.set_int_max_str_digits``), so a bigger answer cannot be returned
+#: even if it were computed - and computing it is what took the hosted server down (#28 §1).
+MAX_RESULT_DIGITS = sys.get_int_max_str_digits() or 4300
+#: Significant digits the decimal form may be asked for.
+MAX_PRECISION = 5000
+#: Terms in a series expansion.
+MAX_SERIES_ORDER = 50
 
 # --------------------------------------------------------------------------- #
 # Parsing
@@ -280,12 +292,153 @@ def _preprocess(src: str) -> tuple[str, list[str]]:
     return s, assumptions
 
 
+# --------------------------------------------------------------------------- #
+# Result-size estimate (#28 SS2g)
+#
+# SymPy evaluates `Integer ** Integer` while *parsing*, so `9^9^9^9` never returns and
+# no timeout inside the tool can stop it - CPython delivers async exceptions only at a
+# bytecode boundary and `int.__pow__` never reaches one. The only fix that works at this
+# layer is to not start: walk the expression as a Python AST first and estimate, in
+# log10 space, how many digits the answer would have. It costs microseconds and never
+# multiplies anything.
+# --------------------------------------------------------------------------- #
+
+_ASTRONOMICAL = float("inf")
+#: Digits a *value* may have before we stop materialising it and switch to estimating.
+_VALUE_DIGITS = 15
+#: An exponent with more digits than this makes the result beyond any bound worth naming.
+_UNBOUNDED_EXPONENT_DIGITS = 12
+#: Functions that grow fast enough for their argument alone to decide the answer's size.
+_GROWERS = ("factorial", "gamma", "exp")
+_LOG10_E = _pymath.log10(_pymath.e)
+
+
+def _digits(v: float) -> float:
+    """log10 of a magnitude, floored at 0 - a value below 1 does not shrink a result."""
+    return max(0.0, _pymath.log10(abs(v))) if v else 0.0
+
+
+def _value_of(node: ast.AST) -> float | int | None:
+    """What a literal-only node evaluates to, or ``None`` when it is not literal or too big.
+
+    Nothing here can produce a large intermediate: every operation is size-checked in
+    log space before it runs.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, (int, float)) and not isinstance(node.value, bool) else None
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        v = _value_of(node.operand)
+        return None if v is None else (-v if isinstance(node.op, ast.USub) else v)
+    if isinstance(node, ast.BinOp):
+        a, b = _value_of(node.left), _value_of(node.right)
+        if a is None or b is None:
+            return None
+        op = type(node.op)
+        try:
+            if op is ast.Add:
+                return a + b
+            if op is ast.Sub:
+                return a - b
+            if op is ast.Mult:
+                return a * b if _digits(a) + _digits(b) <= _VALUE_DIGITS else None
+            if op is ast.Div:
+                return a / b if b else None
+            if op is ast.Pow:
+                return a**b if b <= 0 or b * _digits(a) <= _VALUE_DIGITS else None
+        except (ArithmeticError, ValueError, TypeError):
+            return None
+    return None
+
+
+def _size_of(node: ast.AST) -> float | None:
+    """Estimated digits in what ``node`` evaluates to.
+
+    ``None`` when the node is not literal - a symbol, an unknown function - and the size
+    therefore cannot be estimated at all; ``inf`` when it is past any useful bound.
+    """
+    value = _value_of(node)
+    if value is not None:
+        return _digits(value)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return _size_of(node.operand)
+    if isinstance(node, ast.BinOp):
+        left, right = _size_of(node.left), _size_of(node.right)
+        if left is None or right is None:
+            return None
+        op = type(node.op)
+        if op in (ast.Add, ast.Sub):
+            return max(left, right) + 1
+        if op is ast.Mult:
+            return left + right
+        if op is ast.Div:
+            return left
+        if op is ast.Pow:
+            exponent = _value_of(node.right)
+            if exponent is None:  # the exponent itself is already too big to write down
+                return _ASTRONOMICAL if right > _UNBOUNDED_EXPONENT_DIGITS else 10**right * left
+            return 0.0 if exponent <= 0 else exponent * left
+        return None
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _GROWERS:
+        if len(node.args) != 1:
+            return None
+        n = _value_of(node.args[0])
+        if n is None:
+            return None if _size_of(node.args[0]) is None else _ASTRONOMICAL
+        if node.func.id == "exp":
+            return max(0.0, n * _LOG10_E)
+        n = n - 1 if node.func.id == "gamma" else n  # gamma(n) = (n-1)!
+        if n < 2:
+            return 0.0
+        # Stirling: log10(n!) = n*log10(n/e) + log10(2*pi*n)/2
+        return n * (_pymath.log10(n) - _LOG10_E) + _pymath.log10(2 * _pymath.pi * n) / 2
+    return None
+
+
+def _check_result_size(s: str) -> None:
+    """Refuse an expression whose answer could not be returned, before evaluating it."""
+    try:
+        tree = ast.parse(s.replace("^", "**"), mode="eval")
+    except (SyntaxError, ValueError, MemoryError, RecursionError):
+        return  # not Python-shaped (implicit multiplication, factorials); SymPy will judge it
+    try:
+        digits = _size_of(tree.body)
+    except RecursionError:
+        return
+    if digits is None or digits <= MAX_RESULT_DIGITS:
+        return
+    estimated = f"more than 10^{_UNBOUNDED_EXPONENT_DIGITS}" if digits == _ASTRONOMICAL else int(digits)
+    raise TooLarge(
+        f"the result would have {estimated if isinstance(estimated, str) else format(estimated, ',')} digits; "
+        f"the most that can be returned is {MAX_RESULT_DIGITS:,}",
+        details={"estimated_digits": estimated, "limit_digits": MAX_RESULT_DIGITS},
+        hint="Reduce the exponent, or evaluate a smaller sub-expression.",
+    )
+
+
+def _bounded(raw: Any, field: str, cap: int, unit: str) -> int:
+    """A whole number in 1..cap. Over the cap is `too_large`; anything else is a bad value."""
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        raise ToolError(f"{field} must be a whole number of {unit}") from None
+    if n < 1:
+        raise ToolError(f"{field} must be at least 1")
+    if n > cap:
+        raise TooLarge(
+            f"{field} is {n:,} {unit}; the most this mode returns is {cap:,}",
+            details={field: n, "limit": cap},
+            hint=f"Ask for at most {cap:,} {unit}.",
+        )
+    return n
+
+
 def _check_safe(s: str) -> None:
     if len(s) > MAX_EXPR_LEN:
         raise ToolError(f"expression too long (> {MAX_EXPR_LEN} chars)")
     m = _FORBIDDEN.search(s)
     if m:
         raise ToolError(f"disallowed token in expression: {m.group(0)!r}")
+    _check_result_size(s)
 
 
 def _parse(
@@ -688,7 +841,7 @@ def _mode_series(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     var = _symbol(p.get("var"), expr)
     at = _num(p.get("at", 0))
-    order = int(p.get("order", 6))
+    order = _bounded(p.get("order", 6), "order", MAX_SERIES_ORDER, "terms")
     s = sp.series(expr, var, at, order)
     d = _describe(s, p.get("precision", 15))
     d["polynomial"] = sp.sstr(s.removeO())
@@ -1118,6 +1271,8 @@ def math(mode: str = "eval", **params: Any) -> dict[str, Any]:
     needs_expr = mode not in ("solve", "ode", "matrix", "stats")
     if needs_expr and not p.get("expr"):
         raise ToolError(f"mode '{mode}' needs 'expr'")
+    if "precision" in p:
+        p["precision"] = _bounded(p["precision"], "precision", MAX_PRECISION, "significant digits")
 
     dispatch: dict[str, Callable[[], dict[str, Any]]] = {
         "eval": lambda: _mode_eval(p, exact_only=False),
@@ -1172,6 +1327,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Anything that looks like code execution is refused by the parser guard.",
             "args": {"mode": "eval", "expr": "__import__(1)"},
+        },
+        {
+            "caption": "A power tower is refused from the expression alone, before anything is evaluated - the answer would have more digits than can be written down.",
+            "args": {"mode": "eval", "expr": "9^9^9^9"},
         },
     ],
     "exact": [

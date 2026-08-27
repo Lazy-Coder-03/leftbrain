@@ -93,6 +93,17 @@ this shape: `invalid_input`, the offending parameters under `details.parameters`
 An `internal` error never ships a stack trace to the caller — it is logged server-side. Set
 `LEFTBRAIN_DEBUG=1` to get a `trace` field back in the response as well.
 
+### Limits
+
+Every mode that can be asked for something enormous refuses it *before* computing, in
+microseconds, with `too_large` naming the limit and the knob to turn: `math` estimates the
+answer's digit count from the expression (so `9^9^9^9` never starts), sequences cap their largest
+term, `diff` caps the units per side, `pivot` caps its column count, and so on — each one is
+documented on that mode's [reference page](https://leftbrain.idlesync.in/docs/tools). Behind them
+sits a 256 KB ceiling on any successful response (`LEFTBRAIN_MAX_RESPONSE_BYTES`). When a result
+*is* trimmed rather than refused, the response says so: `truncated: true` and a line in
+`warnings`, with the untrimmed total still reported.
+
 ## Install
 
 ```bash

@@ -44,6 +44,7 @@ Rules:
 from __future__ import annotations
 
 import functools
+import json
 import logging
 import os
 import traceback
@@ -82,6 +83,14 @@ CODES: dict[str, bool] = {
 }
 
 _OFF = {"", "0", "false", "no", "off"}
+
+
+def max_response_bytes() -> int:
+    """Serialised size a successful result may reach. ``LEFTBRAIN_MAX_RESPONSE_BYTES`` overrides."""
+    try:
+        return int(os.environ.get("LEFTBRAIN_MAX_RESPONSE_BYTES") or 0) or 256 * 1024
+    except ValueError:
+        return 256 * 1024
 
 
 def debug_enabled() -> bool:
@@ -220,6 +229,30 @@ def schema_rejection(tool_name: str, errors: list[dict[str, Any]]) -> dict[str, 
     )
 
 
+def _size_checked(out: Any, name: str) -> Any:
+    """The last line of defence: a result too big to send is a failure, not a 116 MB response.
+
+    Every mode with a knob to turn should refuse earlier and say which knob (that is what
+    `too_large` is for); this only catches what slipped past one.
+    """
+    if not (isinstance(out, dict) and out.get("ok") is True):
+        return out
+    limit = max_response_bytes()
+    try:
+        size = len(json.dumps(out, default=str))
+    except (TypeError, ValueError, RecursionError):  # pragma: no cover - defensive
+        return out
+    if size <= limit:
+        return out
+    log.warning("%s produced a %d-byte result; the limit is %d", name, size, limit)
+    return fail(
+        "too_large",
+        f"the result is {size:,} bytes; the most that can be returned is {limit:,}",
+        details={"tool": name, "response_bytes": size, "limit_bytes": limit},
+        hint="Narrow the input - fewer items, a shorter range, or a lower count.",
+    )
+
+
 def tool(fn: Callable[..., Any]) -> Callable[..., dict[str, Any]]:
     """Decorator: convert exceptions raised by a core function into the contract.
 
@@ -231,7 +264,7 @@ def tool(fn: Callable[..., Any]) -> Callable[..., dict[str, Any]]:
     @functools.wraps(fn)
     def wrapper(*args: Any, **kwargs: Any) -> dict[str, Any]:
         try:
-            return fn(*args, **kwargs)
+            return _size_checked(fn(*args, **kwargs), getattr(fn, "__name__", "tool"))
         except ToolError as e:
             return fail(e.code, e.message, **e.extra)
         except (ValueError, TypeError, KeyError, ZeroDivisionError, OverflowError) as e:

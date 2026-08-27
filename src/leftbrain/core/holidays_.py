@@ -7,9 +7,12 @@ from typing import Any
 
 import holidays as _hol
 
-from ..contract import ToolError, ok, tool
+from ..contract import TooLarge, ToolError, ok, tool
 
 MODES = ("list", "check", "next", "countries", "subdivisions")
+
+#: Upcoming holidays `next` will return; the search window is two calendar years.
+MAX_NEXT = 100
 
 
 def _country(region: str) -> Any:
@@ -68,9 +71,19 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
     if mode == "next":
         d, _, a = parse_dt(p.get("date") or "today", locale=p.get("locale"), field="date")
         n = int(p.get("n", 5))
+        if n > MAX_NEXT:
+            raise TooLarge(
+                f"n is {n:,}; the most this mode returns is {MAX_NEXT}",
+                details={"n": n, "limit": MAX_NEXT},
+                hint=f"Ask for at most {MAX_NEXT}, or use mode 'list' with a year.",
+            )
         hm = holiday_map(code, {d.year, d.year + 1}, subdiv, p.get("categories"))
-        upcoming = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A"), "days_away": (k - d.date()).days} for k, v in sorted(hm.items()) if k >= d.date()][:n]
-        return ok({"date": d.date().isoformat(), "next": upcoming}, assumptions=a)
+        found = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A"), "days_away": (k - d.date()).days} for k, v in sorted(hm.items()) if k >= d.date()]
+        upcoming = found[:n]
+        # The window is this year and the next, so asking for more than it holds is not
+        # an empty answer - say the list is short because the calendar ran out (#28 SS2f).
+        short = [f"only {len(upcoming)} holidays fall in the {d.year}-{d.year + 1} window; {n} were asked for"] if len(upcoming) < n else []
+        return ok({"date": d.date().isoformat(), "next": upcoming, "count": len(upcoming)}, assumptions=a, warnings=short)
     years = p.get("years") or [p.get("year") or date.today().year]
     if isinstance(years, (int, str)):
         years = [int(years)]
@@ -137,6 +150,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "next": [
+        {
+            "caption": "`n` beyond the cap is refused; the search window is only two calendar years.",
+            "args": {"mode": "next", "region": "IN", "n": 100000},
+        },
         {
             "caption": "The next three Indian holidays after a fixed date.",
             "args": {"mode": "next", "region": "IN", "date": "2025-08-01", "n": 3},

@@ -17,7 +17,21 @@ from decimal import (
 from fractions import Fraction
 from typing import Any
 
-from ..contract import ToolError, ok, tool
+from ..contract import TooLarge, ToolError, ok, tool
+
+#: Digits the largest term of a generated sequence may have.
+MAX_TERM_DIGITS = 1000
+#: Parts an allocation may be split into.
+MAX_PARTS = 10_000
+
+
+def _log10_abs(v: Any) -> float:
+    """log10 of a magnitude, 0 for values at or below 1 - they never grow a term."""
+    try:
+        return max(0.0, math.log10(abs(float(v)))) if v else 0.0
+    except (ValueError, OverflowError):  # pragma: no cover - defensive
+        return 0.0
+
 
 MODES = ("compare", "round", "format", "allocate", "sequence", "parse", "to_words", "semver")
 
@@ -318,6 +332,12 @@ def _allocate(p: dict[str, Any]) -> dict[str, Any]:
         n = int(p.get("parts") or p.get("n") or 0)
         if n < 1:
             raise ToolError("allocate needs 'weights' (list) or 'parts' (int)")
+        if n > MAX_PARTS:
+            raise TooLarge(
+                f"{n:,} parts; the most that can be returned is {MAX_PARTS:,}",
+                details={"parts": n, "limit": MAX_PARTS},
+                hint=f"Split into at most {MAX_PARTS:,} parts.",
+            )
         weights = [Fraction(1)] * n
         assumptions.append(f"split equally into {n} parts")
     else:
@@ -394,6 +414,16 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
         ratio, _ = parse_number(p.get("ratio", 2))
         if n is None:
             raise ToolError("geometric needs 'n'")
+        # `n` is capped at 10 000 but the *terms* are not: 2, ratio 2, n 10 000 ends at
+        # 2^10000 and the response is 15 MB of digits (#28 SS2e).
+        last_digits = _log10_abs(start) + (n - 1) * _log10_abs(ratio)
+        if last_digits > MAX_TERM_DIGITS:
+            raise TooLarge(
+                f"the last term would have about {int(last_digits):,} digits; "
+                f"the limit is {MAX_TERM_DIGITS:,}",
+                details={"estimated_digits": int(last_digits), "limit_digits": MAX_TERM_DIGITS, "n": n},
+                hint="Lower 'n' or 'ratio'.",
+            )
         seq, cur = [], start
         for _ in range(n):
             seq.append(cur)
@@ -627,6 +657,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
     ],
     "allocate": [
         {
+            "caption": "A million parts is refused: the response would be 116 MB.",
+            "args": {"mode": "allocate", "total": 100, "parts": 1000000},
+        },
+        {
             "caption": "100 split three ways: two parts get 33.33, one gets 33.34, and the total is exact.",
             "args": {"mode": "allocate", "total": 100, "parts": 3},
         },
@@ -668,6 +702,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "sequence": [
+        {
+            "caption": "The term cap is by size as well as by count: ratio 2 over 10 000 terms ends at 2^10000.",
+            "args": {"mode": "sequence", "kind": "geometric", "start": 2, "ratio": 2, "n": 10000},
+        },
         {
             "caption": "An arithmetic sequence by count.",
             "args": {"mode": "sequence", "kind": "arithmetic", "start": 100, "step": 25, "n": 6},

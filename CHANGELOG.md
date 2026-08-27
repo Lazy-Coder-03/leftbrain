@@ -18,6 +18,45 @@ All notable changes to leftbrain are recorded here. The format follows
   nothing was computed). `contract.CODES` is the one list, and `TooLarge`, `ResourceExhausted`
   and `Busy` are raisable from a tool.
 
+- **Layer-0 size caps: the enormous is refused before it is computed** (#28 §2e/§2f/§2g). Every
+  one of these reached the engine before; `math.eval 9^9^9^9` took the hosted instance down for
+  ~35 minutes. Each now costs microseconds and comes back as `too_large` naming the limit and the
+  knob to turn:
+  - `math`: the expression is walked as an AST and the answer's size estimated in log10 space
+    before anything is evaluated — SymPy computes `Integer ** Integer` while *parsing*, so
+    `9^9^9^9`, `2^(2^100)`, `2^1000000`, `factorial(factorial(20))`, `gamma(10**10)` and
+    `exp(10^20)` never start. The bound is `sys.get_int_max_str_digits()` (4 300 by default),
+    which is the point beyond which CPython cannot render the integer at all. `precision` is
+    capped at 5 000 digits and `series` `order` at 50 terms.
+  - `numbers`: `sequence` caps the largest term at 1 000 digits (`geometric` ratio 2, n 10 000
+    ended at 2^10000 and returned 15 MB); `allocate` caps `parts` at 10 000 (1 000 000 returned
+    116 MB).
+  - `text`: `regex_replace` refuses an output over 200 000 characters; `diff` caps each side at
+    10 000 lines, words or characters (difflib is quadratic — 100 000 lines never returned).
+  - `collections`: `pivot` refuses more than 200 distinct pivot columns.
+  - `datetime`: `business_days` caps the range at 3 660 days; `now` and `convert_tz` cap the zone
+    list at 50.
+  - `holidays`: `next` caps `n` at 100.
+  - A global 256 KB ceiling on any successful response backs all of them up, configurable with
+    `LEFTBRAIN_MAX_RESPONSE_BYTES`. A mode with a knob should refuse earlier and say which knob;
+    this only catches what slipped past one.
+
+### Fixed
+
+- **Silent truncation now says so** (#28 §2f): `text.regex_match`'s `count` is the total number
+  of matches rather than the number returned — an agent reading `count` off a truncated response
+  got the limit and believed it was the answer. `returned` and `truncated` are new fields.
+  `datetime.recurrence` with `count=1000000` returned 100 occurrences with nothing said about it,
+  because a `count` larger than `limit` silenced the warning; it now sets `truncated` and warns.
+  `holidays.next` warns when the two-year search window holds fewer holidays than were asked for.
+- **A recursive JSON Schema is input, not a crash** (#28 §1): `validate.json_schema` with
+  `{"$ref": "#"}` or 200-deep `allOf` raised `RecursionError`, which surfaced as `internal` with
+  a traceback. Schemas nesting deeper than 50 levels are refused with `too_large`, and a `$ref`
+  cycle is `invalid_input` explaining that validation cannot terminate.
+- **`internal` errors no longer ship a stack trace to the caller** (#28 §4): the traceback named
+  server file paths in every response. It is logged server-side now; set `LEFTBRAIN_DEBUG=1` to
+  get the `trace` field back in the response as well.
+
 ### Changed
 
 - **A call that fails the input schema now answers in the contract** (#28 §4): `convert` with no
@@ -36,12 +75,6 @@ All notable changes to leftbrain are recorded here. The format follows
   as a result, not a transport error. `GET /keys/me` and `leftbrain-keys list` report `tools`
   (`null` for every tool). Existing keys have no scope and behave exactly as before; the
   `keys` table gains a nullable `scope` column on first start.
-
-### Fixed
-
-- **`internal` errors no longer ship a stack trace to the caller** (#28 §4): the traceback named
-  server file paths in every response. It is logged server-side now; set `LEFTBRAIN_DEBUG=1` to
-  get the `trace` field back in the response as well.
 
 - `math`: `round(...)` over an expression with `vars` failed at parse time ("Cannot convert
   expression to float") because it evaluated its argument before the variables were
