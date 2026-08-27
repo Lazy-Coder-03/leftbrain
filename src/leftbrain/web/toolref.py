@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from ..contract import schema_rejection
+from ..contract import CODES, schema_rejection
 from ..core import collections_, datetimex, geo_offline, holidays_, mathx, random_
 from ..core import color as color_mod
 from ..core import convert as convert_mod
@@ -531,6 +531,122 @@ _PAGE_LEAD = (
     "as everything else: `error: \"invalid_input\"`, the offending parameters under `details`, and "
     "`needs.missing` when something required was left out."
 )
+
+
+# --------------------------------------------------------------------------- #
+# The same reference, as JSON
+#
+# The HTML pages are for a person; an agent deciding whether leftbrain can answer its
+# question should not have to scrape them. These build the same data - the catalogue, the
+# schema, the wrapper docstrings - into something a client can read, and `/docs/tools`
+# serves it by content negotiation the way `/` already does.
+# --------------------------------------------------------------------------- #
+
+
+def _jsonable(value: Any) -> Any:
+    """Example arguments, safe to send as JSON.
+
+    `encode.json stringify` has an example whose argument is `1e999`, i.e. `inf` - it exists
+    precisely *because* JSON cannot spell that. Sending it as the string `"Infinity"` keeps
+    the example readable; sending the float is not possible, which is the example's point.
+    """
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return "NaN" if value != value else ("Infinity" if value > 0 else "-Infinity")
+    if isinstance(value, dict):
+        return {k: _jsonable(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    return value
+
+
+def _param_json(tool: ToolDoc, params: tuple[Param, ...], where: str) -> list[dict[str, Any]]:
+    return [
+        # The table prints an em dash where there is no default; JSON says null.
+        {"name": r.name, "type": r.type, "required": r.required, "doc": r.doc,
+         "default": None if r.default in ("", "—") else r.default}
+        for r in rows(tool, params, where)
+    ]
+
+
+def _mode_json(tool: ToolDoc, mode: Mode) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "name": mode.name,
+        "purpose": purpose_of(tool, mode),
+        "description": mode.description,
+        "parameters": _param_json(tool, mode.params, f"{tool.name}.{mode.name}"),
+        # The arguments only: an example's *response* is produced by running the tool, which
+        # is what makes the HTML page slow to build. A client can make the call itself.
+        "examples": [_jsonable(e.args) for e in examples_of(tool, mode)],
+    }
+    if mode.never_fails:
+        out["never_fails"] = mode.never_fails
+    return out
+
+
+def tool_json(name: str) -> dict[str, Any] | None:
+    """Everything the reference page says about one tool, minus the executed responses."""
+    tool = by_name(name)
+    if tool is None:
+        return None
+    out: dict[str, Any] = {
+        "name": tool.name,
+        "intro": tool.intro,
+        "when_to_use": list(tool.when),
+        "network": tool.network,
+        "related": tool.related,
+        "docs_url": f"/docs/tools/{tool.name}",
+    }
+    if tool.modes:
+        out["modes"] = [_mode_json(tool, mode) for mode in tool.modes]
+    else:
+        out["parameters"] = _param_json(tool, tool.params, tool.name)
+    return out
+
+
+def catalogue_json() -> dict[str, Any]:
+    """Every tool, with its one-liner and its mode names - the index, for a machine."""
+    described = {t.name: t for t in CATALOGUE}
+    listed = []
+    for name, description, _modes in TOOLS:
+        tool = described[name]
+        listed.append(
+            {
+                "name": name,
+                "description": description,
+                "modes": [m.name for m in tool.modes],
+                "network": tool.network,
+                "docs_url": f"/docs/tools/{name}",
+            }
+        )
+    # The four network tools have their own catalogue; TOOLS is the core list only.
+    for tool in EXTERNAL_CATALOGUE:
+        listed.append(
+            {
+                "name": tool.name,
+                "description": tool.intro.split(".")[0].strip(),
+                "modes": [m.name for m in tool.modes],
+                "network": True,
+                "docs_url": f"/docs/tools/{tool.name}",
+            }
+        )
+    return {
+        "version": _version(),
+        "count": len(listed),
+        "contract": {
+            "success": "{ok: true, result, assumptions[], warnings[], meta}",
+            "failure": "{ok: false, error, message, retryable, needs?, details?, hint?}",
+            "errors": sorted(CODES),
+            "retryable": sorted(code for code, yes in CODES.items() if yes),
+        },
+        "endpoints": {"core": "/mcp", "external": "/external/mcp"},
+        "tools": listed,
+    }
+
+
+def _version() -> str:
+    from .. import __version__
+
+    return __version__
 
 
 def tool_markdown(tool: ToolDoc) -> str:

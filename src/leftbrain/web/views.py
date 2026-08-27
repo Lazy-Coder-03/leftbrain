@@ -77,6 +77,10 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
 
     async def docs_page(request: Request) -> Response:
         slug = request.path_params.get("slug", "quickstart")
+        # `/docs/tools` is the one docs page an agent has a reason to read, so it answers
+        # in JSON to a client that did not ask for HTML - the same negotiation `/` does.
+        if slug == "tools" and not wants_html(request):
+            return JSONResponse(toolref_mod.catalogue_json())
         page = docs_mod.load_page(slug)
         if page is None:
             return fail_page(request, 404, "Page not found", "That docs page doesn't exist. Try the quickstart.")
@@ -93,6 +97,11 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
 
     async def tool_page(request: Request) -> Response:
         name = request.path_params["name"]
+        if not wants_html(request):
+            doc = toolref_mod.tool_json(name)
+            if doc is None:
+                return JSONResponse({"ok": False, "error": "unsupported", "message": f"no such tool: {name}"}, status_code=404)
+            return JSONResponse(doc)
         page = await run_in_threadpool(toolref_mod.tool_page, name)  # first build runs every example
         if page is None:
             return fail_page(request, 404, "No such tool", "leftbrain has fourteen tools; that isn't one of them.")

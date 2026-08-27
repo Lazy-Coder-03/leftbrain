@@ -594,7 +594,7 @@ def test_docs_tools_page_lists_every_tool(tmp_path):
     from leftbrain.web.tools_list import TOOLS
 
     with TestClient(make_app(tmp_path)) as c:
-        r = c.get("/docs/tools")
+        r = c.get("/docs/tools", headers={"Accept": "text/html"})
         assert r.status_code == 200
         for name, _desc, _modes in TOOLS:
             assert name in r.text

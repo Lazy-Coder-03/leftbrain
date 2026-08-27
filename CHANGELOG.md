@@ -6,6 +6,17 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`/docs/tools` answers a machine as well as a person.** `/docs/tools` and
+  `/docs/tools/<name>` now serve JSON to a client and HTML to a browser — the same content
+  negotiation `/` already used, so there is one URL per thing rather than two. The index lists
+  all eighteen tools (the four network ones included) with their modes and the contract's error
+  codes; a tool gives every mode's purpose, description, parameters with type, default and
+  required flag, and the example arguments. No key: discovery has to work before you have one.
+  `tools/list` over `/mcp` remains the authenticated, scope-aware route. `/` advertises the new
+  endpoint as `tools`.
+
 ## [0.3.0] - 2026-08-27
 
 ### Added
