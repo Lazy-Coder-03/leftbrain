@@ -19,7 +19,7 @@ Design rules:
 2. **Refuse ambiguity instead of guessing.** `IST`, `03/04/2025`, `ton`, `oz`, `KB` — each returns the concrete options rather than a silent assumption.
 3. **Surface every interpretation.** Each response carries `assumptions[]` ("read as DD/MM per locale IN") and `warnings[]` ("day clamped to month end").
 4. **Exact and decimal, together.** `sqrt(2)/2` *and* `0.7071…`, `7/4` *and* `1.75`, so the model never re-rounds.
-5. **Few tools, many modes.** 13 core tools, each with a `mode` parameter, so the tool list stays cheap on every turn.
+5. **Few tools, many modes.** 14 core tools, each with a `mode` parameter, so the tool list stays cheap on every turn.
 6. **Descriptions say *when*, not *what*.** The usual failure is the model not calling the tool.
 
 ## Tools
@@ -41,6 +41,7 @@ Design rules:
 | `random` | uuid, int, float, pick, shuffle, token, bool, sample | real randomness: UUID v4/v7, seeded ints, secure tokens/OTPs, A/B buckets |
 | `geo_offline` | tz_for_place, tz_for_coords, distance, country, zone_info | "Mumbai" → `Asia/Kolkata`, haversine distance, a country's zones — no network |
 | `encode` | hash, hmac, checksum, base64, hex, url, html, jwt_decode, json | SHA-256, HMAC, CRC32, base64 — models hallucinate all of these; `expected` → `matches` in constant time |
+| `color` | convert, describe, swatch, contrast, mix, harmony, nearest, simulate, grayscale | hex ↔ RGB ↔ HSL ↔ HSV ↔ CMYK with alpha, the nearest of the 148 CSS names by Lab ΔE, WCAG contrast with the lightness fix that passes, blends, hue harmonies, snapping to a brand palette, deuteranopia/protanopia/tritanopia, five greyscale methods, and a real PNG swatch to look at |
 
 ### External (`leftbrain-external`, network, key-less public APIs)
 

@@ -2,6 +2,7 @@
 
 from . import (
     collections_,
+    color,
     convert,
     datetimex,
     encode,
@@ -17,6 +18,7 @@ from . import (
 
 __all__ = [
     "collections_",
+    "color",
     "convert",
     "datetimex",
     "encode",

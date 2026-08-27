@@ -8,6 +8,16 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- **`color` tool** (14th core tool): `convert` between hex (3/4/6/8-digit), RGB, HSL, HSV/HSB,
+  naive CMYK and Lab with alpha preserved; `describe` names the nearest of the 148 CSS colours
+  by CIE76 ΔE and words the colour from fixed HSL bands; `swatch` returns a real PNG (stdlib
+  zlib, 16–256 px, one colour or two side by side); `contrast` gives the WCAG 2.x ratio,
+  AA/AAA for normal and large text and the smallest lightness change that passes; `mix`
+  blends in sRGB or Lab; `harmony` rotates hue for complementary, analogous, triadic and
+  split-complementary sets; `nearest` snaps to a caller's palette with the runner-up;
+  `simulate` shows deuteranopia, protanopia and tritanopia (Viénot–Brettel–Mollon 1999);
+  `grayscale` greys by rec709, rec601, lab, average or hsl with an optional ramp and strip.
+  Bare triples such as `58, 26, 241` are refused with `needs.options` (rgb, hsl, hsv).
 - `convert` `fuel_economy`: `mpg_us` / `mpg_uk` / `km_per_l` / `l_per_100km` with exact
   constants; a bare `mpg` is `ambiguous` (US or imperial gallon), and any conversion that crosses
   L/100 km states the inverse relation in `assumptions`.
