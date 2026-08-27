@@ -106,6 +106,40 @@ from a right answer. The refusal names the mode, lists what it does accept, and 
 closest match. Where two parameters are mutually exclusive (`significant` and `decimals`,
 `months` and `years`) the winner is stated in `assumptions` rather than chosen silently.
 
+### The 15-second ceiling
+
+Every `math`, `text`, `validate`, `collections` and `numbers` call runs in a **worker process**
+that can be killed, because a Python thread cannot. `int.__pow__`, `sre`'s matching loop and
+`difflib`'s inner loops are C code that never returns to the eval loop, so an async exception is
+never delivered, `SIGALRM` never fires, and — since the runaway holds the GIL — the whole
+process starves, `/healthz` included. That is how one `math.eval 9^9^9^9` took the hosted
+instance offline for 35 minutes. The layer-0 caps above refuse the obvious cases in
+microseconds; this is the backstop for what they cannot estimate.
+
+A call that reaches the deadline comes back as `timeout` with `stopped: "worker_terminated"`,
+the limit and the real elapsed time, and `retryable: false` — an identical retry costs the same
+15 seconds. A caller-supplied `timeout` is clamped to the ceiling. Under load, a call that waits
+too long for a free worker returns `busy`, which *is* retryable, rather than queueing behind a
+15-second wait.
+
+| variable | default | what it does |
+| --- | --- | --- |
+| `LEFTBRAIN_COMPUTE_TIMEOUT` | `15` | wall-clock seconds before the worker is terminated |
+| `LEFTBRAIN_QUEUE_TIMEOUT` | `5` | how long a call waits for a free worker before `busy` |
+| `LEFTBRAIN_MAX_INFLIGHT` | CPU count | concurrent workers |
+| `LEFTBRAIN_WORKER_MAX_TASKS` | `200` | calls before a worker is recycled (bounds SymPy's caches) |
+| `LEFTBRAIN_WORKER_MEMORY_BYTES` | `1.5e9` | `RLIMIT_AS` in the child |
+| `LEFTBRAIN_WORKER_CPU_SECONDS` | timeout + 2 | `RLIMIT_CPU` in the child, the kernel's backstop |
+| `LEFTBRAIN_WORKER_TERM_GRACE` | `0.5` | SIGTERM→SIGKILL grace; a C loop never runs a handler |
+| `LEFTBRAIN_COMPUTE_ISOLATION` | `1` | set `0` to run in-process (the library default) |
+
+The worst case a client sees is the timeout plus the termination grace — about **15.5 s** — so
+the reverse proxy in front of the server needs an idle timeout comfortably above that, or the
+caller gets a platform 502 instead of the envelope. Workers use `forkserver` on POSIX
+(`fork` is unsafe in a threaded server, and Python 3.12 still defaults to it) and `spawn` on
+Windows. Without `pebble` installed the server logs that isolation is off and runs in-process;
+the library always runs in-process.
+
 ### Limits
 
 Every mode that can be asked for something enormous refuses it *before* computing, in

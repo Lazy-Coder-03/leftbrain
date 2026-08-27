@@ -8,6 +8,20 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- **A 15-second ceiling enforced by killing the work** (#28 §1 step 3). `math`, `text`,
+  `validate`, `collections` and `numbers` calls now run in a worker process that can be
+  terminated, because a thread cannot be: `int.__pow__`, `sre` and `difflib` are C loops that
+  never reach a bytecode boundary, so no async exception, signal or thread kill is ever
+  delivered — and the runaway holds the GIL, so the event loop and `/healthz` starve with it.
+  That is how one `math.eval 9^9^9^9` took the hosted instance offline for 35 minutes. A call
+  that reaches the deadline returns `timeout` with `stopped: "worker_terminated"`, the limit
+  and the real elapsed time; a caller-supplied `timeout` is clamped to the ceiling; a burst
+  that cannot get a worker returns the retryable `busy` rather than queueing behind a
+  15-second wait. Workers carry `RLIMIT_CPU` and `RLIMIT_AS` as a kernel backstop, use
+  `forkserver` on POSIX and are recycled every 200 calls to bound SymPy's caches. Configured
+  with `LEFTBRAIN_COMPUTE_TIMEOUT` and friends (README). Needs `pebble`, added to the `server`
+  extra; without it the server logs that isolation is off and runs in-process, and the library
+  always runs in-process.
 - **`retryable` on every failure, and four codes that say what was hit** (#28 §1, §4): the
   envelope's failure half is now `{ok: false, error, message, details?, retryable, hint?}`.
   `retryable` is `false` for everything except `busy` and `internal` — a client that reads only
