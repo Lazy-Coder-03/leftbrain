@@ -235,6 +235,23 @@ def test_encode():
     assert lb.encode_tool("hmac", text="hello", key="k", algo="sha256")["result"]["hex"]
 
 
+def test_encode_hash_and_checksum_verify_against_expected():
+    sha_abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    r = lb.encode_tool("hash", text="abc", expected=sha_abc)
+    assert r["ok"] and r["result"]["matches"] is True
+    # case, surrounding whitespace, a sha256sum-style "<hex>  <name>" line, and the Base64 form all match
+    assert lb.encode_tool("hash", text="abc", expected=f"  {sha_abc.upper()} ")["result"]["matches"] is True
+    assert lb.encode_tool("hash", text="abc", expected=f"{sha_abc}  abc.txt")["result"]["matches"] is True
+    assert lb.encode_tool("hash", text="abc", expected="ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=")["result"]["matches"] is True
+    bad = lb.encode_tool("hash", text="abc", expected="0" * 64)
+    assert bad["ok"] and bad["result"]["matches"] is False  # a mismatch is an answer, not an error
+    assert "matches" not in lb.encode_tool("hash", text="abc")["result"]
+    # checksum: hex or the unsigned integer
+    assert lb.encode_tool("checksum", text="hello", expected="3610a686")["result"]["matches"] is True
+    assert lb.encode_tool("checksum", text="hello", expected="907060870")["result"]["matches"] is True
+    assert lb.encode_tool("checksum", text="hello", expected="deadbeef")["result"]["matches"] is False
+
+
 def test_contract_shape_everywhere():
     for name, fn in lb.TOOLS.items():
         r = fn("__not_a_mode__") if name != "scale" else fn()
