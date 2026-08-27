@@ -813,11 +813,11 @@ def _outliers(t: Table, p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"the IQR rule needs at least 4 numeric values; '{column}' has {len(present)}")
     xs = sorted(r[column] for _i, r in present)
     n = len(xs)
-    q1, q3 = _median(xs[: n // 2]), _median(xs[(n + 1) // 2 :])
+    q1, q3 = _median(xs[: (n + 1) // 2]), _median(xs[n // 2 :])  # Tukey's hinges: an odd count keeps the middle value in both halves
     iqr = q3 - q1
     lo, hi = q1 - _IQR_MULTIPLIER * iqr, q3 + _IQR_MULTIPLIER * iqr
     flagged = [{"row": i, "value": _dec_str(r[column]), "side": "low" if r[column] < lo else "high", **r} for i, r in present if r[column] < lo or r[column] > hi]
-    a.append("Tukey hinges: Q1 and Q3 are the medians of the lower and upper halves (the middle value excluded for an odd count); fences are Q1 - 1.5*IQR and Q3 + 1.5*IQR")
+    a.append("Tukey's hinges: Q1 and Q3 are the medians of the lower and upper halves (the middle value included in both for an odd count); fences are Q1 - 1.5*IQR and Q3 + 1.5*IQR")
     result = {"column": column, "count": n, "q1": _out(q1, decimals), "q3": _out(q3, decimals), "iqr": _out(iqr, decimals), "lower_fence": _out(lo, decimals), "upper_fence": _out(hi, decimals), "multiplier": _dec_str(_IQR_MULTIPLIER), "outliers": _echo(flagged, ["row", "value", "side"] + t.columns, w), "outlier_count": len(flagged)}
     return ok(result, assumptions=a, warnings=w)
 

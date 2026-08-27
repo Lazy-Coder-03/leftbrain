@@ -2302,8 +2302,8 @@ COLLECTIONS = ToolDoc(
             name="outliers",
             purpose="Flag values outside the 1.5×IQR fences.",
             description=(
-                "Tukey's rule: Q1 and Q3 are the medians of the lower and upper halves of the sorted "
-                "values (the middle value excluded when the count is odd), and anything below "
+                "Tukey's rule: Q1 and Q3 are his hinges — the medians of the lower and upper halves of "
+                "the sorted values, the middle value included in both when the count is odd — and anything below "
                 "`Q1 − 1.5×IQR` or above `Q3 + 1.5×IQR` is an outlier. Reports `q1`, `q3`, `iqr`, both "
                 "fences and each flagged row with its 1-based `row`, `value` and `side`. Needs at least "
                 "four numeric values. `column` defaults to the only numeric field, if there is one."

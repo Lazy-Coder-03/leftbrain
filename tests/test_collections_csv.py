@@ -285,6 +285,14 @@ def test_outliers_by_the_iqr_rule_with_fences():
     assert (r["result"]["q1"], r["result"]["q3"]) == ("10", "12")
 
 
+def test_outliers_use_tukey_hinges_for_an_odd_count():
+    # five values: the hinges keep the middle value (3) in both halves, so Q1 = 2 and Q3 = 4 and 100 is flagged;
+    # the median-excluding method would give Q1 = 1.5, Q3 = 52 and miss it
+    r = lb.collections_tool("outliers", items="v\n1\n2\n3\n4\n100\n", column="v")["result"]
+    assert (r["q1"], r["q3"], r["iqr"]) == ("2", "4", "2") and (r["lower_fence"], r["upper_fence"]) == ("-1", "7")
+    assert [o["value"] for o in r["outliers"]] == ["100"] and r["outliers"][0]["side"] == "high"
+
+
 def test_outliers_need_four_values_and_round_the_fences_only_when_asked():
     r = lb.collections_tool("outliers", items="v\n1\n2\n3\n", column="v")
     assert not r["ok"] and "at least 4" in r["message"]
