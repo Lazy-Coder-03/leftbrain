@@ -705,6 +705,34 @@ def _mode_now(p: dict[str, Any]) -> dict[str, Any]:
     return ok(out, assumptions=a or ([] if spec else ["no tz given; reported in UTC"]))
 
 
+def _dst_note(dt: datetime) -> list[str]:
+    """Whether this wall time is missing or repeated because the clocks changed.
+
+    `2026-03-08 02:30` in America/New_York never happens - the clocks jump 02:00 to 03:00 -
+    and `2026-11-01 01:30` happens twice. Both used to be answered silently, which is the
+    ambiguity class this tool refuses everywhere else (#28 SS2c).
+    """
+    if dt.tzinfo is None:
+        return []
+    naive = dt.replace(tzinfo=None)
+    earlier = naive.replace(fold=0).replace(tzinfo=dt.tzinfo)
+    later = naive.replace(fold=1).replace(tzinfo=dt.tzinfo)
+    if earlier.utcoffset() == later.utcoffset():
+        return []
+    # A gap and a fold both show two offsets; they differ in which way round they run.
+    if earlier.utcoffset() < later.utcoffset():  # type: ignore[operator]
+        shifted = earlier.astimezone(UTC).astimezone(dt.tzinfo)
+        return [
+            f"{naive.isoformat(sep=' ')} does not exist in {dt.tzname()}'s zone - the clocks "
+            f"go forward over it; read as {shifted.isoformat(sep=' ')}"
+        ]
+    return [
+        f"{naive.isoformat(sep=' ')} is ambiguous in this zone - it happens twice, because the "
+        f"clocks go back; the first occurrence ({earlier.tzname()}) was used, so pass an offset "
+        f"or a UTC time to be explicit"
+    ]
+
+
 def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
     value = p.get("value") or p.get("datetime") or p.get("date")
     src = p.get("from_tz")
@@ -724,6 +752,7 @@ def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("value has no timezone; pass from_tz")
     if date_only:
         raise ToolError("value has no time component; a bare date cannot be converted between zones")
+    warnings = list(_dst_note(dt))
     results = []
     for t, label in _tz_targets(dst, "to_tz"):
         tz, name, a = resolve_tz(t)
@@ -736,7 +765,7 @@ def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
         results.append(entry)
     src_info = _info(dt)
     out = {"source": src_info, "converted": results[0] if len(results) == 1 else results}
-    return ok(out, assumptions=assumptions)
+    return ok(out, assumptions=assumptions, warnings=warnings)
 
 
 def _mode_parse(p: dict[str, Any]) -> dict[str, Any]:
@@ -959,6 +988,9 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
     d2, _, a2 = parse_dt(b_raw, tz=p.get("tz"), locale=p.get("locale"), field="end")
     assumptions = a1 + [x for x in a2 if x not in a1]
     lo, hi = sorted([d1.date(), d2.date()])
+    # `diff` reports a reversed range with sign -1 and a direction; this mode used to swap
+    # the dates silently and hand back the count as though nothing had happened (#28 SS2c).
+    reversed_range = d2.date() < d1.date()
     span = (hi - lo).days
     if span > MAX_BUSINESS_DAY_SPAN:
         raise TooLarge(
@@ -995,6 +1027,8 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
         "holidays_skipped": skipped,
         "start": lo.isoformat(),
         "end": hi.isoformat(),
+        "sign": -1 if reversed_range else 1,
+        "direction": "end is before start" if reversed_range else "end is after start",
     }
     if len(dates) <= 200 and n <= 200:
         out["dates"] = dates
@@ -1004,6 +1038,8 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
     )
     if not p.get("region"):
         assumptions.append("no region given; only weekends excluded (pass region='IN' etc. for public holidays)")
+    if reversed_range:
+        assumptions.append(f"end ({d2.date()}) is before start ({d1.date()}); counted over the range either way, and sign is -1")
     return ok(out, assumptions=assumptions)
 
 

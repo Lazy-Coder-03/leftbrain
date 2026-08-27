@@ -124,6 +124,22 @@ _TEMP_UNITS = {
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
 
+#: Absolute zero in each scale a reading can be given in. A *difference* may of course be
+#: colder than this, which is why `delta=true` skips the check (#28 SS2c).
+_ABSOLUTE_ZERO = {"degC": -273.15, "degree_Celsius": -273.15, "degF": -459.67, "degree_Fahrenheit": -459.67, "kelvin": 0.0, "degR": 0.0, "degree_Rankine": 0.0}
+
+
+def _check_absolute_zero(value: float, unit: str) -> None:
+    floor = _ABSOLUTE_ZERO.get(unit)
+    if floor is None or value >= floor:
+        return
+    raise ToolError(
+        f"{value} {unit} is below absolute zero ({floor} {unit}), so it is not a temperature",
+        details={"value": value, "unit": unit, "absolute_zero": floor},
+        hint="Pass delta=true if this is a temperature *difference* rather than a reading.",
+    )
+
+
 def _define_land(reg: pint.UnitRegistry) -> None:
     for name, defn in _INDIAN_LAND.items():
         if name not in reg:
@@ -235,6 +251,7 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
                 q = reg.Quantity(float(val), src_d).to(dst_d)
                 assumptions.append("temperature difference (delta), not an absolute reading")
             else:
+                _check_absolute_zero(float(val), src)
                 q = reg.Quantity(float(val), src).to(dst)
                 assumptions.append("absolute temperature (pass delta=true for a temperature difference)")
         except pint.errors.PintError as e:
@@ -281,6 +298,12 @@ def _currency(p: dict[str, Any]) -> dict[str, Any]:
     assumptions: list[str] = []
     if rate is not None:
         r = _parse_value(rate)
+        if r <= 0:
+            raise ToolError(
+                f"rate {float(r)} is not a exchange rate; a rate is how many {dst} one {src} buys, which is positive",
+                details={"rate": float(r)},
+                hint="Check the direction of the conversion rather than negating the rate.",
+            )
         assumptions.append(f"used caller-supplied rate 1 {src} = {float(r)} {dst}")
     elif isinstance(rates, dict):
         up = {str(k).upper(): _parse_value(v) for k, v in rates.items()}
@@ -849,6 +872,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "temperature": [
+        {
+            "caption": "A reading below absolute zero is refused; pass delta=true if it is a temperature difference.",
+            "args": {"mode": "temperature", "value": -500, "from_unit": "C", "to_unit": "K"},
+        },
         {
             "caption": "An absolute reading.",
             "args": {"mode": "temperature", "value": 100, "from_unit": "C", "to_unit": "F"},

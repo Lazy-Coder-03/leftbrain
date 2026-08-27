@@ -60,6 +60,8 @@ MAX_RESULT_DIGITS = sys.get_int_max_str_digits() or 4300
 MAX_PRECISION = 5000
 #: Terms in a series expansion.
 MAX_SERIES_ORDER = 50
+#: Polynomial degree `solve` will fall back to numeric roots for.
+MAX_NUMERIC_DEGREE = 200
 
 # --------------------------------------------------------------------------- #
 # Parsing
@@ -662,6 +664,24 @@ def _num(x: Any) -> Any:
 # --------------------------------------------------------------------------- #
 
 
+def _check_defined(expr: Any, src: str) -> None:
+    """Refuse an expression with no value.
+
+    `1/0` and `tan(pi/2)` came back as SymPy's complex infinity, rendered `zoo` with a
+    decimal of `nan + nani`. That is a wrong answer wearing the shape of a right one:
+    division by zero and a trig pole are undefined, and the caller needs to be told so
+    rather than handed a NaN to carry (#28 SS2d).
+    """
+    if not isinstance(expr, sp.Basic) or not expr.has(sp.zoo, sp.nan):
+        return
+    raise ToolError(
+        f"{src} is undefined - it divides by zero or hits a pole (SymPy calls the result "
+        f"complex infinity)",
+        details={"expr": src},
+        hint="Take a limit instead: mode='limit' reports what the expression approaches.",
+    )
+
+
 def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle"))
     subs: dict[str, Any] = {}
@@ -673,6 +693,7 @@ def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
         expr = sp.nsimplify(expr, rational=True)
     elif isinstance(expr, sp.Basic):
         expr = sp.simplify(expr) if expr.free_symbols else sp.expand(expr)
+    _check_defined(expr, p["expr"])
     d = _describe(expr, p.get("precision", 15))
     if exact_only:
         d.pop("decimal", None)
@@ -772,8 +793,40 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
         solutions.append(entry)
     warnings = []
     if not solutions:
-        warnings.append("no solutions found")
+        # A degree-40 polynomial has 40 complex roots. "no solutions found" said the
+        # opposite of the truth; what solve() means is "no closed form" (#28 SS2d).
+        numeric = _numeric_roots(eqs, syms, precision)
+        if numeric is not None:
+            return ok(
+                {"solutions": numeric, "count": len(numeric)},
+                assumptions=assumptions + ["no closed form exists, so the roots were found numerically (nroots)"],
+                warnings=["these are numeric approximations, not exact values"],
+            )
+        raise Unsupported(
+            "no closed form exists for this equation and its roots could not be found numerically",
+            details={"equations": [str(e) for e in eqs]},
+            hint="Try mode='solve' on a simpler form, or evaluate the expression at points with plot_points.",
+        )
     return ok({"solutions": solutions, "count": len(solutions)}, assumptions=assumptions, warnings=warnings)
+
+
+def _numeric_roots(eqs: list[Any], syms: list[Any], precision: int) -> list[dict[str, Any]] | None:
+    """Roots of a single univariate polynomial, when no closed form exists."""
+    if len(eqs) != 1 or len(syms) != 1:
+        return None
+    eq = eqs[0]
+    expr = eq.lhs - eq.rhs if isinstance(eq, sp.Eq) else eq
+    try:
+        poly = sp.Poly(expr, syms[0])
+    except (sp.PolynomialError, sp.GeneratorsNeeded, TypeError):
+        return None
+    if poly.degree() < 1 or poly.degree() > MAX_NUMERIC_DEGREE:
+        return None
+    try:
+        roots = poly.nroots(n=min(precision, 15), maxsteps=100)
+    except Exception:
+        return None
+    return [{str(syms[0]): _describe(r, precision)} for r in roots]
 
 
 def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
@@ -1300,6 +1353,10 @@ def math(mode: str = "eval", **params: Any) -> dict[str, Any]:
 #: current instant with "volatile": True.
 EXAMPLES: dict[str, list[dict[str, Any]]] = {
     "eval": [
+        {
+            "caption": "Division by zero is undefined, not complex infinity rendered as NaN.",
+            "args": {"mode": "eval", "expr": "1/0"},
+        },
         {
             "caption": "A percentage of an amount. The `%` reading is reported back in `assumptions`.",
             "args": {"mode": "eval", "expr": "15% of 2400"},

@@ -46,6 +46,22 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **Ranges that were never checked, and approximations that should have been refusals**
+  (#28 §2c/§2d). Every one of these returned `ok: true` with a confident number:
+  `geo_offline` accepted `lat=91` (returning `Arctic/Longyearbyen`, and a 10 118 km distance);
+  `datetime.business_days` silently swapped a reversed range and now reports `sign` and
+  `direction` like `diff` does; `convert.temperature` converted −500 °C to −226.85 K, and a
+  *reading* below absolute zero is now refused while a `delta` difference still may be any
+  sign; `convert.currency` accepted `rate=-83`; `holidays.list` accepted `month=13`, and the
+  month filter now applies to `long_weekends` as well as `holidays`; `datetime.convert_tz`
+  answered a wall time the clocks skipped or repeated with no note, and now warns naming which
+  it is; `geo_offline.distance "Delhi" → "Mumbai"` returned **0 km** because both were
+  approximated by Asia/Kolkata's reference city, and an unknown place is now `needs:
+  coordinates` — a name whose reference city *is* the place (`Kolkata`, `London`) still
+  resolves; `math.eval 1/0` and `tan(pi/2)` returned SymPy's complex infinity rendered as
+  `nan + nani` and are now `invalid_input` pointing at `mode: limit`; `math.solve` on a
+  degree-40 polynomial reported `no solutions found` where 40 roots exist, and now falls back
+  to numeric roots saying so in `assumptions`.
 - **Predictable inputs are phrased instead of raising Python exceptions** (#28 §4): five modes
   reported what broke inside leftbrain rather than what the caller did wrong.
   `collections.unflatten {"a": 1, "a.b": 2}` was `TypeError: 'int' object does not support item

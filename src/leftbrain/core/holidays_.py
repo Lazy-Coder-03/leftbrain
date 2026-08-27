@@ -90,9 +90,19 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
     years = [int(y) for y in years]
     hm = holiday_map(code, set(years), subdiv, p.get("categories"))
     month = p.get("month")
-    items = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A")} for k, v in sorted(hm.items()) if (month is None or k.month == int(month))]
+    if month is not None:
+        month = int(month)
+        if not 1 <= month <= 12:
+            raise ToolError(
+                f"month {month} is not a month; months run from 1 to 12",
+                details={"month": month},
+                hint="Leave 'month' out to get the whole year.",
+            )
+    items = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A")} for k, v in sorted(hm.items()) if (month is None or k.month == month)]
     long_weekends = []
-    for k in sorted(hm):
+    # `month` used to filter `holidays` and leave `long_weekends` as the whole year, so a
+    # month with no holidays came back with a year's worth of long weekends (#28 SS2c).
+    for k in sorted(k for k in hm if month is None or k.month == month):
         if k.weekday() == 4 or k.weekday() == 0:
             long_weekends.append({"date": k.isoformat(), "name": hm[k], "spans": f"{(k - timedelta(days=k.weekday() - 4 if k.weekday() == 4 else 2)).isoformat()} to {(k + timedelta(days=2 if k.weekday() == 4 else 0)).isoformat()}"})
     out = {"region": code, "subdiv": subdiv, "years": years, "count": len(items), "holidays": items, "long_weekends": long_weekends}
@@ -106,6 +116,10 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
 #: current instant with "volatile": True.
 EXAMPLES: dict[str, list[dict[str, Any]]] = {
     "list": [
+        {
+            "caption": "A month outside 1..12 is refused rather than answered with an empty list.",
+            "args": {"mode": "list", "region": "IN", "year": 2026, "month": 13},
+        },
         {
             "caption": "India, one month, with the year's long weekends alongside.",
             "args": {"mode": "list", "region": "IN", "year": 2025, "month": 8},
