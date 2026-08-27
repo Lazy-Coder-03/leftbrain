@@ -420,6 +420,7 @@ def collections(
     columns: list[str] | None = None,
     delimiter: str | None = None,
     has_header: bool | None = None,
+    escape_formulas: bool | None = None,
     decimals: int | None = None,
 ) -> dict[str, Any]:
     """Use for exact list/record logic that models get wrong past ~20 items: compare two lists
@@ -432,7 +433,7 @@ def collections(
     filter | pivot | running | outliers | summarize | to_csv
     Paths use dotted syntax: "user.address.city", "items[0].sku".
     """
-    return collections_.collections(mode, **_clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists, where=where, by=by, pivot_columns=pivot_columns, column=column, columns=columns, delimiter=delimiter, has_header=has_header, decimals=decimals)))
+    return collections_.collections(mode, **_clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists, where=where, by=by, pivot_columns=pivot_columns, column=column, columns=columns, delimiter=delimiter, has_header=has_header, escape_formulas=escape_formulas, decimals=decimals)))
 
 
 @server.tool(name="validate")

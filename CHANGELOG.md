@@ -46,6 +46,18 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **SSRF in `url_check`** (#28 §5): `http://169.254.169.254/latest/meta-data/` — the cloud
+  metadata service, which answers with credentials — was actually fetched, as were `localhost`
+  and RFC 1918 addresses. The host is now resolved and judged before the connection is opened and
+  again after every redirect (a public host can answer `302` to a private address), and only
+  public `http`/`https` addresses are fetched. `file:///etc/passwd` was being rewritten to
+  `https://file:///etc/passwd` and attempted; any non-http(s) scheme is now refused instead. The
+  connect budget drops from 15 s to 5 s.
+- **CSV formula injection in `collections.to_csv`** (#28 §5): cells such as
+  `=cmd|' /C calc'!A0`, `+1-2` and `@SUM(1)` were written verbatim, so opening the file in a
+  spreadsheet ran them. Cells beginning `=`, `+`, `-`, `@`, tab or CR are now prefixed with an
+  apostrophe, with the count in `assumptions` and `escaped_cells`; `escape_formulas: false`
+  restores the old behaviour and warns. A negative number is left alone — `-12.5` is data.
 - **A regular expression can no longer freeze the process** (#28 §1): `text.regex_match` with
   `(a+)+$` over `"a"*40 + "b"` never returned, and neither did `(a|aa)+` in `regex_replace` or a
   `pattern` inside a `validate.json_schema` schema. Once stdlib `re` starts backtracking nothing

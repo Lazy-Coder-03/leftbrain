@@ -832,19 +832,54 @@ def _outliers(t: Table, p: dict[str, Any]) -> dict[str, Any]:
     return ok(result, assumptions=a, warnings=w)
 
 
+#: Characters that make Excel, LibreOffice and Sheets treat a cell as a formula rather than
+#: as text. A cell starting with one of these is data to us and code to them (#28 SS5).
+_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _neutralise(cell: str) -> tuple[str, bool]:
+    """Prefix a formula-shaped cell with `'`, which every spreadsheet reads as "text follows"."""
+    if not cell or not cell.startswith(_FORMULA_LEAD):
+        return cell, False
+    if cell[0] == "-":
+        # A negative number is data, not a lead-in to `-1+cmd()`. Escaping it would
+        # corrupt every column of deltas in the file.
+        try:
+            float(cell)
+            return cell, False
+        except ValueError:
+            pass
+    return "'" + cell, True
+
+
 def _to_csv(t: Table, p: dict[str, Any]) -> dict[str, Any]:
     a = list(t.assumptions)
     cols = _cols(t, p)
     delimiter = p.get("delimiter") or ","
     if len(delimiter) != 1:
         raise ToolError("'delimiter' must be a single character")
+    escape = p.get("escape_formulas", True)
     buf = io.StringIO()
     writer = csv.writer(buf, delimiter=delimiter, lineterminator="\n")
-    writer.writerow(cols)
+    escaped = 0
+
+    def cell(value: Any) -> str:
+        nonlocal escaped
+        text = "" if value is None else _label(value)
+        if not escape:
+            return text
+        text, changed = _neutralise(text)
+        escaped += changed
+        return text
+
+    writer.writerow([cell(c) for c in cols])
     for r in t.rows:
-        writer.writerow(["" if r[c] is None else _label(r[c]) for c in cols])
+        writer.writerow([cell(r[c]) for c in cols])
     a.append("numbers are written in plain decimal form (no thousands separators or symbols); blanks are empty cells")
-    return ok({"csv": buf.getvalue(), "count": len(t.rows), "columns": cols}, assumptions=a)
+    if escaped:
+        a.append(f"{escaped} cell(s) starting with = + - @ tab or CR were prefixed with an apostrophe so a spreadsheet reads them as text, not as a formula")
+    warnings = [] if escape else ["escape_formulas=false: cells starting with = + - @ are not escaped, so a spreadsheet will execute them"]
+    return ok({"csv": buf.getvalue(), "count": len(t.rows), "columns": cols, "escaped_cells": escaped if escape else None}, assumptions=a, warnings=warnings)
 
 
 _LIST_MODES = {"set_ops": _set_ops, "group_by": _group_by, "aggregate": _aggregate, "pick_fields": _pick_fields, "flatten": _flatten, "unflatten": _unflatten, "paginate": _paginate, "find_duplicates": _find_duplicates, "sort_by": _sort_by, "chunk": _chunk}
@@ -1134,6 +1169,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "to_csv": [
+        {
+            "caption": "A cell that a spreadsheet would run as a formula is prefixed with an apostrophe, and the count is reported.",
+            "args": {"mode": "to_csv", "items": [{"name": "Asha", "note": "=cmd|' /C calc'!A0"}, {"name": "Ravi", "note": "fine"}]},
+        },
         {
             "caption": "Records out as CSV text, numbers in plain decimal form.",
             "args": {"mode": "to_csv", "items": _EX_ORDERS, "columns": ["id", "region", "amount"]},

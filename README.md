@@ -116,6 +116,13 @@ loop that never reaches a bytecode boundary, so no timeout, signal or thread kil
 until it finishes, which it does not. `validate.regex` is the exception — it judges a pattern
 rather than running it, so it reports `backtracking_risk` and stays `valid: true`.
 
+`url_check` fetches only public `http`/`https` addresses. The host is resolved and checked before
+the connection and again after each redirect, so loopback, link-local, RFC 1918, unique-local,
+reserved and cloud-metadata addresses are refused — a server that fetches what a caller names is
+otherwise a way to read the instance metadata service. `collections.to_csv` prefixes cells
+beginning `= + - @` tab or CR with an apostrophe so a spreadsheet reads them as text rather than
+running them; `escape_formulas: false` turns that off with a warning.
+
 ## Install
 
 ```bash

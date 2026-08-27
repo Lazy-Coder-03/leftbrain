@@ -2358,13 +2358,21 @@ COLLECTIONS = ToolDoc(
                 "thousands separators or symbols), booleans as `true`/`false`, blanks as empty cells, "
                 "and quoting only where the delimiter or a quote appears in a value. `columns` chooses "
                 "and orders the fields. Every row is written — this mode is exempt from the 500-row echo "
-                "cap."
+                "cap.\n\n"
+                "A cell beginning `=`, `+`, `-`, `@`, tab or carriage return is what a spreadsheet reads "
+                "as a **formula**, so `=cmd|' /C calc'!A0` in a record becomes code when someone opens "
+                "the file. Those cells are prefixed with an apostrophe — which Excel, LibreOffice and "
+                "Sheets all read as “text follows” — and the count is reported in `assumptions` and in "
+                "`escaped_cells`. A negative number is left alone: `-12.5` is data, and escaping it "
+                "would corrupt a column of deltas. Pass `escape_formulas: false` to write cells verbatim, "
+                "which is warned about."
             ),
             params=(
                 Param("items", "The records, or CSV text to re-shape.", required=True),
                 Param("columns", "Fields to write, in order.", default="all"),
                 Param("delimiter", "Delimiter to write with — and to read `items` with, when it is CSV text.", default="`,`"),
                 Param("has_header", "Whether CSV text starts with a header row.", default="detected"),
+                Param("escape_formulas", "Neutralise cells a spreadsheet would run as a formula.", default="`true`"),
             ),
         ),
     ),
@@ -3387,7 +3395,13 @@ URL_CHECK = ToolDoc(
     intro=(
         "Actually fetch a URL and report what happened: final status, the redirect chain, the URL you "
         "ended up at, content type, size and latency. A `HEAD` by default, falling back to `GET` when "
-        "a server rejects it."
+        "a server rejects it.\n\n"
+        "Only public `http`/`https` addresses are fetched. The host is resolved and judged *before* a "
+        "connection is opened, and again after every redirect — a public host is free to answer `302 "
+        "http://169.254.169.254/`, which on a cloud instance is the metadata service and answers with "
+        "credentials. Loopback, link-local, private (RFC 1918), unique-local, reserved and metadata "
+        "addresses are refused with `invalid_input` naming what the name resolved to. Any other scheme "
+        "— `file:`, `ftp:`, `data:` — is refused rather than rewritten."
     ),
     when=(
         "Before telling a user a link works — models are confident about dead URLs.",
@@ -3396,7 +3410,7 @@ URL_CHECK = ToolDoc(
     ),
     related="[`validate`](/docs/tools/validate) with `mode: url` checks the *syntax* of a URL without fetching it.",
     params=(
-        Param("url", "The URL to fetch. A bare host is assumed to be `https://`.", required=True),
+        Param("url", "The URL to fetch. A bare host is assumed to be `https://`; only public http(s) addresses are fetched.", required=True),
         Param("method", "`HEAD` or `GET`.", default="`HEAD`"),
     ),
 )

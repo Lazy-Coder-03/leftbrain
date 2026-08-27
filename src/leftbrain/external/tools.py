@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ipaddress
+import socket
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 from ..contract import ToolError, ok, tool
 
@@ -14,6 +17,14 @@ except ImportError:  # pragma: no cover
 
 USER_AGENT = "leftbrain/0.1 (+https://github.com/Lazy-Coder-03/leftbrain)"
 TIMEOUT = 15.0
+#: `url_check` reaches whatever the caller names, so it gets a shorter connect budget than
+#: the API calls: a refused port should come back quickly, not sit for fifteen seconds.
+CHECK_TIMEOUT = 5.0
+
+#: Hostnames that resolve to a cloud metadata service, which answers with credentials.
+_METADATA_HOSTS = {"metadata.google.internal", "metadata.goog", "instance-data"}
+#: The IPv4 metadata endpoint every major cloud shares, and its IPv6 counterpart.
+_METADATA_ADDRESSES = {"169.254.169.254", "fd00:ec2::254"}
 
 _WMO = {
     0: "clear sky", 1: "mainly clear", 2: "partly cloudy", 3: "overcast", 45: "fog", 48: "depositing rime fog",
@@ -34,6 +45,82 @@ def _client() -> Any:
     if httpx is None:
         raise ToolError("external tools need httpx: pip install 'leftbrain[external]'", code="unsupported")
     return httpx.Client(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=True)
+
+
+# --------------------------------------------------------------------------- #
+# SSRF (#28 SS5)
+#
+# `url_check` makes the server fetch a URL the caller chose. The server sits inside a
+# private network the caller cannot reach, so without a check the tool is a way to read
+# the cloud metadata service - which answers with credentials - or to knock on any port
+# on the pod. The address is resolved and judged before a connection is opened, and again
+# after every redirect, because a public hostname can redirect to 127.0.0.1.
+# --------------------------------------------------------------------------- #
+
+
+def normalise_url(raw: str) -> str:
+    """Add `https://` to a bare hostname; leave any explicit scheme alone to be judged."""
+    url = str(raw).strip()
+    if "://" in url or url.lower().startswith(("mailto:", "data:", "javascript:")):
+        return url
+    return "https://" + url
+
+
+def _refuse(url: str, reason: str, address: str | None = None) -> None:
+    raise ToolError(
+        f"{url} resolves to {reason}; leftbrain only fetches public addresses",
+        details={"url": url, "address": address, "reason": reason},
+        hint="Give a publicly reachable http(s) URL.",
+    )
+
+
+def _classify(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
+    """Why this address must not be fetched, or ``None`` when it is a public one."""
+    if str(ip) in _METADATA_ADDRESSES:
+        return "a cloud metadata address"
+    if ip.is_loopback:
+        return "a loopback address"
+    if ip.is_link_local:
+        return "a link-local address"
+    if ip.is_private:
+        return "a private address"
+    if ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+        return "a reserved address"
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return _classify(mapped) if mapped else None
+
+
+def check_public(url: str) -> None:
+    """Refuse anything that is not a public http(s) address. Raises; returns nothing."""
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https"):
+        raise ToolError(
+            f"scheme {parts.scheme or '(none)'!r} is not fetched; only http and https are",
+            details={"url": url, "scheme": parts.scheme},
+            hint="Use an http:// or https:// URL.",
+        )
+    host = parts.hostname
+    if not host:
+        raise ToolError(f"no host in {url!r}", details={"url": url})
+    if host.lower() in _METADATA_HOSTS:
+        _refuse(url, "a cloud metadata address", host)
+    try:
+        literal = ipaddress.ip_address(host)
+    except ValueError:
+        literal = None
+    if literal is not None:
+        reason = _classify(literal)
+        if reason:
+            _refuse(url, reason, str(literal))
+        return
+    try:
+        resolved = {info[4][0] for info in socket.getaddrinfo(host, parts.port or 80, proto=socket.IPPROTO_TCP)}
+    except OSError as e:
+        raise ToolError(f"{host} does not resolve: {e}", details={"url": url, "host": host}) from None
+    for address in sorted(resolved):
+        reason = _classify(ipaddress.ip_address(address))
+        if reason:
+            _refuse(url, reason, address)
 
 
 def _get(url: str, params: dict[str, Any] | None = None) -> Any:
@@ -173,18 +260,28 @@ def url_check(**params: Any) -> dict[str, Any]:
     url = p.get("url") or p.get("value")
     if not url:
         raise ToolError("'url' is required")
-    url = str(url).strip()
-    if not url.lower().startswith(("http://", "https://")):
-        url = "https://" + url
+    url = normalise_url(url)
+    check_public(url)
     method = (p.get("method") or "HEAD").upper()
     if httpx is None:
         raise ToolError("external tools need httpx: pip install 'leftbrain[external]'", code="unsupported")
     t0 = time.perf_counter()
-    with httpx.Client(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=True) as c:
+    with httpx.Client(timeout=CHECK_TIMEOUT, headers={"User-Agent": USER_AGENT}, follow_redirects=False) as c:
         try:
             r = c.request(method, url)
             if method == "HEAD" and r.status_code in (405, 403, 400):
                 r = c.get(url)
+            history = []
+            # Redirects are followed by hand so every hop is checked: a public host is free
+            # to answer 302 http://169.254.169.254/ and httpx would follow it for us.
+            while r.is_redirect and len(history) < 10:
+                target = str(r.next_request.url) if r.next_request else None
+                if not target:
+                    break
+                check_public(target)
+                history.append(r)
+                r = c.request(method, target)
+            r.history = history  # type: ignore[misc]
         except httpx.HTTPError as e:
             return ok({"url": url, "reachable": False, "error": f"{type(e).__name__}: {e}", "latency_ms": round((time.perf_counter() - t0) * 1000)})
     chain = [{"url": str(h.url), "status": h.status_code} for h in r.history] + [{"url": str(r.url), "status": r.status_code}]
