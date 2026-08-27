@@ -6,6 +6,18 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Per-key tool scopes** (#27): a key can be limited to chosen tools and, per tool, chosen
+  modes — on the dashboard (a **Tools** disclosure on the create form, **Edit scope** on every
+  key's row) or with `leftbrain-keys create|set … --tools "math,datetime,holidays:list+check"`
+  (`--all-tools` lifts it). A scoped key's `tools/list` shows only the tools it may call, and a
+  `tools/call` outside the scope returns the contract error
+  `{"ok": false, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: list, check"}`
+  as a result, not a transport error. `GET /keys/me` and `leftbrain-keys list` report `tools`
+  (`null` for every tool). Existing keys have no scope and behave exactly as before; the
+  `keys` table gains a nullable `scope` column on first start.
+
 ### Fixed
 
 - `math`: `round(...)` over an expression with `vars` failed at parse time ("Cannot convert

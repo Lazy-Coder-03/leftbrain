@@ -51,6 +51,16 @@
     lifetime.addEventListener('change', syncWarning); syncWarning();
   }
 
+  // tool scope grid: unticking a tool disables its modes (disabled boxes are not posted); ticking it back ticks them all
+  $$('[data-scope-grid]').forEach(function (grid) {
+    var summary = grid.parentNode.querySelector('[data-scope-summary]'), tools = $$('input[data-tool]', grid);
+    function sync(tool, ticked) {
+      $$('input[data-of="' + tool.getAttribute('data-tool') + '"]', grid).forEach(function (m) { m.disabled = !tool.checked; if (ticked) m.checked = true; });
+      if (summary) { var n = tools.filter(function (t) { return t.checked; }).length; summary.textContent = n === tools.length ? 'all tools' : n === 1 ? '1 tool' : n + ' of ' + tools.length + ' tools'; }
+    }
+    tools.forEach(function (t) { t.addEventListener('change', function () { sync(t, t.checked); }); sync(t, false); });
+  });
+
   // docs key picker: choosing a key reloads the page with that key filled in
   var keypick = $('#keypick');
   if (keypick) keypick.addEventListener('change', function () { keypick.form.submit(); });

@@ -1,0 +1,6 @@
+  <aside class="side">
+    <div class="me">{% if user.avatar_url %}<img class="avatar" src="{{ user.avatar_url }}" alt="" width="34" height="34">{% else %}<span class="avatar">{{ user.login[:1]|upper }}</span>{% endif %}<div><div class="who">{{ user.login }}</div><div class="mail">{{ user.email }}</div></div></div>
+    <a href="/dashboard" class="cur">API keys</a>
+    <a href="/docs">Docs</a>
+    <form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="linklike" type="submit">Sign out</button></form>
+  </aside>

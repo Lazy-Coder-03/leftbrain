@@ -7,12 +7,15 @@ Endpoints (Streamable HTTP MCP):
     /healthz        liveness JSON
     /               service description JSON
     /keys/signup    POST {"email": ...} -> issues a free API key   (when a key store is enabled)
-    /keys/me        GET  -> quota and usage for the calling key
+    /keys/me        GET  -> quota, usage and tool scope for the calling key
 
 Authentication (either or both may be enabled):
     LEFTBRAIN_API_KEY   a single static bearer token (private deployments)
     LEFTBRAIN_KEYS_DB   path to the SQLite key store: per-user keys, daily quota,
-                        per-minute rate limit, self-serve signup
+                        per-minute rate limit, self-serve signup, per-key tool scopes
+
+A key with a scope (see ``leftbrain.scopes``) sees only its tools in ``tools/list`` and
+gets the contract's ``forbidden`` error from any tool or mode outside it.
 
 TLS is expected to be terminated by the host (Railway, Render, Fly, Cloudflare,
 Caddy, nginx).
@@ -35,12 +38,18 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from . import __version__
+from .scopes import Scope, allowed_tools, current_scope
 
-PROTECTED_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp", "/keys/me")
+MCP_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp")
+PROTECTED_PREFIXES = (*MCP_PREFIXES, "/keys/me")
+
+
+def _under(path: str, prefixes: tuple[str, ...]) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in prefixes)
 
 
 def _protected(path: str) -> bool:
-    return any(path == p or path.startswith(p + "/") for p in PROTECTED_PREFIXES)
+    return _under(path, PROTECTED_PREFIXES)
 
 
 def _trusted_proxy_hops() -> int:
@@ -150,7 +159,16 @@ class AuthMiddleware:
             verdict = self.store.verify_and_count(supplied)
             if verdict.ok:
                 scope.setdefault("state", {})["auth"] = {"kind": "key", "key": verdict.key, "remaining": verdict.remaining}
-                await self._with_headers(scope, receive, send, {"x-ratelimit-remaining-today": str(verdict.remaining), "x-ratelimit-limit-day": str(verdict.key.daily_quota), "x-ratelimit-limit-minute": str(verdict.key.rpm)})
+                extra = {"x-ratelimit-remaining-today": str(verdict.remaining), "x-ratelimit-limit-day": str(verdict.key.daily_quota), "x-ratelimit-limit-minute": str(verdict.key.rpm)}
+                key_scope = verdict.key.scope
+                token = current_scope.set(key_scope)  # what enforce() reads inside every tool
+                try:
+                    if key_scope is not None and scope.get("method") == "POST" and _under(scope.get("path", ""), MCP_PREFIXES):
+                        await self._scoped(scope, receive, send, extra, key_scope)
+                    else:
+                        await self._with_headers(scope, receive, send, extra)
+                finally:
+                    current_scope.reset(token)
                 return
             extra = {"retry-after": str(verdict.retry_after)} if verdict.retry_after else {}
             await self._reject(scope, receive, send, verdict.status, verdict.reason, verdict.message or "key rejected", extra)
@@ -167,10 +185,105 @@ class AuthMiddleware:
 
         await self.app(scope, receive, send_wrapper)
 
+    async def _scoped(self, scope: Any, receive: Any, send: Any, extra: dict[str, str], key_scope: Scope) -> None:
+        """A scoped key's MCP POST: read the body once, and if it is ``tools/list`` trim the reply to the key's tools.
+
+        The body is replayed to the app unchanged either way; only a ``tools/list`` reply is
+        buffered and rewritten, so every other call streams through as it always did.
+        """
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                return  # the client went away before sending its body
+            body.extend(message.get("body", b""))
+            if not message.get("more_body", False):
+                break
+        replayed = False
+
+        async def replay() -> Any:
+            nonlocal replayed
+            if replayed:
+                return await receive()
+            replayed = True
+            return {"type": "http.request", "body": bytes(body), "more_body": False}
+
+        if not _is_tools_list(bytes(body)):
+            await self._with_headers(scope, replay, send, extra)
+            return
+
+        start: Any = None
+        chunks = bytearray()
+
+        async def buffered(message: Any) -> None:
+            nonlocal start
+            if message["type"] == "http.response.start":
+                start = message
+                return
+            if message["type"] == "http.response.body":
+                chunks.extend(message.get("body", b""))
+                if message.get("more_body", False):
+                    return
+                headers, out = _filter_tools_list(list(start.get("headers", [])), bytes(chunks), key_scope)
+                await send({**start, "headers": headers})
+                await send({"type": "http.response.body", "body": out, "more_body": False})
+                return
+            await send(message)
+
+        await self._with_headers(scope, replay, buffered, extra)
+
     @staticmethod
     async def _reject(scope: Any, receive: Any, send: Any, status: int, error: str, message: str, extra: dict[str, str] | None = None) -> None:
         resp = JSONResponse({"ok": False, "error": error, "message": message}, status_code=status, headers={"WWW-Authenticate": "Bearer", **(extra or {})})
         await resp(scope, receive, send)
+
+
+def _is_tools_list(body: bytes) -> bool:
+    try:
+        msg = json.loads(body)
+    except ValueError:
+        return False  # the transport answers malformed JSON itself
+    return isinstance(msg, dict) and msg.get("method") == "tools/list"
+
+
+def _trim_tools(raw: bytes, key_scope: Scope) -> bytes | None:
+    """``raw`` JSON-RPC message with ``result.tools`` cut down to the scope, or None when it is not one."""
+    try:
+        msg = json.loads(raw)
+    except ValueError:
+        return None
+    result = msg.get("result") if isinstance(msg, dict) else None
+    if not isinstance(result, dict) or not isinstance(result.get("tools"), list):
+        return None
+    keep = set(allowed_tools(key_scope, [t.get("name", "") for t in result["tools"]]))
+    result["tools"] = [t for t in result["tools"] if t.get("name") in keep]
+    return json.dumps(msg, separators=(",", ":"), ensure_ascii=False).encode()
+
+
+def _filter_tools_list(headers: list[tuple[bytes, bytes]], body: bytes, key_scope: Scope) -> tuple[list[tuple[bytes, bytes]], bytes]:
+    """Rewrite a ``tools/list`` reply in either wire form.
+
+    ``json_response=True`` gives a plain JSON body; the default is an SSE body of
+    ``event: message`` / ``data: {...}`` lines. The JSON inside each ``data:`` line is
+    rewritten and the framing (line endings included) is kept; ``content-length`` is
+    corrected when the reply carries one.
+    """
+    ctype = next((v for k, v in headers if k.lower() == b"content-type"), b"").decode().lower()
+    if ctype.startswith("text/event-stream"):
+        lines = body.split(b"\n")
+        for i, line in enumerate(lines):
+            bare = line.rstrip(b"\r")
+            if bare.startswith(b"data:"):
+                trimmed = _trim_tools(bare[5:].strip(), key_scope)
+                if trimmed is not None:
+                    lines[i] = b"data: " + trimmed + line[len(bare):]
+        body = b"\n".join(lines)
+    elif ctype.startswith("application/json"):
+        body = _trim_tools(body, key_scope) or body
+    else:
+        return headers, body
+    headers = [(k, str(len(body)).encode() if k.lower() == b"content-length" else v) for k, v in headers]
+    return headers, body
 
 
 class _McpOnly:

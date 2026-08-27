@@ -27,7 +27,8 @@ The reference site generates itself from the MCP schema, the wrapper docstring a
 [`superpowers/notes/2026-08-26-docs-automation.md`](superpowers/notes/2026-08-26-docs-automation.md).
 Checklist for a **tool**: core module with `MODES` + `EXAMPLES` (≥2 per mode, one that fails) →
 wrapper with a `mode:` docstring line → `leftbrain/__init__.py` exports → `web/tools_list.TOOLS` →
-`ToolDoc` in `web/toolref.py` + `CATALOGUE` → `MODULE_MODES` in `tests/test_toolref.py` → every
+`ToolDoc` in `web/toolref.py` + `CATALOGUE` → `scopes.CATALOGUE` (the per-key scope grid; wrap
+the wrapper with `@enforce("name")`) → `MODULE_MODES` in `tests/test_toolref.py` → every
 "N tools" string (README, landing, quickstart, views 404, tools_list docstring, the toolref count
 test) → README table row → `web/docs/custom-agents.md` sample tool lists → CHANGELOG.
 

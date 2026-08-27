@@ -10,6 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
+from ..scopes import CATALOGUE, Scope, parse_scope
 from . import auth, templates
 from .config import WebConfig
 from .tools_list import TOOLS
@@ -213,7 +214,25 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         )
 
         keys = store.list(user.email) if store else []
-        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if k.holds_slot), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "lifetimes": LIFETIME_CHOICES, "default_lifetime": DEFAULT_LIFETIME_DAYS, "never_warning": NEVER_EXPIRES_WARNING, "new_key": None, "revealed": False, "can_reveal": bool(store and store.can_reveal), "error": None, **extra}
+        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if k.holds_slot), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "lifetimes": LIFETIME_CHOICES, "default_lifetime": DEFAULT_LIFETIME_DAYS, "never_warning": NEVER_EXPIRES_WARNING, "new_key": None, "revealed": False, "can_reveal": bool(store and store.can_reveal), "error": None, "catalogue": CATALOGUE, "scope_of": None, **extra}
+
+    def parse_form_scope(form: Any, *, required: bool) -> tuple[bool, Scope | None | str]:
+        """The tool grid's checkbox values: ``tool`` ticks a tool, ``tool:mode`` narrows it to those modes.
+
+        A mode box only counts when its tool is ticked (without script support an unticked
+        tool still posts its mode boxes). No grid at all (``scope_form`` absent: an older form
+        or a scripted post) means every tool unless ``required``. Returns ``(ok, scope)`` or
+        ``(False, message)``.
+        """
+        if "scope_form" not in form and not required:
+            return True, None
+        values = [str(v) for v in form.getlist("scope")]
+        ticked = {v for v in values if ":" not in v}
+        values = [v for v in values if ":" not in v or v.partition(":")[0] in ticked]
+        try:
+            return True, parse_scope(values)
+        except ValueError as e:
+            return False, f"Tools: {e}."
 
     def parse_form_lifetime(value: str) -> tuple[bool, int | None]:
         """The create form's lifetime: one of the offered day counts, ``never``, or the default when absent."""
@@ -251,7 +270,10 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         ok, lifetime = parse_form_lifetime(str(form.get("lifetime") or ""))
         if not ok:
             return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error="Pick a lifetime from the list: 30, 90 or 365 days, or never.")))
-        raw, info = store.create_for_owner(user.email, str(form.get("name") or ""), lifetime_days=lifetime)
+        ok, scope = parse_form_scope(form, required=False)
+        if not ok:
+            return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=scope)))
+        raw, info = store.create_for_owner(user.email, str(form.get("name") or ""), lifetime_days=lifetime, scope=scope)
         if raw is None:
             return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, error=info)))
         return no_store(render(request, "dashboard.html", 200, **dashboard_ctx(request, user, new_key=raw)))
@@ -307,6 +329,40 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         store.revoke(prefix)  # the store's revoke is the hard delete; the dashboard's Revoke only disables
         return no_store(RedirectResponse("/dashboard", status_code=302))
 
+    def scope_ctx(user: auth.User, info: Any, error: str | None = None) -> dict[str, Any]:
+        return {"page": "dashboard", "user": user, "key": info, "csrf": auth.csrf_token(cfg.secret or "", user), "catalogue": CATALOGUE, "scope_of": info.scope, "error": error}
+
+    async def scope_page(request: Request) -> Response:
+        """The tool grid for one key, pre-filled with what it may call today."""
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        if store is None:
+            return keys_unavailable(request)
+        prefix = request.path_params["prefix"]
+        if not store.owns(user.email, prefix):
+            return fail_page(request, 403, "Not your key", "That key belongs to a different account.")
+        return no_store(render(request, "key_scope.html", 200, **scope_ctx(user, store.get_by_prefix(prefix))))
+
+    async def set_scope(request: Request) -> Response:
+        """Replace the key's scope with the grid as posted; the server is stateless, so the next call sees it."""
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        if store is None:
+            return keys_unavailable(request)
+        prefix = request.path_params["prefix"]
+        if not store.owns(user.email, prefix):
+            return fail_page(request, 403, "Not your key", "That key belongs to a different account.")
+        ok, scope = parse_form_scope(form, required=True)
+        if not ok:
+            return no_store(render(request, "key_scope.html", 200, **scope_ctx(user, store.get_by_prefix(prefix), error=scope)))
+        store.set_scope(prefix, scope)
+        return no_store(RedirectResponse("/dashboard", status_code=302))
+
     return [
         Route("/login", login),
         Route("/auth/github/callback", callback),
@@ -316,6 +372,8 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/dashboard/keys/{prefix}/reveal", reveal_key, methods=["POST"]),
         Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
         Route("/dashboard/keys/{prefix}/delete", delete_key, methods=["POST"]),
+        Route("/dashboard/keys/{prefix}/scope", scope_page, methods=["GET"]),
+        Route("/dashboard/keys/{prefix}/scope", set_scope, methods=["POST"]),
         Route("/demo/{tool}", demo, methods=["POST"]),
         Route("/docs", docs_page),
         Route("/docs/tools/{name}", tool_page),

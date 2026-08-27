@@ -1,0 +1,10 @@
+{# The tool grid: one box per tool, its modes indented beneath. Everything ticked when `scope_of` is none. #}
+<input type="hidden" name="scope_form" value="1">
+<div class="scope" data-scope-grid>
+  {% for tool, modes in catalogue.items() %}{% set on = scope_of is none or tool in scope_of.tools %}
+  <div class="scope-tool">
+    <label><input type="checkbox" name="scope" value="{{ tool }}" data-tool="{{ tool }}"{% if on %} checked{% endif %}> <span>{{ tool }}</span></label>
+    {% if modes %}<div class="scope-modes">{% for m in modes %}<label><input type="checkbox" name="scope" value="{{ tool }}:{{ m }}" data-of="{{ tool }}"{% if on and (scope_of is none or scope_of.tools[tool] is none or m in scope_of.tools[tool]) %} checked{% endif %}{% if not on %} disabled{% endif %}> {{ m }}</label>{% endfor %}</div>{% endif %}
+  </div>
+  {% endfor %}
+</div>

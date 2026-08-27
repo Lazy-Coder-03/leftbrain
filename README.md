@@ -162,7 +162,7 @@ With a store configured, `leftbrain-serve` also grows a web site:
 
 - `/` — landing page (browsers) or the JSON service description (`Accept: application/json`)
 - `/login` — GitHub OAuth; keys belong to the account's verified primary email
-- `/dashboard` — create up to 3 active keys with a lifetime of 30 / 90 / 365 days (or never, with a warning), see today's usage and when each key expires, show a key again, revoke, and delete a revoked or expired key for good. Keys issued before the server could show keys again are marked **legacy**: they still work if you saved them, but do not hold one of the 3 slots
+- `/dashboard` — create up to 3 active keys with a lifetime of 30 / 90 / 365 days (or never, with a warning), choose which tools — and which modes of each — a key may call (on creation, or later with **Edit scope** on its row), see today's usage and when each key expires, show a key again, revoke, and delete a revoked or expired key for good. Keys issued before the server could show keys again are marked **legacy**: they still work if you saved them, but do not hold one of the 3 slots
 - `/docs` — quickstart with Windows PowerShell / macOS / Linux tabs, MCP client setup
 - `POST /demo/{numbers|convert|datetime|text}` — key-less demo, 30 req/min per IP
 
@@ -170,7 +170,8 @@ and the key API behaves like this:
 
 - **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 1000, "rpm": 60}`. Throttled to 3 signups per IP per day and 3 active keys per email. Anonymous signup is **off** unless `LEFTBRAIN_OPEN_SIGNUP=1`; with the web site, people sign in at `/login` instead.
 - **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key, and `403 {"error": "expired", "message": "key expired on 2026-11-25; create a new one at /dashboard"}` once a key's lifetime is up. Expired keys stop counting towards the 3-active cap.
-- **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`.
+- **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`, and `tools` (the key's scope, or `null` for every tool).
+- **Scoped keys**: a key can be limited to specific tools, and to specific modes of a tool — from the dashboard (the **Tools** disclosure on the create form, or **Edit scope** on a key's row) or with `leftbrain-keys … --tools "math,datetime,holidays:list+check"`. A scoped key's `tools/list` shows only the tools it may call, and a `tools/call` outside the scope returns the contract error `{"ok": false, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: list, check"}` — a result, not an HTTP error, so an agent reads it and stops. Keys without a scope may call everything; a changed scope applies on the key's next call.
 
 Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars), `LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback), and `LEFTBRAIN_TRUSTED_PROXY_HOPS` (default `1`) — how many proxies append to `X-Forwarded-For` in front of the process, so per-IP limits are keyed on the entry *your* proxy wrote rather than the caller-supplied leftmost one. One reverse proxy (Northflank, Render, Fly, nginx) is `1`; add Cloudflare in front and it becomes `2`; `0` means nothing proxies it and no forwarding header is believed.
 
@@ -180,11 +181,13 @@ Admin CLI (any DSN):
 
 ```bash
 leftbrain-keys create --owner you@example.com --daily 50000 --rpm 300 --expires 90d --note "partner"   # default 365d; --expires never warns
-leftbrain-keys list                                     # one JSON line per key, with expires_at / expired
+leftbrain-keys create --owner bot@example.com --tools "math,datetime,holidays:list+check"              # only these tools; tool:mode+mode narrows a tool
+leftbrain-keys list                                     # one JSON line per key, with expires_at / expired / tools
 leftbrain-keys disable lblz_xxxxxxxx
 leftbrain-keys enable lblz_xxxxxxxx
 leftbrain-keys revoke lblz_xxxxxxxx
 leftbrain-keys set lblz_xxxxxxxx --daily 20000 --rpm 120 --expires 30d   # --expires counts from now; also revives an expired key
+leftbrain-keys set lblz_xxxxxxxx --tools "numbers,convert"                # replace the key's scope; --all-tools lifts it
 leftbrain-keys set --all --daily 1000 --from-daily 5000                  # migrate every key still on an old default; drop --from-daily to hit every key
 leftbrain-keys usage --days 7
 leftbrain-keys stats

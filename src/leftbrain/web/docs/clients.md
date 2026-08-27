@@ -2,6 +2,8 @@
 
 leftbrain is a standard MCP server over Streamable HTTP. Point any client at `https://leftbrain.idlesync.in/mcp` with a bearer header. `/external/mcp` adds the network tools (weather, FX rates, geocoding, URL checks).
 
+A key limited to specific tools on the [Keys page](/dashboard) simply lists fewer tools in the client; a call outside its scope comes back as `{"ok": false, "error": "forbidden", …}` naming what the key may call, so an agent reads it and stops rather than retrying.
+
 <div class="callout">Would rather not edit config files? The quickstart has a <a href="/docs/quickstart#set-it-up-for-me">copy-paste prompt</a> that sets any of these clients up for you — it carries the exact format for each one. Writing your own agent instead? See <a href="/docs/custom-agents">Custom agents</a>.</div>
 
 ## Claude Code

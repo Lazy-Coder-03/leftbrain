@@ -75,7 +75,7 @@ Prefer to wire it up yourself? The rest of this page is the manual route.
 
 ## 1 · Get a key
 
-[Sign in with GitHub](/login) and create a key on the Keys page. The free tier gives every key {{daily_quota}} calls/day and {{rpm}} requests/minute. While you stay signed in, **Show** on the Keys page brings a key back whenever you need it — and every example below is already filled in with it.
+[Sign in with GitHub](/login) and create a key on the Keys page. The free tier gives every key {{daily_quota}} calls/day and {{rpm}} requests/minute. A key can be limited to specific tools — and to specific modes of a tool — from the **Tools** disclosure when you create it, or later with **Edit scope** on its row; a scoped key simply shows fewer tools to your client. While you stay signed in, **Show** on the Keys page brings a key back whenever you need it — and every example below is already filled in with it.
 
 ## 2 · Store it
 
