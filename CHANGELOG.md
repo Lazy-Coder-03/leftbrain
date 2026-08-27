@@ -10,37 +10,29 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
-- **`/docs/tools` answers a machine as well as a person.** `/docs/tools` and
-  `/docs/tools/<name>` now serve JSON to a client and HTML to a browser — the same content
-  negotiation `/` already used, so there is one URL per thing rather than two. The index lists
-  all eighteen tools (the four network ones included) with their modes and the contract's error
-  codes; a tool gives every mode's purpose, description, parameters with type, default and
-  required flag, and the example arguments. No key: discovery has to work before you have one.
-  `tools/list` over `/mcp` remains the authenticated, scope-aware route. `/` advertises the new
-  endpoint as `tools`.
+- **JSON tool reference.** `/docs/tools` and `/docs/tools/<name>` serve JSON to a client and
+  HTML to a browser, by content negotiation on `Accept`. The index lists all eighteen tools
+  with their modes, the version, and the contract's error codes; a tool gives each mode's
+  purpose, description, parameters (type, default, required) and example arguments. Neither
+  needs a key. `/` advertises the endpoint as `tools`. `tools/list` over `/mcp` is unchanged
+  and remains the authenticated, scope-aware route.
 
 - **Every response says what it cost** (#28 §6): a `meta` block with `tool`, `mode`,
   `latency_ms` (wall time in the server), `compute_ms` (time in the engine), `version`,
   `truncated` — lifted out of the result so a caller reading a list knows it is not the whole
   list — plus `request_id` and `quota` when the server has them. `X-Request-Id` and
   `X-Leftbrain-Latency-Ms` carry the first two as headers; a caller-supplied `X-Request-Id` is
-  kept so one id spans both sides of a trace. `meta` never affects `ok`, and `compute_ms` is
-  the regression alarm for the compute ceiling: a response whose `compute_ms` exceeds its own
-  deadline is a timeout that did not fire.
-- **A 15-second ceiling enforced by killing the work** (#28 §1 step 3). `math`, `text`,
-  `validate`, `collections` and `numbers` calls now run in a worker process that can be
-  terminated, because a thread cannot be: `int.__pow__`, `sre` and `difflib` are C loops that
-  never reach a bytecode boundary, so no async exception, signal or thread kill is ever
-  delivered — and the runaway holds the GIL, so the event loop and `/healthz` starve with it.
-  That is how one `math.eval 9^9^9^9` took the hosted instance offline for 35 minutes. A call
-  that reaches the deadline returns `timeout` with `stopped: "worker_terminated"`, the limit
-  and the real elapsed time; a caller-supplied `timeout` is clamped to the ceiling; a burst
-  that cannot get a worker returns the retryable `busy` rather than queueing behind a
-  15-second wait. Workers carry `RLIMIT_CPU` and `RLIMIT_AS` as a kernel backstop, use
-  `forkserver` on POSIX and are recycled every 200 calls to bound SymPy's caches. Configured
-  with `LEFTBRAIN_COMPUTE_TIMEOUT` and friends (README). Needs `pebble`, added to the `server`
-  extra; without it the server logs that isolation is off and runs in-process, and the library
-  always runs in-process.
+  kept so one id spans both sides of a trace. `meta` never affects `ok`.
+- **A 15-second compute ceiling** (#28 §1 step 3). `math`, `text`, `validate`, `collections`
+  and `numbers` calls run in a worker process that is terminated when the deadline passes. A
+  call that reaches it returns `timeout` with `stopped: "worker_terminated"`, the limit and
+  the elapsed time; a caller-supplied `timeout` is clamped to the ceiling; a call that cannot
+  get a worker within the queue deadline returns the retryable `busy`. Workers carry
+  `RLIMIT_CPU` and `RLIMIT_AS`, use `forkserver` on POSIX, and are recycled every 200 calls.
+  Configured with `LEFTBRAIN_COMPUTE_TIMEOUT`, `LEFTBRAIN_QUEUE_TIMEOUT`,
+  `LEFTBRAIN_MAX_INFLIGHT` and friends — see the README for the full table and the ingress
+  relationship. Needs `pebble`, added to the `server`, `all` and `dev` extras; without it the
+  server logs that isolation is off and runs in-process. The library always runs in-process.
 - **`retryable` on every failure, and four codes that say what was hit** (#28 §1, §4): the
   envelope's failure half is now `{ok: false, error, message, details?, retryable, hint?}`.
   `retryable` is `false` for everything except `busy` and `internal` — a client that reads only
@@ -54,10 +46,9 @@ All notable changes to leftbrain are recorded here. The format follows
   consequence of the input, so a site that knows its own failure was transient passes
   `retryable=True` at the raise instead.
 
-- **Layer-0 size caps: the enormous is refused before it is computed** (#28 §2e/§2f/§2g). Every
-  one of these reached the engine before; `math.eval 9^9^9^9` took the hosted instance down for
-  ~35 minutes. Each now costs microseconds and comes back as `too_large` naming the limit and the
-  knob to turn:
+- **Size caps: an input whose answer would be enormous is refused before it is computed**
+  (#28 §2e/§2f/§2g). Each check costs microseconds and returns `too_large`, naming the limit
+  and the parameter to change:
   - `math`: the expression is walked as an AST and the answer's size estimated in log10 space
     before anything is evaluated — SymPy computes `Integer ** Integer` while *parsing*, so
     `9^9^9^9`, `2^(2^100)`, `2^1000000`, `factorial(factorial(20))`, `gamma(10**10)` and
