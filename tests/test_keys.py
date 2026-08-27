@@ -271,6 +271,48 @@ def test_migration_adds_expires_at_to_an_existing_database(tmp_path):
     KeyStore(path)  # guarded: re-running is a no-op
 
 
+def test_set_limits_all_and_cli_set_all(tmp_path, capsys):
+    import json as _json
+
+    import pytest
+
+    from leftbrain.keys import main
+
+    db = str(tmp_path / "k.sqlite3")
+    store = KeyStore(db)
+    _, old1 = store.create("a@b.co", daily_quota=5000)
+    _, old2 = store.create("c@d.co", daily_quota=5000, rpm=30)
+    _, partner = store.create("p@q.co", daily_quota=50000, rpm=300)
+    assert store.set_limits_all() == 0  # nothing asked, nothing touched
+    assert store.set_limits_all(daily_quota=1000, from_daily=5000) == 2  # the migration: only the old default moves
+    assert store.get_by_prefix(partner.prefix).daily_quota == 50000
+    assert {store.get_by_prefix(k.prefix).daily_quota for k in (old1, old2)} == {1000}
+    assert store.get_by_prefix(old2.prefix).rpm == 30  # rpm untouched when not asked
+    assert store.set_limits_all(rpm=90) == 3  # every key, not just some
+    assert {k.rpm for k in store.list()} == {90}
+
+    main(["--db", db, "set", "--all", "--daily", "1000", "--from-daily", "50000"])
+    assert capsys.readouterr().out.strip() == "updated 1 key"
+    main(["--db", db, "set", "--all", "--daily", "1000"])
+    assert capsys.readouterr().out.strip() == "updated 3 keys"
+    main(["--db", db, "list"])
+    assert {_json.loads(line)["daily_quota"] for line in capsys.readouterr().out.splitlines()} == {1000}
+    main(["--db", db, "set", "--all", "--daily", "1000", "--from-daily", "5000"])
+    assert capsys.readouterr().out.strip() == "updated 0 keys"
+    # one key or all of them, never neither and never both; expiry stays per-key
+    for argv in (
+        ["set", "--daily", "1"],  # neither a prefix nor --all
+        ["set", "--all", old1.prefix, "--daily", "1"],  # both
+        ["set", "--all", "--expires", "never", "--daily", "1"],  # expiry is per key
+        ["set", "--all"],  # nothing to change
+        ["set", old1.prefix, "--from-daily", "5", "--daily", "1"],  # the filter is --all only
+    ):
+        with pytest.raises(SystemExit):
+            main(["--db", db, *argv])
+    main(["--db", db, "set", old1.prefix, "--daily", "7"])  # the single-key form is unchanged
+    assert capsys.readouterr().out.strip() == "ok" and store.get_by_prefix(old1.prefix).daily_quota == 7
+
+
 def test_cli_create_expires_and_set(tmp_path, capsys):
     import json as _json
 
