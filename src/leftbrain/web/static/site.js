@@ -55,14 +55,92 @@
     lifetime.addEventListener('change', syncWarning); syncWarning();
   }
 
-  // tool scope grid: unticking a tool disables its modes (disabled boxes are not posted); ticking it back ticks them all
+  // tool scope tree: a tool row with its modes as collapsible children. Unticking a tool
+  // disables its modes, because a disabled checkbox is not posted and "no modes" has to
+  // mean "not this tool" rather than "this tool, with nothing".
   $$('[data-scope-grid]').forEach(function (grid) {
-    var summary = grid.parentNode.querySelector('[data-scope-summary]'), tools = $$('input[data-tool]', grid);
-    function sync(tool, ticked) {
-      $$('input[data-of="' + tool.getAttribute('data-tool') + '"]', grid).forEach(function (m) { m.disabled = !tool.checked; if (ticked) m.checked = true; });
-      if (summary) { var n = tools.filter(function (t) { return t.checked; }).length; summary.textContent = n === tools.length ? 'all tools' : n === 1 ? '1 tool' : n + ' of ' + tools.length + ' tools'; }
+    var summary = grid.parentNode.querySelector('[data-scope-summary]');
+    var tools = $$('input[data-tool]', grid);
+
+    function modesOf(tool) { return $$('input[data-of="' + tool.getAttribute('data-tool') + '"]', grid); }
+
+    function paint(node, tool) {
+      var modes = modesOf(tool), on = tool.checked;
+      var picked = modes.filter(function (m) { return m.checked; }).length;
+      node.classList.toggle('off', !on);
+      // A tool with some but not all of its modes is neither ticked nor unticked, and the
+      // checkbox says so rather than rounding to one of them.
+      tool.indeterminate = on && modes.length > 0 && picked > 0 && picked < modes.length;
+      node.classList.toggle('partial', tool.indeterminate);
+      var count = node.querySelector('[data-count]');
+      if (count) count.textContent = (on ? picked : 0) + '/' + modes.length;
     }
-    tools.forEach(function (t) { t.addEventListener('change', function () { sync(t, t.checked); }); sync(t, false); });
+
+    var headCount = grid.querySelector('[data-scope-count]');
+    function total() {
+      var n = tools.filter(function (t) { return t.checked; }).length;
+      var text = n === tools.length ? 'all tools' : n === 1 ? '1 tool' : n + ' of ' + tools.length + ' tools';
+      if (summary) summary.textContent = text;
+      if (headCount) headCount.textContent = n === tools.length ? 'All ' + tools.length + ' tools' : text;
+    }
+
+    grid.addEventListener('click', function (e) {
+      var t = e.target.closest && e.target.closest('[data-twisty]');
+      if (!t) return;
+      var node = t.closest('[data-node]');
+      node.setAttribute('aria-expanded', node.getAttribute('aria-expanded') !== 'true');
+    });
+
+    grid.addEventListener('change', function (e) {
+      var box = e.target;
+      if (box.hasAttribute('data-tool')) {
+        // Ticking a tool back on restores every mode: the useful default is "all of it",
+        // and narrowing from there is one more click.
+        modesOf(box).forEach(function (m) { m.disabled = !box.checked; if (box.checked) m.checked = true; });
+        paint(box.closest('[data-node]'), box);
+      } else if (box.hasAttribute('data-of')) {
+        var node = box.closest('[data-node]'), tool = node.querySelector('input[data-tool]');
+        var modes = modesOf(tool);
+        // Unticking the last mode is how you turn the tool off; ticking one turns it back on.
+        if (!modes.some(function (m) { return m.checked; })) { tool.checked = false; modes.forEach(function (m) { m.disabled = true; }); }
+        else if (!tool.checked) { tool.checked = true; modes.forEach(function (m) { m.disabled = false; }); }
+        paint(node, tool);
+      } else return;
+      total();
+    });
+
+    function setAll(on) {
+      tools.forEach(function (t) {
+        t.checked = on;
+        modesOf(t).forEach(function (m) { m.disabled = !on; m.checked = on; });
+        paint(t.closest('[data-node]'), t);
+      });
+      total();
+    }
+    var head = grid.querySelector('.tools-head');
+    if (head) {
+      head.addEventListener('click', function (e) {
+        var b = e.target.closest && e.target.closest('button');
+        if (!b) return;
+        if (b.hasAttribute('data-all')) setAll(true);
+        else if (b.hasAttribute('data-none')) setAll(false);
+        else if (b.hasAttribute('data-expand')) {
+          var nodes = $$('[data-node]', grid).filter(function (n) { return n.querySelector('.kids'); });
+          var open = nodes.every(function (n) { return n.getAttribute('aria-expanded') === 'true'; });
+          nodes.forEach(function (n) { n.setAttribute('aria-expanded', !open); });
+          b.textContent = open ? 'Expand all' : 'Collapse all';
+        }
+      });
+    }
+
+    // A tool that is off, or only partly on, is worth seeing without a click.
+    tools.forEach(function (t) {
+      var node = t.closest('[data-node]');
+      modesOf(t).forEach(function (m) { m.disabled = !t.checked; });
+      paint(node, t);
+      if (node.classList.contains('partial')) node.setAttribute('aria-expanded', 'true');
+    });
+    total();
   });
 
   // docs key picker: choosing a key reloads the page with that key filled in
