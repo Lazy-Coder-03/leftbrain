@@ -136,3 +136,37 @@ def test_a_polynomial_with_no_closed_form_gets_numeric_roots():
         assert any("numeric" in x for x in r["assumptions"] + r["warnings"])
     else:
         assert r["error"] == "unsupported" and "closed form" in r["message"]
+
+
+# --- two the first pass through §2c/§2d missed ------------------------------
+
+
+def test_zero_to_the_zero_says_which_convention_it_used():
+    """SymPy returns 1, which is the usual convention and not the only one: as a limit,
+    x^y at the origin depends on the path taken."""
+    r = math_tool("eval", expr="0^0")
+    assert r["ok"] and r["result"]["value"] == "1"
+    assert any("0^0" in a for a in r["assumptions"])
+
+
+def test_an_ordinary_power_claims_nothing():
+    assert math_tool("eval", expr="2^3")["assumptions"] == []
+
+
+def test_an_irrational_gets_the_fraction_the_mode_exists_to_produce():
+    """`nsimplify(pi, rational=True)` hands `pi` straight back, so `form: fraction`
+    returned its own input."""
+    r = math_tool("convert_form", expr="pi", form="fraction")
+    assert r["ok"] and "/" in r["result"]["value"]
+    assert r["result"]["approximate"] is True and r["result"]["absolute_error"]
+    assert r["warnings"] and any("irrational" in a for a in r["assumptions"])
+
+
+def test_a_tolerance_that_cannot_be_met_is_said_so():
+    r = math_tool("convert_form", expr="pi", form="fraction", tolerance=1e-40)
+    assert r["ok"] is False and r["error"] == "unsupported"
+
+
+def test_a_value_that_really_is_rational_is_exact_and_says_nothing_extra():
+    r = math_tool("convert_form", expr="0.375", form="fraction")
+    assert r["result"]["value"] == "3/8" and "approximate" not in r["result"]

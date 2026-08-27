@@ -6,6 +6,8 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-27
+
 ### Added
 
 - **Every response says what it cost** (#28 §6): a `meta` block with `tool`, `mode`,
@@ -413,6 +415,3 @@ still change before 1.0, so pin an exact version if you build on it.
   cookie, every mutation is CSRF-checked, and any page carrying a key is sent
   `Cache-Control: no-store`.
 
-[Unreleased]: https://github.com/Lazy-Coder-03/leftbrain/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/Lazy-Coder-03/leftbrain/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/Lazy-Coder-03/leftbrain/releases/tag/v0.1.0

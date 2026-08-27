@@ -294,6 +294,9 @@ _MOD_INFIX = re.compile(r"(\([^()]*\)|[\w.]+)\s+mod\s+(\([^()]*\)|[\w.]+)")
 #: `√` followed by a number or an identifier, rather than by a bracket.
 _ROOT_BARE = re.compile(r"√\s*(\d+(?:\.\d+)?|[A-Za-z_]\w*)")
 
+#: `0^0` written any of the ways the parser accepts.
+_ZERO_POWER_ZERO = re.compile(r"(?<![\d.])0\s*(?:\^|\*\*)\s*0(?![\d.])")
+
 
 def _preprocess(src: str) -> tuple[str, list[str]]:
     """Normalise human/LLM-written math into parser-friendly text."""
@@ -726,6 +729,10 @@ def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
     elif isinstance(expr, sp.Basic):
         expr = sp.simplify(expr) if expr.free_symbols else sp.expand(expr)
     _check_defined(expr, p["expr"])
+    if _ZERO_POWER_ZERO.search(p["expr"].replace(" ", "")):
+        # SymPy returns 1, which is the usual convention and not the only one: the limit
+        # of x^y at the origin depends on the path. Say which was used (#28 SS2c).
+        assumptions.append("0^0 taken as 1, the combinatorial convention; as a limit it is indeterminate")
     d = _describe(expr, p.get("precision", 15))
     if exact_only:
         d.pop("decimal", None)
@@ -1256,6 +1263,26 @@ def _mode_stats(p: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def _rational_approximation(expr: Any, tolerance: Any) -> tuple[Any, Any] | None:
+    """The closest fraction to an irrational value, and how far off it is.
+
+    `tolerance` is the largest error accepted; without one the denominator is bounded so
+    the answer is a fraction a person can read rather than a 15-digit ratio.
+    """
+    try:
+        value = sp.N(expr, 30)
+        if not value.is_real:
+            return None
+        limit = 10**6 if tolerance is None else max(10, int(1 / float(tolerance)))
+        best = sp.Rational(Fraction(float(value)).limit_denominator(limit))
+    except (TypeError, ValueError, ZeroDivisionError, OverflowError, AttributeError):
+        return None
+    error = abs(sp.N(best - value, 30))
+    if tolerance is not None and error > sp.Float(str(tolerance)):
+        return None
+    return best, error
+
+
 def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     form = (p.get("form") or "decimal").lower()
@@ -1285,6 +1312,25 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
     if form in ("fraction", "rational", "exact"):
         tol = p.get("tolerance")
         e = sp.nsimplify(expr, rational=True, tolerance=tol)
+        if not e.is_Rational:
+            # `nsimplify(pi, rational=True)` hands `pi` straight back, so the mode that
+            # exists to produce a fraction returned the input unchanged (#28 SS2d).
+            note = _rational_approximation(expr, tol)
+            if note is None:
+                raise Unsupported(
+                    f"{p['expr']} has no rational form and could not be approximated numerically",
+                    details={"expr": p["expr"], "form": form},
+                    hint="Give a numeric expression, or use form='decimal'.",
+                )
+            e, error = note
+            d = _describe(e, precision)
+            d["approximate"] = True
+            d["absolute_error"] = _clean_decimal(sp.N(error, 6))
+            return ok(
+                d,
+                assumptions=assumptions + [f"{p['expr']} is irrational, so this is the closest fraction within the tolerance, not an exact value"],
+                warnings=[f"approximation: differs from {p['expr']} by about {_clean_decimal(sp.N(error, 3))}"],
+            )
         return ok(_describe(e, precision), assumptions=assumptions + (["tolerance applied"] if tol else []))
     if form == "scientific":
         v = sp.N(expr, precision)

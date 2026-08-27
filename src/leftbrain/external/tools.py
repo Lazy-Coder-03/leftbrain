@@ -8,6 +8,7 @@ import time
 from typing import Any
 from urllib.parse import urlsplit
 
+from .. import __version__
 from ..contract import ToolError, ok, tool
 
 try:
@@ -15,7 +16,7 @@ try:
 except ImportError:  # pragma: no cover
     httpx = None  # type: ignore[assignment]
 
-USER_AGENT = "leftbrain/0.1 (+https://github.com/Lazy-Coder-03/leftbrain)"
+USER_AGENT = f"leftbrain/{__version__} (+https://leftbrain.idlesync.in)"
 TIMEOUT = 15.0
 #: `url_check` reaches whatever the caller names, so it gets a shorter connect budget than
 #: the API calls: a refused port should come back quickly, not sit for fifteen seconds.

@@ -328,7 +328,7 @@ leftbrain-keys stats
 ## Development
 
 ```bash
-git clone https://github.com/Lazy-Coder-03/leftbrain && cd leftbrain
+git clone <this repo> && cd leftbrain
 python -m venv .venv && . .venv/bin/activate     # .venv\Scripts\activate on Windows
 pip install -e ".[dev]"
 pytest                          # unit tests
