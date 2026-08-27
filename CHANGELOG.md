@@ -8,6 +8,10 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- `datetime` `now` takes a list as `tz` — zone names or `{tz, label}` objects — and answers with
+  the shared instant as `utc` plus one full per-zone entry under `zones`, each carrying its
+  `label` back. `convert_tz` accepts the same `{tz, label}` entries in `to_tz`. One round-trip
+  for "what time is it in each of our offices right now"; the single-`tz` form is unchanged.
 - **`finance` tool** (13th core tool): `emi` (instalment, totals and amortisation schedule that
   reconciles to zero), `compound` (future value with optional per-period contributions and the
   effective annual rate), `cagr`, `npv_irr` (IRR by bisection), `gst` (inclusive/exclusive split

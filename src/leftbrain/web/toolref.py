@@ -910,11 +910,13 @@ DATETIME = ToolDoc(
             description=(
                 "Returns the current instant with its ISO string, date, weekday, time, UTC offset, "
                 "zone, unix timestamp, DST flag, ISO week and day of year. With no `tz` the answer is "
-                "UTC and says so in `assumptions`. This is the only mode whose output changes between "
+                "UTC and says so in `assumptions`. Pass a list as `tz` for several zones in one call: "
+                "the result is then `utc` plus one full entry per zone under `zones`, each with the "
+                "`label` you gave it, if any. This is the only mode whose output changes between "
                 "calls; everything else can be pinned by passing explicit dates."
             ),
             params=(
-                Param("tz", "IANA zone name, a fixed `UTC+05:30` offset, or `local`.", default="`UTC`"),
+                Param("tz", "IANA zone name, a fixed `UTC+05:30` offset, or `local` — or a list of them, where an entry may be `{\"tz\": ..., \"label\": ...}`.", default="`UTC`"),
             ),
         ),
         Mode(
@@ -929,7 +931,7 @@ DATETIME = ToolDoc(
             params=(
                 Param("value", "The instant to convert. `now` or omitted uses the current instant.", default="`now`"),
                 Param("from_tz", "Zone of `value` when it carries no offset."),
-                Param("to_tz", "Target zone, or a list of them.", required=True),
+                Param("to_tz", "Target zone, or a list of them; an entry may be `{\"tz\": ..., \"label\": ...}` and the label is echoed back.", required=True),
                 Param("locale", "Country code used to read numeric dates, e.g. `IN`."),
             ),
         ),

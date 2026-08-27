@@ -127,9 +127,9 @@ def math(
 def datetime(
     mode: str = "now",
     value: str | None = None,
-    tz: str | None = None,
+    tz: str | list[str | dict[str, str]] | None = None,
     from_tz: str | None = None,
-    to_tz: str | list[str] | None = None,
+    to_tz: str | dict[str, str] | list[str | dict[str, str]] | None = None,
     locale: str | None = None,
     ref_date: str | None = None,
     amount: float | None = None,
@@ -163,8 +163,8 @@ def datetime(
     business days, recurring schedules, cron, ages or fiscal periods. Never compute these yourself.
 
     mode:
-    - now (tz) - the current instant; the model has no clock without this
-    - convert_tz (value, from_tz, to_tz) - IANA names only ("Asia/Kolkata"); abbreviations like IST are refused as ambiguous
+    - now (tz) - the current instant; the model has no clock without this. tz may be a list of zones (or [{tz, label}]) for several at once
+    - convert_tz (value, from_tz, to_tz) - IANA names only ("Asia/Kolkata"); abbreviations like IST are refused as ambiguous; to_tz takes a list, entries may be {tz, label}
     - parse (value, locale, ref_date) - ISO, written, or relative ("next friday 5pm"); 03/04/2025 needs locale
     - add (value, amount, unit) - unit: days|weeks|months|years|hours|minutes|business_days (+ region)
     - diff (start, end, unit) - calendar breakdown + totals; unit=business_days for working days
