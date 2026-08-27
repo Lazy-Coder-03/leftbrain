@@ -6,6 +6,8 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-27
+
 ### Added
 
 - **Docs: connecting Claude on the web, and a ChatGPT section.** Which clients can carry a bearer
