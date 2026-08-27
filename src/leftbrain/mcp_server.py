@@ -51,6 +51,7 @@ from .core import (
 from .core import (
     validate as validate_mod,
 )
+from .scopes import enforce
 
 INSTRUCTIONS = """leftbrain provides exact, deterministic answers for things language models get wrong.
 Call these tools BEFORE stating any number, date, conversion, count, ordering, or validation result -
@@ -73,6 +74,7 @@ def _clean(d: dict[str, Any]) -> dict[str, Any]:
 
 
 @server.tool(name="math")
+@enforce("math")
 def math(
     mode: str = "eval",
     expr: str | None = None,
@@ -127,6 +129,7 @@ def math(
 
 
 @server.tool(name="datetime")
+@enforce("datetime")
 def datetime(
     mode: str = "now",
     value: str | int | float | None = None,
@@ -187,6 +190,7 @@ def datetime(
 
 
 @server.tool(name="scale")
+@enforce("scale")
 def scale(
     from_qty: float | str | None = None,
     to_qty: float | str | None = None,
@@ -209,6 +213,7 @@ def scale(
 
 
 @server.tool(name="convert")
+@enforce("convert")
 def convert(
     value: float | str,
     from_unit: str,
@@ -242,6 +247,7 @@ def convert(
 
 
 @server.tool(name="holidays")
+@enforce("holidays")
 def holidays(
     mode: str = "list",
     region: str | None = None,
@@ -262,6 +268,7 @@ def holidays(
 
 
 @server.tool(name="numbers")
+@enforce("numbers")
 def numbers(
     mode: str = "compare",
     values: list[Any] | None = None,
@@ -302,6 +309,7 @@ def numbers(
 
 
 @server.tool(name="finance")
+@enforce("finance")
 def finance(
     mode: str = "emi",
     principal: Any | None = None,
@@ -343,6 +351,7 @@ def finance(
 
 
 @server.tool(name="text")
+@enforce("text")
 def text(
     mode: str = "count",
     text: str | None = None,
@@ -377,6 +386,7 @@ def text(
 
 
 @server.tool(name="collections")
+@enforce("collections")
 def collections(
     mode: str = "set_ops",
     items: list[Any] | str | None = None,
@@ -426,6 +436,7 @@ def collections(
 
 
 @server.tool(name="validate")
+@enforce("validate")
 def validate(
     mode: str = "assert",
     data: Any | None = None,
@@ -453,6 +464,7 @@ def validate(
 
 
 @server.tool(name="random")
+@enforce("random")
 def random(
     mode: str = "uuid",
     n: int | None = None,
@@ -480,6 +492,7 @@ def random(
 
 
 @server.tool(name="geo_offline")
+@enforce("geo_offline")
 def geo(
     mode: str = "tz_for_place",
     place: str | None = None,
@@ -502,6 +515,7 @@ def geo(
 
 
 @server.tool(name="encode")
+@enforce("encode")
 def encode(
     mode: str = "hash",
     text: Any | None = None,
@@ -531,6 +545,7 @@ def encode(
 
 
 @server.tool(name="color")
+@enforce("color")
 def color(
     mode: str = "convert",
     value: str | None = None,

@@ -15,13 +15,16 @@ Northflank's ``DATABASE_URL`` is honoured automatically.
 
 CLI::
 
-    leftbrain-keys create --owner you@example.com [--daily 1000] [--rpm 60] [--expires 90d|never] [--note "..."]
+    leftbrain-keys create --owner you@example.com [--daily 1000] [--rpm 60] [--expires 90d|never] [--note "..."] [--tools "math,holidays:list+check"]
     leftbrain-keys list | disable <prefix> | enable <prefix> | revoke <prefix>
-    leftbrain-keys usage [<prefix>] [--days 7] | set <prefix> --daily N --rpm N --expires 90d|never | stats
+    leftbrain-keys usage [<prefix>] [--days 7] | set <prefix> --daily N --rpm N --expires 90d|never --tools "..." | --all-tools | stats
 
 Keys may carry an expiry (``expires_at``, UTC ISO). An expired key is refused with 403
 and no longer counts towards the owner's active-key cap; ``never`` is allowed but is a
 liability if the key leaks, so the dashboard and CLI warn when it is chosen.
+
+Keys may also carry a scope (``scope``, JSON; see :mod:`leftbrain.scopes`): the tools, and
+the modes of each, the key may call. No scope means every tool.
 """
 
 from __future__ import annotations
@@ -40,6 +43,8 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+
+from .scopes import Scope, parse_scope, summarize
 
 DEFAULT_DB = "leftbrain-keys.sqlite3"
 DEFAULT_DAILY = int(os.environ.get("LEFTBRAIN_DEFAULT_DAILY_QUOTA", "1000"))
@@ -67,7 +72,8 @@ _SCHEMA = [
         rpm         INTEGER NOT NULL,
         last_used   TEXT,
         secret_enc  TEXT,
-        expires_at  TEXT
+        expires_at  TEXT,
+        scope       TEXT
     )""",
     "CREATE INDEX IF NOT EXISTS idx_keys_owner ON keys(owner)",
     "CREATE INDEX IF NOT EXISTS idx_keys_prefix ON keys(prefix)",
@@ -146,6 +152,11 @@ class KeyInfo:
     revealable: bool = False  # a decryptable copy of the key exists
     expires_at: str | None = None  # UTC ISO; None never expires
     legacy: bool = False  # issued before this store could reveal keys; it can never be shown again
+    scope: Scope | None = None  # the tools (and modes) it may call; None is every tool
+
+    @property
+    def scope_summary(self) -> str:
+        return summarize(self.scope)
 
     @property
     def expired(self) -> bool:
@@ -173,8 +184,8 @@ class KeyInfo:
         return self.usable and not self.legacy
 
     def to_dict(self) -> dict[str, Any]:
-        fields = {k: v for k, v in self.__dict__.items() if k not in ("revealable", "legacy")}
-        return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today)}
+        fields = {k: v for k, v in self.__dict__.items() if k not in ("revealable", "legacy", "scope")}
+        return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today), "tools": self.scope.to_dict() if self.scope else None}
 
 
 @dataclass
@@ -257,7 +268,7 @@ class KeyStore:
 
     def _migrate(self) -> None:
         """Add columns that older databases predate. Guarded, so it is safe to re-run."""
-        added = ("secret_enc", "expires_at")
+        added = ("secret_enc", "expires_at", "scope")
         if self.db.pg:
             for col in added:
                 self.db.run(f"ALTER TABLE keys ADD COLUMN IF NOT EXISTS {col} TEXT")
@@ -272,20 +283,22 @@ class KeyStore:
 
     # -- issue / manage ------------------------------------------------------
 
-    def create(self, owner: str, *, note: str | None = None, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM, lifetime_days: int | None = None) -> tuple[str, KeyInfo]:
+    def create(self, owner: str, *, note: str | None = None, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM, lifetime_days: int | None = None, scope: Scope | None = None) -> tuple[str, KeyInfo]:
         raw = KEY_PREFIX + secrets.token_urlsafe(30)
         prefix = raw[:PREFIX_LEN]
         now = _now()
         enc = self._encrypt(raw)
         expires_at = _expiry(lifetime_days)
         with self._lock:
-            self.db.run("INSERT INTO keys(key_hash, prefix, owner, note, created_at, disabled, daily_quota, rpm, secret_enc, expires_at) VALUES (?,?,?,?,?,0,?,?,?,?)", (_hash(raw), prefix, owner.strip().lower(), note, now, daily_quota, rpm, enc, expires_at))
-        return raw, KeyInfo(prefix, owner, note, now, False, daily_quota, rpm, None, revealable=enc is not None, expires_at=expires_at)
+            self.db.run("INSERT INTO keys(key_hash, prefix, owner, note, created_at, disabled, daily_quota, rpm, secret_enc, expires_at, scope) VALUES (?,?,?,?,?,0,?,?,?,?,?)", (_hash(raw), prefix, owner.strip().lower(), note, now, daily_quota, rpm, enc, expires_at, scope.to_json() if scope else None))
+        return raw, KeyInfo(prefix, owner, note, now, False, daily_quota, rpm, None, revealable=enc is not None, expires_at=expires_at, scope=scope)
 
     def _info(self, row: dict[str, Any]) -> KeyInfo:
         used = self.db.scalar("SELECT count FROM usage WHERE key_hash=? AND day=?", (row["key_hash"], _today()))
         encrypted = bool(row.get("secret_enc"))
-        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0), revealable=encrypted and self.can_reveal, expires_at=row.get("expires_at"), legacy=self.can_reveal and not encrypted)
+        # not strict: a scope naming a tool this build no longer has must still load (it allows nothing extra)
+        scope = parse_scope(row.get("scope"), strict=False)
+        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0), revealable=encrypted and self.can_reveal, expires_at=row.get("expires_at"), legacy=self.can_reveal and not encrypted, scope=scope)
 
     def _active_count(self, owner: str) -> int:
         """Keys holding one of the owner's slots. Legacy keys (issued before reveal) hold none: the owner cannot see them, so they must not block a key they can."""
@@ -350,6 +363,11 @@ class KeyStore:
         with self._lock:
             return self.db.run("UPDATE keys SET expires_at=? WHERE prefix=?", (_expiry(lifetime_days), prefix)) > 0
 
+    def set_scope(self, prefix: str, scope: Scope | None) -> bool:
+        """Limit the key to ``scope``, or lift the limit (None). The server is stateless, so the next call sees it."""
+        with self._lock:
+            return self.db.run("UPDATE keys SET scope=? WHERE prefix=?", (scope.to_json() if scope else None, prefix)) > 0
+
     # -- verify + meter ------------------------------------------------------
 
     def verify_and_count(self, raw_key: str) -> Verdict:
@@ -402,14 +420,14 @@ class KeyStore:
         raw, _ = self.create(email, note="self-serve signup", daily_quota=daily_quota, rpm=rpm, lifetime_days=DEFAULT_LIFETIME_DAYS)
         return raw, "ok"
 
-    def create_for_owner(self, email: str, name: str | None, *, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM, lifetime_days: int | None = DEFAULT_LIFETIME_DAYS) -> tuple[str | None, Any]:
+    def create_for_owner(self, email: str, name: str | None, *, daily_quota: int = DEFAULT_DAILY, rpm: int = DEFAULT_RPM, lifetime_days: int | None = DEFAULT_LIFETIME_DAYS, scope: Scope | None = None) -> tuple[str | None, Any]:
         """Dashboard key creation: verified owner, enforce the active-key cap, no IP throttle."""
         email = (email or "").strip().lower()
         with self._lock:
             if self._active_count(email) >= MAX_ACTIVE_KEYS_PER_EMAIL:
                 return None, f"you already have {MAX_ACTIVE_KEYS_PER_EMAIL} active keys; revoke one first"
         note = (name or "").strip()[:40] or None
-        return self.create(email, note=note, daily_quota=daily_quota, rpm=rpm, lifetime_days=lifetime_days)
+        return self.create(email, note=note, daily_quota=daily_quota, rpm=rpm, lifetime_days=lifetime_days, scope=scope)
 
     def owns(self, email: str, prefix: str) -> bool:
         row = self.db.one("SELECT owner FROM keys WHERE prefix = ?", (prefix,))
@@ -464,6 +482,7 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--daily", type=int, default=DEFAULT_DAILY)
     c.add_argument("--rpm", type=int, default=DEFAULT_RPM)
     c.add_argument("--expires", type=parse_lifetime, default=365, metavar="90d|never", help="lifetime in days, or never (default 365d)")
+    c.add_argument("--tools", metavar='"math,holidays:list+check"', help="limit the key to these tools (tool:mode+mode limits a tool's modes); default: every tool")
     ls = sub.add_parser("list")
     ls.add_argument("--owner")
     for name in ("disable", "enable", "revoke"):
@@ -476,15 +495,24 @@ def main(argv: list[str] | None = None) -> None:
     st.add_argument("--daily", type=int)
     st.add_argument("--rpm", type=int)
     st.add_argument("--expires", type=parse_lifetime, default=argparse.SUPPRESS, metavar="90d|never", help="new expiry counted from now, or never (one key only)")
+    st.add_argument("--tools", metavar='"math,holidays:list+check"', help="limit the key to these tools (one key only)")
+    st.add_argument("--all-tools", action="store_true", help="lift the tool limit: every tool and mode again (one key only)")
     u = sub.add_parser("usage")
     u.add_argument("prefix", nargs="?")
     u.add_argument("--days", type=int, default=7)
     sub.add_parser("stats")
     args = ap.parse_args(argv)
 
+    scope: Scope | None = None
+    if getattr(args, "tools", None):
+        try:
+            scope = parse_scope(args.tools)
+        except ValueError as e:
+            ap.error(f"--tools: {e}")
+
     store = KeyStore(args.db, secret=os.environ.get("LEFTBRAIN_SECRET"))
     if args.cmd == "create":
-        raw, info = store.create(args.owner, note=args.note, daily_quota=args.daily, rpm=args.rpm, lifetime_days=args.expires)
+        raw, info = store.create(args.owner, note=args.note, daily_quota=args.daily, rpm=args.rpm, lifetime_days=args.expires, scope=scope)
         print(json.dumps({"key": raw, **info.to_dict()}, indent=2))
         print("\nStore this key now." if store.can_reveal else "\nStore this key now - it cannot be shown again.")
         if args.expires is None:
@@ -499,6 +527,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "set" and args.all:
         if args.prefix or hasattr(args, "expires"):
             ap.error("--all takes no prefix and no --expires; expiry is set per key")
+        if args.tools or args.all_tools:
+            ap.error("--all takes no --tools / --all-tools; a scope is set per key")
         if args.daily is None and args.rpm is None:
             ap.error("--all needs --daily and/or --rpm")
         n = store.set_limits_all(daily_quota=args.daily, rpm=args.rpm, from_daily=args.from_daily)
@@ -508,11 +538,15 @@ def main(argv: list[str] | None = None) -> None:
             ap.error("give a key prefix, or --all")
         if args.from_daily is not None:
             ap.error("--from-daily only applies with --all")
+        if args.tools and args.all_tools:
+            ap.error("--tools and --all-tools are alternatives")
         changed = store.set_limits(args.prefix, daily_quota=args.daily, rpm=args.rpm)
         if hasattr(args, "expires"):
             changed = store.set_expiry(args.prefix, args.expires) or changed
             if args.expires is None:
                 print("Warning: " + NEVER_EXPIRES_WARNING, file=sys.stderr)
+        if args.tools or args.all_tools:
+            changed = store.set_scope(args.prefix, scope) or changed
         print("ok" if changed else "nothing changed")
     elif args.cmd == "usage":
         for row in store.usage(args.prefix, args.days):

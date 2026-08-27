@@ -8,6 +8,7 @@ from typing import Any
 from mcp.server import MCPServer
 
 from .. import __version__
+from ..scopes import enforce
 from . import tools
 
 server = MCPServer(
@@ -23,6 +24,7 @@ def _clean(d: dict[str, Any]) -> dict[str, Any]:
 
 
 @server.tool(name="weather")
+@enforce("weather")
 def weather(mode: str = "current", place: str | None = None, lat: float | None = None, lon: float | None = None, days: int | None = None, date: str | None = None, end_date: str | None = None, units: str | None = None, tz: str | None = None) -> dict[str, Any]:
     """Live weather for a place or coordinates (Open-Meteo, no key).
     mode: current | forecast (days 1-16) | historical (date, end_date; back to 1940) | summary (one-line + week).
@@ -32,6 +34,7 @@ def weather(mode: str = "current", place: str | None = None, lat: float | None =
 
 
 @server.tool(name="fx_rate")
+@enforce("fx_rate")
 def fx_rate(base: str = "USD", to: str | list[str] | None = None, date: str | None = None, amount: float | None = None) -> dict[str, Any]:
     """Exchange rates (ECB reference via Frankfurter). base="USD", to="INR" or ["INR","EUR"], date="2026-01-15" for historical.
     Returns rates_table_for_convert to pass straight into the core convert tool as rates=.
@@ -40,6 +43,7 @@ def fx_rate(base: str = "USD", to: str | list[str] | None = None, date: str | No
 
 
 @server.tool(name="geo")
+@enforce("geo")
 def geo(mode: str = "geocode", place: str | None = None, lat: float | None = None, lon: float | None = None, origin: Any | None = None, destination: Any | None = None, profile: str | None = None, limit: int | None = None) -> dict[str, Any]:
     """Online geo lookups that need the network.
     mode: geocode (place -> lat/lon/timezone) | reverse (lat/lon -> address) | route (driving
@@ -49,6 +53,7 @@ def geo(mode: str = "geocode", place: str | None = None, lat: float | None = Non
 
 
 @server.tool(name="url_check")
+@enforce("url_check")
 def url_check(url: str, method: str | None = None) -> dict[str, Any]:
     """Actually fetch a URL: status code, redirect chain, final URL, content-type, latency. Use before claiming a link works."""
     return tools.url_check(**_clean(dict(url=url, method=method)))

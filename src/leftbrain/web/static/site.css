@@ -56,6 +56,13 @@ table.keys{width:100%;border-collapse:collapse;font-size:.92rem}table.keys th{te
 .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:.72rem;font-family:var(--mono);border:1px solid currentColor}.pill.ok{color:var(--good)}.pill.off{color:var(--ink2)}.pill.soon{color:var(--bad)}
 .newkey{display:flex;gap:10px;margin:18px 0}.newkey input,.newkey select{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:var(--radius);background:var(--bg);color:var(--ink)}.newkey input{flex:1}.newkey select{font-family:var(--mono);font-size:.88rem}
 .hint.warn{color:var(--bad)}.hint.warn a{color:inherit}.newkey+.hint.warn{margin:-8px 0 14px}.hint[hidden]{display:none}
+/* per-key tool scope: the grid on the create form (collapsed) and on the edit page */
+.newkey{flex-wrap:wrap}.newkey .scope-pick{flex-basis:100%;font-size:.92rem}.scope-pick summary{cursor:pointer;color:var(--ink2)}.scope-pick summary .hint{margin-left:6px}.scope-pick>.hint{margin:8px 0 0;font-family:var(--body);font-size:.85rem}
+.scope{display:grid;grid-template-columns:repeat(3,1fr);gap:12px 18px;margin:12px 0 4px;padding:14px;border:1px solid var(--line2);border-radius:var(--radius);background:var(--bg2)}
+.scope-tool{display:grid;gap:4px;align-content:start}.scope-tool>label{font-family:var(--mono);font-weight:600;font-size:.85rem}.scope label{cursor:pointer}
+.scope-modes{display:flex;flex-wrap:wrap;gap:2px 10px;padding-left:22px;font-size:.8rem;color:var(--ink2)}.scope-modes label{white-space:nowrap}.scope-modes label:has(input:disabled){opacity:.45}
+.lede.sm{font-size:1rem;margin:10px 0 18px}.scopeform .cta{margin-top:16px}td .tools{font-size:.85rem;color:var(--ink2)}
+@media (max-width:860px){.scope{grid-template-columns:1fr 1fr}}
 .keybar .hint.expiry{margin-left:0;flex-basis:100%;font-family:var(--body)}
 .reveal{margin:0 0 18px;padding:16px;border:1px dashed var(--accent);border-radius:var(--radius);background:var(--accent-soft);position:relative}.reveal code{display:block;font-size:1rem;margin:8px 0;word-break:break-all}.reveal .note code{display:inline;font-size:inherit;margin:0}.reveal .note{font-size:.85rem;color:var(--ink2)}.reveal .copy{position:absolute;top:12px;right:12px}
 /* docs */
