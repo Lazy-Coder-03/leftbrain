@@ -639,14 +639,52 @@ def _phrase_to_rrule(phrase: str) -> str | None:
 # --------------------------------------------------------------------------- #
 
 
-def _mode_now(p: dict[str, Any]) -> dict[str, Any]:
-    tz, name, a = resolve_tz(p.get("tz") or "UTC")
-    now = datetime.now(tz)
+def _tz_targets(spec: Any, field: str) -> list[tuple[Any, str | None]]:
+    """A zone list as (zone, label) pairs. Entries are zone names or ``{"tz": ..., "label": ...}``; the label is echoed back so a caller can tell two entries in the same zone apart."""
+    if not isinstance(spec, list):
+        spec = [spec]
+    if not spec:
+        raise ToolError(f"{field} is an empty list; give at least one zone")
+    out: list[tuple[Any, str | None]] = []
+    for entry in spec:
+        if isinstance(entry, dict):
+            if not entry.get("tz"):
+                raise ToolError(f"each {field} entry needs a 'tz' (IANA zone name); got {entry!r}")
+            label = entry.get("label")
+            if label is not None and not isinstance(label, str):
+                raise ToolError(f"{field} label must be a string; got {label!r}")
+            out.append((entry["tz"], label))
+        else:
+            out.append((entry, None))
+    return out
+
+
+def _now_info(now: datetime) -> dict[str, Any]:
     out = _info(now)
     out["iso_week"] = now.isocalendar()[1]
     out["day_of_year"] = now.timetuple().tm_yday
+    return out
+
+
+def _mode_now(p: dict[str, Any]) -> dict[str, Any]:
+    spec = p.get("tz")
+    if isinstance(spec, list):
+        instant = datetime.now(UTC)
+        assumptions: list[str] = []
+        zones = []
+        for raw, label in _tz_targets(spec, "tz"):
+            tz, name, a = resolve_tz(raw)
+            assumptions += [x for x in a if x not in assumptions]
+            entry = {"label": label} if label is not None else {}
+            entry.update(_now_info(instant.astimezone(tz)))
+            entry["tz"] = name
+            zones.append(entry)
+        return ok({"utc": instant.isoformat(), "zones": zones}, assumptions=assumptions)
+    tz, name, a = resolve_tz(spec or "UTC")
+    now = datetime.now(tz)
+    out = _now_info(now)
     out["utc"] = now.astimezone(UTC).isoformat()
-    return ok(out, assumptions=a or ([] if p.get("tz") else ["no tz given; reported in UTC"]))
+    return ok(out, assumptions=a or ([] if spec else ["no tz given; reported in UTC"]))
 
 
 def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
@@ -668,13 +706,13 @@ def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("value has no timezone; pass from_tz")
     if date_only:
         raise ToolError("value has no time component; a bare date cannot be converted between zones")
-    targets = dst if isinstance(dst, list) else [dst]
     results = []
-    for t in targets:
+    for t, label in _tz_targets(dst, "to_tz"):
         tz, name, a = resolve_tz(t)
         assumptions += [x for x in a if x not in assumptions]
         conv = dt.astimezone(tz)
-        entry = _info(conv)
+        entry = {"label": label} if label is not None else {}
+        entry.update(_info(conv))
         entry["tz"] = name
         entry["day_shift"] = (conv.date() - dt.date()).days
         results.append(entry)
@@ -1201,6 +1239,15 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "volatile": True,
         },
         {
+            "caption": "Several zones in one call — one entry per zone, the shared instant stated once as `utc`. A `label` is echoed back, so two offices in the same zone stay apart.",
+            "args": {"mode": "now", "tz": [{"tz": "Asia/Kolkata", "label": "Acme India"}, {"tz": "Asia/Dubai", "label": "Acme FZ-LLC"}, "Europe/Minsk"]},
+            "volatile": True,
+        },
+        {
+            "caption": "A list entry without a zone.",
+            "args": {"mode": "now", "tz": [{"label": "Acme India"}]},
+        },
+        {
             "caption": "`IST` is Indian, Israeli and Irish Standard Time. The tool lists the candidates instead of picking one.",
             "args": {"mode": "now", "tz": "IST"},
         },
@@ -1221,6 +1268,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "An offset already in the string needs no `from_tz`.",
             "args": {"mode": "convert_tz", "value": "2025-06-01T10:00:00+05:30", "to_tz": "UTC"},
+        },
+        {
+            "caption": "Targets can carry a `label`, echoed back on each result.",
+            "args": {"mode": "convert_tz", "value": "2025-11-04T18:00:00", "from_tz": "Europe/London", "to_tz": [{"tz": "Asia/Kolkata", "label": "Acme India"}, {"tz": "America/New_York", "label": "Acme US"}]},
         },
         {
             "caption": "A date with no time cannot be converted — midnight where?",

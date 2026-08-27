@@ -21,6 +21,46 @@ def test_city_name_resolves():
     assert r["ok"] and r["result"]["tz"] == "Asia/Kolkata"
 
 
+def test_now_in_several_zones_at_once():
+    r = dt("now", tz=["Asia/Kolkata", {"tz": "Asia/Dubai", "label": "Acme FZ-LLC"}, "UTC+05:30"])
+    assert r["ok"]
+    zones = r["result"]["zones"]
+    assert [z["tz"] for z in zones] == ["Asia/Kolkata", "Asia/Dubai", "UTC+05:30"]
+    assert "label" not in zones[0] and zones[1]["label"] == "Acme FZ-LLC"
+    assert zones[0]["utc_offset"] == "+05:30" and zones[1]["utc_offset"] == "+04:00"
+    # every entry is the full single-zone shape, and all of them are the same instant
+    for z in zones:
+        assert {"iso", "date", "weekday", "time", "utc_offset", "tz", "unix", "is_dst", "iso_week", "day_of_year"} <= set(z)
+    assert len({z["unix"] for z in zones}) == 1 and r["result"]["utc"].endswith("+00:00")
+    assert "utc" not in zones[0]  # the instant is stated once, at the top
+    assert any("fixed offset" in a for a in r["assumptions"])
+    # a one-element list is still a list: the caller asked for a fan-out
+    one = dt("now", tz=["Asia/Tokyo"])["result"]
+    assert isinstance(one["zones"], list) and one["zones"][0]["tz"] == "Asia/Tokyo"
+    # the single-string form is unchanged
+    single = dt("now", tz="Asia/Tokyo")["result"]
+    assert "zones" not in single and single["tz"] == "Asia/Tokyo" and "utc" in single
+
+
+def test_now_zone_list_refuses_bad_entries():
+    assert dt("now", tz=[])["error"] == "invalid_input"
+    r = dt("now", tz=[{"label": "no zone here"}])
+    assert not r["ok"] and "tz" in r["message"]
+    r = dt("now", tz=["Asia/Kolkata", "IST"])
+    assert not r["ok"] and r["error"] == "ambiguous"  # one bad zone fails the whole call, as everywhere
+    r = dt("now", tz=[{"tz": "Asia/Kolkata", "label": 7}])
+    assert not r["ok"] and "label" in r["message"]
+
+
+def test_convert_tz_accepts_labelled_targets():
+    r = dt("convert_tz", value="2025-11-04T18:00:00", from_tz="Europe/London", to_tz=[{"tz": "Asia/Kolkata", "label": "Acme India"}, "Australia/Sydney"])
+    conv = r["result"]["converted"]
+    assert conv[0]["label"] == "Acme India" and conv[0]["tz"] == "Asia/Kolkata" and conv[0]["day_shift"] == 0
+    assert "label" not in conv[1] and conv[1]["day_shift"] == 1
+    one = dt("convert_tz", value="2025-11-04T18:00:00+00:00", to_tz={"tz": "Asia/Tokyo", "label": "Tokyo office"})["result"]["converted"]
+    assert one["label"] == "Tokyo office" and one["iso"] == "2025-11-05T03:00:00+09:00"
+
+
 def test_convert_tz_dst_edge():
     # 8 March 2026 09:30 IST is 23:00 on 7 March in New York (still EST; DST starts later that day)
     r = dt("convert_tz", value="2026-03-08 09:30", from_tz="Asia/Kolkata", to_tz="America/New_York")
