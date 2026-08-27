@@ -1062,6 +1062,28 @@ DATETIME = ToolDoc(
             ),
         ),
         Mode(
+            name="free_slots",
+            purpose="Common free slots for people in different time zones.",
+            description=(
+                "Takes two or more participants, each with an IANA zone and one or more availability "
+                "windows — a weekly pattern like `09:00`–`17:00` on `[mon, …, fri]`, or a one-off local "
+                "range like `2026-09-01T09:00`–`2026-09-01T12:00` — lays every window on that person's "
+                "own calendar through `zoneinfo`, intersects them all in UTC, and returns the slots that "
+                "fit `duration`, earliest UTC first. Every slot is shown in each participant's local time "
+                "and in UTC, `per_day` totals the overlap per UTC date, and a window that spans a DST "
+                "change is expanded to its real length with a note in `assumptions`. No common time is "
+                "still `ok: true` with `slots: []` and a warning naming the participants who never overlap."
+            ),
+            params=(
+                Param("participants", "Two or more of `{tz, label?, windows: [{start, end, days?}]}`. A window with `HH:MM` ends repeats on `days` (every day when omitted); one with full timestamps is a single occurrence.", required=True),
+                Param("duration", "Meeting length in minutes.", default="`granularity`"),
+                Param("granularity", "Step between candidate starts, in minutes.", default="30"),
+                Param("start", "First UTC date to search.", default="`today`"),
+                Param("end", "Last UTC date to search, inclusive; at most 92 days.", default="`start` + 7 days"),
+                Param("limit", "Maximum slots returned, 1..500; the rest are counted in `warnings`.", default="20"),
+            ),
+        ),
+        Mode(
             name="duration_sum",
             purpose="Total a list of intervals — timesheets, shifts, sessions.",
             description=(

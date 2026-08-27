@@ -19,6 +19,12 @@ All notable changes to leftbrain are recorded here. The format follows
   adult chart, snapping to the nearest half size with a warning; `category=clothing` maps XS–XXL
   to chest and waist cm bands for a chart chosen by `region` (`us` inch-based, `eu` EN 13402-3)
   and `gender`, both required. Every result warns that sizes are approximate and names the chart.
+- `datetime` `free_slots`: common free slots for two or more participants in different time
+  zones, from weekly windows (`09:00`–`17:00` on `mon`…`fri`) or one-off local ranges, intersected
+  in UTC through `zoneinfo`. Each slot is shown in every participant's local time and in UTC,
+  `per_day` totals the overlap per date, a window spanning a DST change is expanded to its real
+  length with a note in `assumptions`, and no common time is `ok: true` with `slots: []` and a
+  warning naming who never overlaps.
 - `validate` `cidr`: membership (`network` + `value` → `contains`, for an address or a smaller
   block) and overlap (a list of networks → every pair with `equal` / `a_contains_b` /
   `b_contains_a` / `disjoint`), plus a block's size, usable hosts, bounds and masks. Host bits

@@ -158,6 +158,9 @@ def datetime(
     on: str | None = None,
     fy_start_month: int | None = None,
     dates_only: bool | None = None,
+    participants: list[dict[str, Any]] | None = None,
+    duration: int | None = None,
+    granularity: int | None = None,
 ) -> dict[str, Any]:
     """Use for ANYTHING involving dates, times, timezones, durations, weekdays, deadlines,
     business days, recurring schedules, cron, ages or fiscal periods. Never compute these yourself.
@@ -171,11 +174,12 @@ def datetime(
     - weekday (value) | nth_weekday (year, month, weekday, n; n=-1 = last)
     - business_days (start, end, region, subdiv, weekend, extra_holidays)
     - overlap (a={start,end}, b={start,end}) | duration_sum (ranges=[{start,end}])
+    - free_slots (participants=[{tz, label, windows=[{start, end, days}]}], duration, granularity, start, end, limit) - common free slots for 2+ people in different zones, each in everyone's local time and UTC; DST-aware
     - recurrence (rule="every 2nd tuesday" or RRULE, start, count/until)
     - cron_next (expr="0 9 * * 1-5", tz, start, n)
     - age (dob, on) | fiscal (value, region or fy_start_month)
     """
-    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, end=end, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month, dates_only=dates_only))
+    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, end=end, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month, dates_only=dates_only, participants=participants, duration=duration, granularity=granularity))
     return datetimex.datetime_tool(mode, **params)
 
 
