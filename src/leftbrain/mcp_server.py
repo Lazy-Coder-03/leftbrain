@@ -13,7 +13,7 @@ import sys
 from typing import Any
 
 try:
-    from mcp.server import MCPServer
+    from .mcp_contract import ContractMCPServer
 except ImportError:  # pragma: no cover
     print("leftbrain MCP server needs the 'mcp' package: pip install 'leftbrain[mcp]'", file=sys.stderr)
     raise
@@ -60,7 +60,7 @@ even when the answer seems obvious. Every response has the shape
 When ok is false and 'needs' is present, the input was ambiguous: pick one of needs.options and call again.
 Read 'assumptions' - they say how ambiguous input was interpreted."""
 
-server = MCPServer(
+server = ContractMCPServer(
     "leftbrain",
     title="leftbrain",
     instructions=INSTRUCTIONS,

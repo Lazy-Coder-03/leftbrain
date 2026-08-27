@@ -138,7 +138,7 @@ def test_enforce_reads_the_context_and_returns_the_contract_error():
     try:
         assert holidays(mode="check", region="IN")["ok"]
         out = holidays(mode="next", region="IN")
-        assert out == {"ok": False, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: check"}
+        assert out == {"ok": False, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: check", "retryable": False}
         out = holidays(region="IN")  # the default mode counts as a mode
         assert out["error"] == "forbidden" and "mode 'list'" in out["message"]
         assert holidays("check")["ok"]  # positional mode is seen too
@@ -242,7 +242,7 @@ def test_scoped_key_over_http(tmp_path, json_response):
 
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="math", arguments={"expr": "1+1"}))
         assert denied["isError"] is False
-        assert denied["structuredContent"] == {"ok": False, "error": "forbidden", "message": "this key may not call math; allowed: numbers, holidays (list, check), weather"}
+        assert denied["structuredContent"] == {"ok": False, "error": "forbidden", "message": "this key may not call math; allowed: numbers, holidays (list, check), weather", "retryable": False}
         assert json.loads(denied["content"][0]["text"])["error"] == "forbidden"
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="holidays", arguments={"mode": "next", "region": "IN"}))
         assert denied["structuredContent"]["error"] == "forbidden" and "mode 'next'" in denied["structuredContent"]["message"]

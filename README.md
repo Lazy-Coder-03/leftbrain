@@ -62,11 +62,36 @@ Every tool returns the same envelope:
 
 ```json
 {"ok": true,  "result": {...}, "assumptions": ["read as DD/MM per locale IN"], "warnings": []}
-{"ok": false, "error": "ambiguous", "message": "...", "needs": {"field": "locale", "options": [...]}}
-{"ok": false, "error": "invalid_input" | "unsupported" | "timeout" | "needs_rates" | "internal", "message": "..."}
+{"ok": false, "error": "ambiguous", "message": "...", "needs": {"field": "locale", "options": [...]}, "retryable": false}
+{"ok": false, "error": "too_large", "message": "...", "details": {...}, "retryable": false, "hint": "..."}
 ```
 
-`result` is never `null`. When `needs` is present, pick an option and call again.
+`result` is never `null`. When `needs.options` is present, pick one and call again; when
+`needs.missing` is present, those parameters were left out.
+
+Every failure carries **`retryable`** — whether an *identical* retry could ever succeed. It is
+there because a client that reads only `ok: false` retries, and retrying a call that hit a limit
+multiplies the load that caused it. `details` (the numbers behind the message) and `hint` (what to
+change) are present when the tool has something concrete to say.
+
+| `error` | when | `retryable` |
+| --- | --- | --- |
+| `invalid_input` | the call is wrong — a bad value, a missing or mistyped parameter | `false` |
+| `ambiguous` | two readings are both plausible; `needs.options` lists them | `false` |
+| `unsupported` | the mode cannot do this at all | `false` |
+| `too_large` | a pre-check refused it before any work started | `false` |
+| `timeout` | it ran to its deadline and was stopped | `false` |
+| `resource_exhausted` | a memory or CPU limit was hit rather than the clock | `false` |
+| `forbidden` | the key's scope does not include this tool or mode | `false` |
+| `busy` | the server was saturated; nothing was computed | `true` |
+| `internal` | something broke unexpectedly | `true` |
+
+A call whose arguments fail the tool's input schema never reaches the tool, and still answers in
+this shape: `invalid_input`, the offending parameters under `details.parameters`, and
+`needs.missing` naming anything required that was left out.
+
+An `internal` error never ships a stack trace to the caller — it is logged server-side. Set
+`LEFTBRAIN_DEBUG=1` to get a `trace` field back in the response as well.
 
 ## Install
 

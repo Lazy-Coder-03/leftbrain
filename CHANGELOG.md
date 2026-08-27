@@ -8,6 +8,25 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- **`retryable` on every failure, and four codes that say what was hit** (#28 §1, §4): the
+  envelope's failure half is now `{ok: false, error, message, details?, retryable, hint?}`.
+  `retryable` is `false` for everything except `busy` and `internal` — a client that reads only
+  `ok: false` retries, and an identical retry of a call that hit a limit multiplies the load that
+  caused it. New codes alongside `invalid_input` / `ambiguous` / `unsupported` / `timeout` /
+  `forbidden` / `internal`: `too_large` (a pre-check refused it before any work started),
+  `resource_exhausted` (a memory or CPU limit rather than the clock) and `busy` (saturated;
+  nothing was computed). `contract.CODES` is the one list, and `TooLarge`, `ResourceExhausted`
+  and `Busy` are raisable from a tool.
+
+### Changed
+
+- **A call that fails the input schema now answers in the contract** (#28 §4): `convert` with no
+  arguments, or `collections` with `where` as a string, used to come back as an MCP transport
+  error carrying a pydantic dump and an `errors.pydantic.dev` link. Both now return
+  `{"ok": false, "error": "invalid_input", …}` with the offending parameters under
+  `details.parameters` and `needs.missing` naming anything required that was left out — the
+  rejected values themselves are the caller's data and are not echoed back.
+
 - **Per-key tool scopes** (#27): a key can be limited to chosen tools and, per tool, chosen
   modes — on the dashboard (a **Tools** disclosure on the create form, **Edit scope** on every
   key's row) or with `leftbrain-keys create|set … --tools "math,datetime,holidays:list+check"`
@@ -19,6 +38,10 @@ All notable changes to leftbrain are recorded here. The format follows
   `keys` table gains a nullable `scope` column on first start.
 
 ### Fixed
+
+- **`internal` errors no longer ship a stack trace to the caller** (#28 §4): the traceback named
+  server file paths in every response. It is logged server-side now; set `LEFTBRAIN_DEBUG=1` to
+  get the `trace` field back in the response as well.
 
 - `math`: `round(...)` over an expression with `vars` failed at parse time ("Cannot convert
   expression to float") because it evaluated its argument before the variables were

@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
+from ..contract import schema_rejection
 from ..core import collections_, datetimex, geo_offline, holidays_, mathx, random_
 from ..core import color as color_mod
 from ..core import convert as convert_mod
@@ -303,9 +304,6 @@ def purpose_of(tool: ToolDoc, mode: Mode) -> str:
 # Execution - every response in the page is a real one
 # --------------------------------------------------------------------------- #
 
-_PYDANTIC_LINK = re.compile(r"^\s*For further information visit https://\S+$", re.M)
-
-
 def _protocol_error(tool_name: str, message: str) -> dict[str, Any]:
     """What a client sees when a call never reaches the tool: an MCP error result, not the contract."""
     return {"isError": True, "content": [{"type": "text", "text": f"Error executing tool {tool_name}: {message}"}]}
@@ -322,7 +320,8 @@ def call_tool(tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
     try:
         validated = spec.arg_model.model_validate(args)
     except ValidationError as exc:
-        return _protocol_error(tool_name, _PYDANTIC_LINK.sub("", str(exc)).strip())
+        # ContractMCPServer answers a schema rejection in the contract; the page must show that.
+        return schema_rejection(tool_name, exc.errors())
     result = spec.fn(**validated.model_dump_one_level())
     if isinstance(result, dict):
         result.pop("trace", None)  # a traceback is noise in a docs page
@@ -377,7 +376,7 @@ def derived_failures(tool: ToolDoc, mode: Mode, working: dict[str, Any] | None) 
     props, schema_required = schema.get("properties", {}), list(schema.get("required", ()))
     probes = [Example("Called with nothing but the mode.", {"mode": mode.name}, derived=True)]
     base = dict(working or {})
-    for name in schema_required:  # a schema rejection reads differently from a contract error
+    for name in schema_required:
         wrong = _wrong_typed(props.get(name, {}))
         if wrong is not None and base:
             probes.append(
@@ -498,9 +497,11 @@ def _mode_markdown(tool: ToolDoc, mode: Mode) -> list[str]:
 
 CONTRACT_NOTE = (
     '<div class="callout">Every call returns <code>{ok: true, result, assumptions[], warnings[]}</code>, '
-    "or <code>{ok: false, error, message}</code> with an optional <code>needs</code> block when the input "
-    "was ambiguous. Read <code>assumptions</code>: it says how an under-specified input was interpreted. "
-    "When <code>needs.options</code> is present, pick one and call again.</div>"
+    "or <code>{ok: false, error, message, retryable}</code> with an optional <code>needs</code> block when "
+    "the input was ambiguous. Read <code>assumptions</code>: it says how an under-specified input was "
+    "interpreted. When <code>needs.options</code> is present, pick one and call again. "
+    "<code>retryable</code> says whether an identical retry could ever succeed — it is <code>false</code> "
+    "for everything except <code>busy</code> and <code>internal</code>.</div>"
 )
 
 NETWORK_NOTE = (
@@ -520,8 +521,9 @@ _PAGE_LEAD = (
     "Each example below shows the `tools/call` request first and the exact response underneath.  "
     "Responses are produced by running the real tool when this page is built, so they cannot drift "
     "from what the server returns.  A failure that never reaches the tool — a missing or mistyped "
-    "argument — comes back as an MCP error result (`isError`) rather than the leftbrain contract; "
-    "those are shown verbatim, minus the pydantic documentation links."
+    "argument — is rejected against the input schema, and comes back in the same contract envelope "
+    "as everything else: `error: \"invalid_input\"`, the offending parameters under `details`, and "
+    "`needs.missing` when something required was left out."
 )
 
 
@@ -563,8 +565,9 @@ def index_markdown() -> str:
         "# Tools",
         "",
         "Fourteen tools, one shape. Every tool takes a `mode` and returns "
-        "`{ok, result, assumptions[], warnings[]}` on success, or `{ok: false, error, message}` "
-        "— with a `needs` block — when the input was ambiguous and guessing would be dangerous.",
+        "`{ok, result, assumptions[], warnings[]}` on success, or "
+        "`{ok: false, error, message, retryable}` — with a `needs` block — when the input was "
+        "ambiguous and guessing would be dangerous.",
         "",
         CONTRACT_NOTE,
         "",
