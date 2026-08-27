@@ -279,7 +279,7 @@ def test_outliers_by_the_iqr_rule_with_fences():
     assert (res["lower_fence"], res["upper_fence"]) == ("-4.5", "15.5")
     assert res["outliers"] == [{"row": 10, "value": "100", "side": "high", "day": "d9", "sales": "100"}]
     assert res["outlier_count"] == 1 and res["count"] == 10 and res["multiplier"] == "1.5"
-    assert any(a.startswith("Tukey hinges") for a in r["assumptions"])
+    assert any(a.startswith("Tukey's hinges") for a in r["assumptions"])
     r = lb.collections_tool("outliers", items=[{"v": v} for v in (10, 12, 11, 13, 12, -50)])
     assert r["result"]["outliers"] == [{"row": 6, "value": "-50", "side": "low", "v": "-50"}]
     assert (r["result"]["q1"], r["result"]["q3"]) == ("10", "12")
