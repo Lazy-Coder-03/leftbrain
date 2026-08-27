@@ -15,12 +15,11 @@ A release is a pushed tag. Nothing is built, uploaded or written by hand.
 
    ### Added
    - …
-
-   [Unreleased]: https://github.com/Lazy-Coder-03/leftbrain/compare/v0.2.0...HEAD
-   [0.2.0]: https://github.com/Lazy-Coder-03/leftbrain/compare/v0.1.0...v0.2.0
    ```
 
-   Write it for someone using leftbrain, not for someone who read the diff.
+   Write it for someone using leftbrain, not for someone who read the diff. No compare
+   links at the bottom: the repository is private, so they 404 for anyone reading the
+   CHANGELOG from the site or from a wheel.
 
 2. **Bump the version in both places, in one commit**: `version` in `pyproject.toml` and
    `__version__` in `src/leftbrain/__init__.py`. The release workflow refuses a tag that

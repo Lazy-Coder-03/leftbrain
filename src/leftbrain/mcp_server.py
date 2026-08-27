@@ -55,7 +55,7 @@ server = ContractMCPServer(
     title="leftbrain",
     instructions=INSTRUCTIONS,
     version=__version__,
-    website_url="https://github.com/Lazy-Coder-03/leftbrain",
+    website_url="https://leftbrain.idlesync.in",
 )
 
 
