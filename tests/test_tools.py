@@ -151,6 +151,47 @@ def test_validate_ids():
     assert lb.validate_tool("id", kind="aadhaar", value="2234 5678 9014")["result"]["valid"] in (True, False)
 
 
+def test_validate_isbn_converts_between_forms():
+    r = lb.validate_tool("id", kind="isbn", value="0-306-40615-2")["result"]
+    assert r["valid"] and r["format"] == "isbn10" and r["isbn10"] == "0306406152" and r["isbn13"] == "9780306406157"
+    r = lb.validate_tool("id", kind="isbn", value="978-0-306-40615-7")["result"]
+    assert r["valid"] and r["format"] == "isbn13" and r["isbn10"] == "0306406152" and r["isbn13"] == "9780306406157"
+    r = lb.validate_tool("id", kind="isbn", value="9791234567896")["result"]  # a 979 ISBN-13 has no ISBN-10 form
+    assert r["valid"] and r["isbn10"] is None and r["isbn13"] == "9791234567896"
+    assert lb.validate_tool("id", kind="isbn", value="0-306-40615-X")["result"]["valid"] is False
+    assert lb.validate_tool("id", kind="isbn", value="080442957X")["result"]["isbn13"] == "9780804429573"
+
+
+def test_validate_cidr():
+    r = lb.validate_tool("cidr", network="10.0.0.0/24")
+    assert r["ok"] and r["result"]["num_addresses"] == 256 and r["result"]["usable_hosts"] == 254
+    assert r["result"]["first"] == "10.0.0.0" and r["result"]["last"] == "10.0.0.255" and r["result"]["netmask"] == "255.255.255.0"
+    assert r["result"]["private"] is True and r["result"]["version"] == 4 and r["result"]["prefixlen"] == 24
+    # host bits set: read as the network, and said so
+    r = lb.validate_tool("cidr", network="10.0.0.5/24")
+    assert r["result"]["network"] == "10.0.0.0/24" and any("10.0.0.5/24" in a and "10.0.0.0/24" in a for a in r["assumptions"])
+    # membership, of an address or of a smaller block
+    assert lb.validate_tool("cidr", network="10.0.0.0/24", value="10.0.0.200")["result"]["contains"] is True
+    assert lb.validate_tool("cidr", network="10.0.0.0/24", value="10.0.1.1")["result"]["contains"] is False
+    assert lb.validate_tool("cidr", network="10.0.0.0/16", value="10.0.5.0/24")["result"]["contains"] is True
+    r = lb.validate_tool("cidr", network="10.0.0.0/24", value="2001:db8::1")
+    assert r["result"]["contains"] is False and any("IPv6" in a and "IPv4" in a for a in r["assumptions"])
+    # overlap of two or more blocks: CIDR blocks either nest or are disjoint
+    r = lb.validate_tool("cidr", network=["10.0.0.0/16", "10.0.5.0/24", "192.168.0.0/24"])["result"]
+    assert r["overlaps"] is True and len(r["pairs"]) == 3
+    rel = {(p["a"], p["b"]): p["relation"] for p in r["pairs"]}
+    assert rel[("10.0.0.0/16", "10.0.5.0/24")] == "a_contains_b" and rel[("10.0.5.0/24", "192.168.0.0/24")] == "disjoint"
+    assert all(p["overlap"] == (p["relation"] != "disjoint") for p in r["pairs"])
+    assert lb.validate_tool("cidr", network=["10.0.0.0/24", "10.0.0.0/24"])["result"]["pairs"][0]["relation"] == "equal"
+    assert lb.validate_tool("cidr", network=["10.0.0.0/24", "10.0.1.0/24"])["result"]["overlaps"] is False
+    v6 = lb.validate_tool("cidr", network="2001:db8::/32")["result"]
+    assert v6["version"] == 6 and v6["num_addresses"] == 2 ** 96 and v6["usable_hosts"] == 2 ** 96
+    assert lb.validate_tool("cidr", network="10.0.0.0/33")["error"] == "invalid_input"
+    assert lb.validate_tool("cidr", network="10.0.0.0/24", value="not-an-ip")["error"] == "invalid_input"
+    assert lb.validate_tool("cidr", network=["10.0.0.0/24"])["error"] == "invalid_input"
+    assert lb.validate_tool("cidr")["error"] == "invalid_input"
+
+
 def test_validate_misc():
     assert lb.validate_tool("email", value="A@b.co")["result"]["valid"]
     assert not lb.validate_tool("email", value="a..b@c.com")["result"]["valid"]

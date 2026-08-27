@@ -8,6 +8,12 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- `validate` `cidr`: membership (`network` + `value` → `contains`, for an address or a smaller
+  block) and overlap (a list of networks → every pair with `equal` / `a_contains_b` /
+  `b_contains_a` / `disjoint`), plus a block's size, usable hosts, bounds and masks. Host bits
+  set are read as the network and recorded in `assumptions`.
+- `validate` `id` with `kind=isbn` returns both `isbn10` and `isbn13` for a valid number (a 979
+  book has no ISBN-10 form).
 - `numbers` `semver`: compare or sort version strings as versions (`1.10` > `1.9`), with
   SemVer 2.0 pre-release precedence, build metadata carried but ignored for ordering, and a
   leading `v` / missing minor or patch tolerated and recorded in `assumptions`.
