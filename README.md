@@ -40,7 +40,7 @@ Design rules:
 | `validate` | json_schema, assert, id, email, url, phone, ip, sql_parse, regex | rule checks over JSON (`{path, op, value}` → pass/fail + score), Luhn/IBAN/GSTIN/PAN/Aadhaar/ISBN/EAN/VIN checksums, `DELETE` without `WHERE` |
 | `random` | uuid, int, float, pick, shuffle, token, bool, sample | real randomness: UUID v4/v7, seeded ints, secure tokens/OTPs, A/B buckets |
 | `geo_offline` | tz_for_place, tz_for_coords, distance, country, zone_info | "Mumbai" → `Asia/Kolkata`, haversine distance, a country's zones — no network |
-| `encode` | hash, hmac, checksum, base64, hex, url, html, jwt_decode, json | SHA-256, HMAC, CRC32, base64 — models hallucinate all of these |
+| `encode` | hash, hmac, checksum, base64, hex, url, html, jwt_decode, json | SHA-256, HMAC, CRC32, base64 — models hallucinate all of these; `expected` → `matches` in constant time |
 
 ### External (`leftbrain-external`, network, key-less public APIs)
 
@@ -53,7 +53,7 @@ Design rules:
 
 ### Files (`leftbrain-files`, opt-in)
 
-For custom agent loops that cannot open files themselves (hosted agents like Claude Code already can). `pdf_text`, `pdf_info`, `image_info`, `image_to_base64` (resize/compress to a byte budget; returns ready-made Anthropic and OpenAI image blocks), `base64_to_file`, `file_info`, `read_text`, `list_dir`. Access is limited to `LEFTBRAIN_FILE_ROOTS`.
+For custom agent loops that cannot open files themselves (hosted agents like Claude Code already can). `pdf_text`, `pdf_info`, `image_info`, `image_to_base64` (resize/compress to a byte budget; returns ready-made Anthropic and OpenAI image blocks), `base64_to_file`, `file_info`, `read_text`, `list_dir`, `file_hash` (streamed sha256/sha1/md5/blake2b/crc32 of a file of any size; pass `expected` — a digest or a whole `sha256sum` line — to get `matches`, the way to verify a download). Access is limited to `LEFTBRAIN_FILE_ROOTS`.
 
 ## The contract
 

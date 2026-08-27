@@ -8,6 +8,13 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- `encode` `hash` and `checksum` take `expected` and answer `matches` — compared in constant
+  time against the hex, Base64 (or, for checksums, decimal) form, case- and whitespace-
+  insensitive, with a `sha256sum`-style `<digest>  <file>` line accepted as-is. A mismatch is
+  `ok: true, matches: false`: an answer, not an error. `hmac` shares the same comparison.
+- `files` `file_hash`: sha256 (default) / sha1 / md5 / blake2b / crc32 and the other hashlib
+  algorithms, streamed in 1 MiB chunks so a file's size is bounded only by `LEFTBRAIN_FILE_ROOTS`,
+  with `bytes`, the algorithm used, and `expected` → `matches` for verifying a download.
 - `datetime` `now` takes a list as `tz` — zone names or `{tz, label}` objects — and answers with
   the shared instant as `utc` plus one full per-zone entry under `zones`, each carrying its
   `label` back. `convert_tz` accepts the same `{tz, label}` entries in `to_tz`. One round-trip
