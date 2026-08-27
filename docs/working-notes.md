@@ -53,6 +53,12 @@ test) → README table row → `web/docs/custom-agents.md` sample tool lists →
   `keys-link` (GitHub OAuth + `LEFTBRAIN_SECRET` + base URL). Quota/rpm defaults are env vars on
   the **service itself** (`LEFTBRAIN_DEFAULT_DAILY_QUOTA=1000`, `LEFTBRAIN_DEFAULT_RPM=60`).
   Guide: [`deploy-northflank.md`](deploy-northflank.md).
+- **Compute isolation.** `math`, `text`, `validate`, `collections` and `numbers` run in a
+  killable worker process (`runner.py`, #28 §1). The worst case a client sees is
+  `LEFTBRAIN_COMPUTE_TIMEOUT` plus `LEFTBRAIN_WORKER_TERM_GRACE` — about **15.5 s** by
+  default — so Northflank's ingress idle timeout must stay comfortably above that, or the
+  caller gets a platform 502 instead of the `timeout` envelope. The service logs
+  `{"compute_isolation": "on"|"off"}` at boot; "off" means a runaway call cannot be stopped.
 - Verifying a deploy: static assets are content-stamped (`site.css?v=<asset_v>`); compare prod's
   stamp with `leftbrain.web.templates.env.globals["asset_v"]`. When no asset changed, poll a page
   that the change adds instead. A deploy lands ~90–120 s after the push.

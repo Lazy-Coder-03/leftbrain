@@ -378,10 +378,22 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
 
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
-        async with AsyncExitStack() as stack:
-            for _prefix, srv in servers:
-                await stack.enter_async_context(srv.session_manager.run())
-            yield
+        from . import runner
+
+        # Start the workers with the server, so the first real request does not pay for it
+        # and a misconfiguration is visible at boot rather than under load (#28 SS1 step 3).
+        runner.configure()
+        if runner.isolation_active():
+            print(json.dumps({"compute_isolation": "on", "timeout_s": runner.settings.timeout, "workers": runner.settings.max_inflight}), flush=True)
+        else:
+            print(json.dumps({"compute_isolation": "off", "warning": "a runaway call cannot be stopped; install leftbrain[server]"}), flush=True)
+        try:
+            async with AsyncExitStack() as stack:
+                for _prefix, srv in servers:
+                    await stack.enter_async_context(srv.session_manager.run())
+                yield
+        finally:
+            runner.shutdown()
 
     async def not_found(request: Request, _exc: Any) -> Any:
         from .web import auth as web_auth

@@ -20,18 +20,16 @@ except ImportError:  # pragma: no cover
 
 from . import __version__
 from .core import (
-    collections_,
-    datetimex,
-    geo_offline,
-    holidays_,
-    mathx,
-    random_,
-)
-from .core import (
     color as color_mod,
 )
 from .core import (
     convert as convert_mod,
+)
+from .core import (
+    datetimex,
+    geo_offline,
+    holidays_,
+    random_,
 )
 from .core import (
     encode as encode_mod,
@@ -40,17 +38,9 @@ from .core import (
     finance as finance_mod,
 )
 from .core import (
-    numbers as numbers_mod,
-)
-from .core import (
     scale as scale_mod,
 )
-from .core import (
-    text as text_mod,
-)
-from .core import (
-    validate as validate_mod,
-)
+from .runner import run_guarded
 from .scopes import enforce
 
 INSTRUCTIONS = """leftbrain provides exact, deterministic answers for things language models get wrong.
@@ -125,7 +115,7 @@ def math(
     Returns exact form, decimal form and LaTeX together.
     """
     params = _clean(dict(expr=expr, angle=angle, precision=precision, var=var, vars=vars, equations=equations, domain=domain, order=order, at=at, lower=lower, upper=upper, point=point, form=form, side=side, equation=equation, func=func, ics=ics, op=op, A=A, B=B, b=b, n=n, data=data, y=y, weights=weights, percentile=percentile, value=value, predict=predict, range=range, tolerance=tolerance, significant=significant, timeout=timeout))
-    return mathx.math(mode, **params)
+    return run_guarded("math", mode, params, timeout=timeout)
 
 
 @server.tool(name="datetime")
@@ -305,7 +295,7 @@ def numbers(
     version strings (semver: 1.10 > 1.9, pre-releases per SemVer 2.0).
     mode: compare | round | format | allocate | sequence | parse | to_words | semver
     """
-    return numbers_mod.numbers(mode, **_clean(dict(values=values, a=a, b=b, value=value, decimals=decimals, significant=significant, nearest=nearest, rounding=rounding, locale=locale, style=style, currency=currency, accounting=accounting, total=total, parts=parts, weights=weights, percentages=percentages, labels=labels, method=method, kind=kind, start=start, step=step, ratio=ratio, end=end, n=n, system=system, suffix_only=suffix_only)))
+    return run_guarded("numbers", mode, _clean(dict(values=values, a=a, b=b, value=value, decimals=decimals, significant=significant, nearest=nearest, rounding=rounding, locale=locale, style=style, currency=currency, accounting=accounting, total=total, parts=parts, weights=weights, percentages=percentages, labels=labels, method=method, kind=kind, start=start, step=step, ratio=ratio, end=end, n=n, system=system, suffix_only=suffix_only)))
 
 
 @server.tool(name="finance")
@@ -382,7 +372,7 @@ def text(
     alike two strings are and pick the best match from a list (similarity: Levenshtein).
     mode: count | regex_match | regex_replace | diff | sort | dedupe | extract | find | similarity
     """
-    return text_mod.text(mode, **_clean(dict(text=text, what=what, substring=substring, case_sensitive=case_sensitive, pattern=pattern, flags=flags, replacement=replacement, count=count, a=a, b=b, granularity=granularity, items=items, key=key, order=order, natural=natural, case_insensitive=case_insensitive, unique=unique, limit=limit, context=context, normalize_whitespace=normalize_whitespace, overlapping=overlapping)))
+    return run_guarded("text", mode, _clean(dict(text=text, what=what, substring=substring, case_sensitive=case_sensitive, pattern=pattern, flags=flags, replacement=replacement, count=count, a=a, b=b, granularity=granularity, items=items, key=key, order=order, natural=natural, case_insensitive=case_insensitive, unique=unique, limit=limit, context=context, normalize_whitespace=normalize_whitespace, overlapping=overlapping)))
 
 
 @server.tool(name="collections")
@@ -433,7 +423,7 @@ def collections(
     filter | pivot | running | outliers | summarize | to_csv
     Paths use dotted syntax: "user.address.city", "items[0].sku".
     """
-    return collections_.collections(mode, **_clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists, where=where, by=by, pivot_columns=pivot_columns, column=column, columns=columns, delimiter=delimiter, has_header=has_header, escape_formulas=escape_formulas, decimals=decimals)))
+    return run_guarded("collections", mode, _clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists, where=where, by=by, pivot_columns=pivot_columns, column=column, columns=columns, delimiter=delimiter, has_header=has_header, escape_formulas=escape_formulas, decimals=decimals)))
 
 
 @server.tool(name="validate")
@@ -461,7 +451,7 @@ def validate(
     assert ops: eq ne gt gte lt lte between in not_in contains starts_with ends_with matches
     exists missing empty not_empty type len_eq len_gt len_lt before after is_email is_url is_date unique sum_eq each
     """
-    return validate_mod.validate(mode, **_clean(dict(data=data, rules=rules, schema=schema, kind=kind, value=value, region=region, sql=sql, dialect=dialect, pattern=pattern, network=network)))
+    return run_guarded("validate", mode, _clean(dict(data=data, rules=rules, schema=schema, kind=kind, value=value, region=region, sql=sql, dialect=dialect, pattern=pattern, network=network)))
 
 
 @server.tool(name="random")

@@ -501,7 +501,10 @@ CONTRACT_NOTE = (
     "the input was ambiguous. Read <code>assumptions</code>: it says how an under-specified input was "
     "interpreted. When <code>needs.options</code> is present, pick one and call again. A parameter "
     "a mode does not read is refused rather than dropped, so an answer is never computed from "
-    "defaults after your arguments were discarded. "
+    "defaults after your arguments were discarded. <code>math</code>, <code>text</code>, "
+    "<code>validate</code>, <code>collections</code> and <code>numbers</code> run in a worker "
+    "process with a 15-second ceiling; a call that reaches it comes back as <code>timeout</code> "
+    "with <code>retryable: false</code>. "
     "<code>retryable</code> says whether an identical retry could ever succeed — only "
     "<code>busy</code> is <code>true</code> by default.</div>"
 )
