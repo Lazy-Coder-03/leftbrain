@@ -383,7 +383,7 @@ def parse_dt(
         if v > 1e12:
             v /= 1000.0
             assumptions.append("timestamp read as milliseconds")
-        dt = datetime.fromtimestamp(v, tz=UTC)
+        dt = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=v)  # not fromtimestamp(): Windows refuses negative epochs
         date_only = False
         assumptions.append("unix timestamp read as UTC")
     else:
