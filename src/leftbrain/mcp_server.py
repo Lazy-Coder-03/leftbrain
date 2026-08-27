@@ -219,14 +219,23 @@ def convert(
     precision: int | None = None,
     decimals: int | None = None,
     date: str | None = None,
+    ingredient: str | None = None,
+    cup: str | None = None,
+    category: str | None = None,
+    region: str | None = None,
+    gender: str | None = None,
 ) -> dict[str, Any]:
-    """Use for ANY unit, temperature or currency conversion (km->mi, sqft->sqm, C->F, kWh->J,
-    GB->GiB, USD->INR). Ambiguous units (ton, gallon, oz, cup, KB) are refused with options
-    unless assume="common". Currency needs rate= or rates= (fetch via the external fx_rate tool).
+    """Use for ANY unit, temperature, currency, fuel-economy, cooking or size conversion (km->mi,
+    sqft->sqm, C->F, kWh->J, GB->GiB, USD->INR, mpg->L/100km, cups of flour->g, US 9->EU shoe).
+    Ambiguous units (ton, gallon, oz, cup, KB, mpg) are refused with options unless assume="common".
+    Currency needs rate= or rates= (fetch via the external fx_rate tool).
     mode: units (any physical or digital unit) | temperature (C/F/K, delta= for a difference) |
-    currency (rate or rates) | auto (pick one of the three from the arguments)
+    currency (rate or rates) | fuel_economy (mpg_us/mpg_uk/km_per_l/l_per_100km) |
+    cooking (cup/tbsp/tsp/ml/fl_oz <-> g/kg/oz_weight/lb, ingredient= for mass<->volume, cup=us|metric|uk|au) |
+    sizes (category=shoe: us_men/us_women/uk/eu/cm; category=clothing: alpha/chest_cm/waist_cm with region= and gender=) |
+    auto (pick units or currency from the arguments)
     """
-    return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals, date=date)))
+    return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals, date=date, ingredient=ingredient, cup=cup, category=category, region=region, gender=gender)))
 
 
 @server.tool(name="holidays")

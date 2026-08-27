@@ -1249,13 +1249,19 @@ CONVERT = ToolDoc(
         "meanings is never guessed. `ton` (metric, short, long), `gallon` (US, imperial), `oz` (mass "
         "or fluid), `cup`, `pint`, `calorie`, `KB`/`GB` (decimal, binary, bits) all come back as "
         "`ambiguous` with the concrete options, unless you pass `assume: common`. Everything else "
-        "converts exactly, with the conversion factor returned alongside the result."
+        "converts exactly, with the conversion factor returned alongside the result. Three families "
+        "that a generic unit registry gets wrong have modes of their own: fuel economy (L/100 km is an "
+        "inverse quantity), cooking measures (a cup of flour and a cup of sugar weigh different "
+        "amounts) and shoe/clothing sizes (table lookups, named and flagged as approximate)."
     ),
     when=(
         "Any length, mass, area, volume, speed, energy, power, pressure, data or time conversion.",
         "Temperatures, where an absolute reading and a temperature difference are not the same sum.",
         "Currency, which needs a rate you supply — this tool never invents an exchange rate.",
         "Indian land units (bigha, katha, cent, ground, guntha, ankanam) and lakh/crore scaling.",
+        "mpg ↔ L/100 km ↔ km/L, with US and imperial gallons kept apart.",
+        "Recipe scaling that crosses cups and grams, with the ingredient's density stated.",
+        "Shoe and clothing sizes across US, UK and EU charts.",
     ),
     related=(
         "[`scale`](/docs/tools/scale) when a unit change has to ripple through several line items · "
@@ -1324,6 +1330,72 @@ CONVERT = ToolDoc(
             ),
         ),
         Mode(
+            name="fuel_economy",
+            purpose="mpg (US or UK), km/L and L/100 km.",
+            description=(
+                "Converts between `mpg_us`, `mpg_uk`, `km_per_l` and `l_per_100km` with exact "
+                "constants (mile 1.609344 km, US gallon 3.785411784 L, imperial gallon 4.54609 L). "
+                "A bare `mpg` is refused with both gallons as options — they differ by 20%. L/100 km "
+                "is an inverse quantity, and any conversion that crosses it says so in "
+                "`assumptions`: doubling the mpg halves the L/100 km, but a 10 mpg improvement saves "
+                "far more fuel at 20 mpg than at 50. The result carries `km_per_l` as the common "
+                "intermediate so a chain of conversions can be checked."
+            ),
+            params=(
+                Param("value", "The fuel economy figure; must be positive.", default="1"),
+                Param("from_unit", "`mpg_us`, `mpg_uk`, `km_per_l` or `l_per_100km` (aliases `km/l`, `kmpl`, `l/100km`, `mpg (uk)`…).", required=True),
+                Param("to_unit", "Target figure, same choices.", required=True),
+                Param("decimals", "Decimal places in the rounded value.", default="2"),
+            ),
+        ),
+        Mode(
+            name="cooking",
+            purpose="Cups, spoons, ml and grams by ingredient density.",
+            description=(
+                "Converts kitchen measures: volume (`cup`, `tbsp`, `tsp`, `ml`, `l`, `fl_oz`) and mass "
+                "(`g`, `kg`, `oz_weight`, `lb`). Volume to volume and mass to mass need nothing else. "
+                "Crossing between them needs `ingredient`, looked up in a built-in density table "
+                "(water, milk, cream, yogurt, oil, honey, maple syrup, flour, cornstarch, cocoa, sugar, "
+                "brown sugar, powdered sugar, butter, peanut butter, rice, oats, salt); a missing or "
+                "unknown ingredient comes back as `ambiguous` with the table as `needs.options`, and "
+                "the grams-per-cup used are stated in `assumptions`. The cup system defaults to US "
+                "(240 ml cup, 15 ml tbsp) and is declared; `cup: metric|uk|au` switches to the 250 ml "
+                "cup — and the Australian 20 ml tablespoon. `oz` alone is refused: weight or fluid."
+            ),
+            params=(
+                Param("value", "The quantity.", default="1"),
+                Param("from_unit", "Source measure.", required=True),
+                Param("to_unit", "Target measure.", required=True),
+                Param("ingredient", "Required for mass ↔ volume: `flour`, `sugar`, `butter`… (`plain flour`, `icing sugar` and similar spellings resolve)."),
+                Param("cup", "Cup system: `us`, `metric`, `uk` or `au`.", default="`us`"),
+                Param("decimals", "Decimal places in the rounded value.", default="2"),
+            ),
+        ),
+        Mode(
+            name="sizes",
+            purpose="Shoe and clothing size charts.",
+            description=(
+                "Table lookups, not arithmetic, so every result carries a warning that sizes are "
+                "approximate and names the chart. `category: shoe` converts between `us_men`, "
+                "`us_women`, `uk`, `eu` and `cm` (foot length) on a generic adult chart (US men = UK + 1, "
+                "US women = US men + 1.5); a plain `us` is refused unless `gender` is given, and a value "
+                "between rows snaps to the nearest half size with a warning. `category: clothing` maps "
+                "`alpha` (XS–XXL) to `chest_cm` and `waist_cm` bands and back for a chart chosen by "
+                "`region` and `gender`, both required: `us` is the generic inch-based retail chart, `eu` "
+                "the EN 13402-3 letter codes (chest/bust only — `waist_cm` there is `unsupported`). The "
+                "whole chart `row` is returned alongside the value."
+            ),
+            params=(
+                Param("value", "The size: a number, or a letter size (`M`, `XL`) when `from_unit` is `alpha`.", default="1"),
+                Param("from_unit", "Shoes: `us_men`, `us_women`, `uk`, `eu`, `cm`. Clothing: `alpha`, `chest_cm`, `waist_cm`.", required=True),
+                Param("to_unit", "Target scale, same choices.", required=True),
+                Param("category", "`shoe` or `clothing`.", required=True),
+                Param("region", "Clothing chart: `us` or `eu`. Shoes carry the region in the scale name."),
+                Param("gender", "`men` or `women`; required for clothing, resolves a plain `us` shoe size."),
+                Param("decimals", "Decimal places for cm bands (clothing).", default="1"),
+            ),
+        ),
+        Mode(
             name="auto",
             purpose="Pick units or currency from the arguments.",
             description=(
@@ -1331,7 +1403,7 @@ CONVERT = ToolDoc(
                 "letters — the call is treated as a currency conversion; otherwise it is a unit "
                 "conversion. Everything else behaves exactly as in the mode it dispatches to, "
                 "ambiguity refusals included. Name the mode explicitly when you want to be certain "
-                "which path you get."
+                "which path you get; `fuel_economy`, `cooking` and `sizes` are never chosen by `auto`."
             ),
             params=(
                 Param("value", "The quantity or amount.", default="1"),
