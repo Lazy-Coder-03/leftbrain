@@ -9,10 +9,23 @@ from typing import Any
 
 import pint
 
-from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, fail, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, check_params, fail, ok, tool
 from .numbers import _dec_str, parse_number
 
 MODES = ("units", "temperature", "currency", "fuel_economy", "cooking", "sizes", "auto")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "units": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+    "temperature": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+    "currency": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+    "fuel_economy": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+    "cooking": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+    "sizes": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+    "auto": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+}
 
 _ureg: pint.UnitRegistry | None = None
 
@@ -803,6 +816,7 @@ def convert(mode: str = "auto", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("convert", mode, p, MODE_PARAMS)
     if mode == "fuel_economy":
         return _fuel_economy(p)
     if mode == "cooking":

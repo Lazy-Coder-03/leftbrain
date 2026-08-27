@@ -17,7 +17,7 @@ from decimal import (
 from fractions import Fraction
 from typing import Any
 
-from ..contract import TooLarge, ToolError, ok, tool
+from ..contract import TooLarge, ToolError, check_params, exclusive, ok, tool
 
 #: Digits the largest term of a generated sequence may have.
 MAX_TERM_DIGITS = 1000
@@ -34,6 +34,20 @@ def _log10_abs(v: Any) -> float:
 
 
 MODES = ("compare", "round", "format", "allocate", "sequence", "parse", "to_words", "semver")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "compare": frozenset({"a", "b", "values"}),
+    "round": frozenset({"decimals", "method", "nearest", "rounding", "significant", "value"}),
+    "format": frozenset({"accounting", "currency", "decimals", "locale", "style", "value"}),
+    "allocate": frozenset({"decimals", "labels", "method", "n", "parts", "percentages", "ratios", "total", "weights"}),
+    "sequence": frozenset({"count", "end", "kind", "n", "ratio", "start", "step", "type"}),
+    "parse": frozenset({"value", "values"}),
+    "to_words": frozenset({"currency", "suffix_only", "system", "value"}),
+    "semver": frozenset({"a", "b", "values"}),
+}
 
 _SUFFIX = {"k": 3, "thousand": 3, "m": 6, "mn": 6, "million": 6, "b": 9, "bn": 9, "billion": 9, "t": 12, "tn": 12, "trillion": 12, "l": 5, "lac": 5, "lakh": 5, "lakhs": 5, "cr": 7, "crore": 7, "crores": 7}
 _CURRENCY_SYMBOLS = {"₹": "INR", "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "rs": "INR", "rs.": "INR", "inr": "INR", "usd": "USD"}
@@ -216,6 +230,9 @@ def _round(p: dict[str, Any]) -> dict[str, Any]:
     if mode not in _ROUND_MODES:
         raise ToolError(f"rounding must be one of {', '.join(_ROUND_MODES)}")
     rm = _ROUND_MODES[mode]
+    clash = exclusive(p, "significant", "nearest", "decimals")
+    if clash:
+        assumptions.append(clash)
     if p.get("significant") is not None:
         sig = int(p["significant"])
         if sig < 1:
@@ -565,6 +582,7 @@ def numbers(mode: str = "compare", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("numbers", mode, p, MODE_PARAMS)
     return {"compare": _compare, "round": _round, "format": _format, "allocate": _allocate, "sequence": _sequence, "parse": _parse, "to_words": _to_words, "semver": _semver}[mode](p)
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
@@ -592,6 +610,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "round": [
+        {
+            "caption": "Two rounding instructions cannot both apply; the one used is named in `assumptions` rather than chosen silently.",
+            "args": {"mode": "round", "value": 123.456, "significant": 2, "decimals": 5},
+        },
         {
             "caption": "Half-up: the rule most humans mean.",
             "args": {"mode": "round", "value": "2.5", "decimals": 0},

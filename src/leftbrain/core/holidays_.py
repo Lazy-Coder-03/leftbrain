@@ -7,9 +7,20 @@ from typing import Any
 
 import holidays as _hol
 
-from ..contract import TooLarge, ToolError, ok, tool
+from ..contract import TooLarge, ToolError, check_params, ok, tool
 
 MODES = ("list", "check", "next", "countries", "subdivisions")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "list": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
+    "check": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
+    "next": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
+    "countries": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
+    "subdivisions": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
+}
 
 #: Upcoming holidays `next` will return; the search window is two calendar years.
 MAX_NEXT = 100
@@ -52,6 +63,7 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("holidays", mode, p, MODE_PARAMS)
     if mode == "countries":
         return ok({"countries": sorted(_hol.list_supported_countries().keys())})
     region = p.get("region") or p.get("country")

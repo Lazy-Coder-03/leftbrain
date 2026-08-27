@@ -12,11 +12,19 @@ import math
 from fractions import Fraction
 from typing import Any
 
-from ..contract import ToolError, ok, tool
+from ..contract import ToolError, check_params, ok, tool
 from .convert import _norm_unit, _parse_value, ureg
 
 #: The proportions this tool understands (the "mode" argument).
 MODES = ("linear", "inverse")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "linear": frozenset({"assume", "entities", "factor", "from_qty", "from_unit", "mode", "precision", "to_qty", "to_unit"}),
+    "inverse": frozenset({"assume", "entities", "factor", "from_qty", "from_unit", "mode", "precision", "to_qty", "to_unit"}),
+}
 
 
 def _mixed(fr: Fraction) -> str:
@@ -46,6 +54,7 @@ def scale(**params: Any) -> dict[str, Any]:
     mode = (p.get("mode") or "linear").lower()
     if mode not in MODES:
         raise ToolError("mode must be 'linear' (direct proportion) or 'inverse' (inverse proportion)")
+    check_params("scale", mode, p, MODE_PARAMS)
     precision = int(p.get("precision", 6))
     assumptions: list[str] = []
     warnings: list[str] = []

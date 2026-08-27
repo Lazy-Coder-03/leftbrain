@@ -30,7 +30,7 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
-from ..contract import Ambiguous, Timeout, TooLarge, ToolError, Unsupported, ok, tool
+from ..contract import Ambiguous, Timeout, TooLarge, ToolError, Unsupported, check_params, ok, tool
 
 MODES = (
     "eval",
@@ -51,6 +51,30 @@ MODES = (
 )
 DEFAULT_TIMEOUT = 20.0
 MAX_EXPR_LEN = 5000
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+#: Names that used to work. Kept only so the refusal can say what replaced them.
+RENAMED_PARAMS = {"from": "'lower'", "from_": "'lower'", "to": "'upper' (bounds), 'point' (limit) or 'form' (convert_form)"}
+
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "eval": frozenset({"angle", "expr", "expression", "precision", "vars"}),
+    "exact": frozenset({"angle", "expr", "expression", "precision", "vars"}),
+    "simplify": frozenset({"angle", "expr", "expression", "precision"}),
+    "expand": frozenset({"angle", "expr", "expression", "precision"}),
+    "factor": frozenset({"angle", "expr", "expression", "precision"}),
+    "solve": frozenset({"domain", "equations", "expr", "expression", "precision", "vars"}),
+    "diff": frozenset({"angle", "at", "expr", "expression", "order", "precision", "var"}),
+    "integrate": frozenset({"angle", "expr", "expression", "lower", "precision", "upper", "var"}),
+    "limit": frozenset({"angle", "expr", "expression", "point", "precision", "side", "var"}),
+    "series": frozenset({"angle", "at", "expr", "expression", "order", "precision", "var"}),
+    "ode": frozenset({"equation", "expr", "expression", "func", "ics", "precision"}),
+    "matrix": frozenset({"A", "B", "b", "expr", "expression", "n", "op", "precision"}),
+    "stats": frozenset({"data", "data2", "expr", "expression", "op", "p", "percentile", "precision", "predict", "value", "weights", "y"}),
+    "convert_form": frozenset({"angle", "expr", "expression", "form", "precision", "significant", "tolerance"}),
+    "plot_points": frozenset({"angle", "expr", "expression", "n", "precision", "range", "var"}),
+}
 
 #: Digits a result can be rendered with at all. CPython refuses to ``str()`` an integer
 #: longer than this (``sys.set_int_max_str_digits``), so a bigger answer cannot be returned
@@ -1327,6 +1351,7 @@ def math(mode: str = "eval", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     timeout = float(params.pop("timeout", DEFAULT_TIMEOUT) or DEFAULT_TIMEOUT)
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("math", mode, p, MODE_PARAMS, RENAMED_PARAMS)
     if "expression" in p and "expr" not in p:
         p["expr"] = p.pop("expression")
     needs_expr = mode not in ("solve", "ode", "matrix", "stats")

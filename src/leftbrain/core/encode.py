@@ -13,9 +13,24 @@ from datetime import UTC
 from typing import Any
 from urllib.parse import quote, quote_plus, unquote, unquote_plus
 
-from ..contract import ToolError, ok, tool
+from ..contract import ToolError, check_params, ok, tool
 
 MODES = ("hash", "hmac", "checksum", "base64", "hex", "url", "html", "jwt_decode", "json")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "hash": frozenset({"algo", "algorithm", "bytes_base64", "bytes_hex", "encoding", "expected", "text", "value"}),
+    "hmac": frozenset({"algo", "bytes_base64", "bytes_hex", "encoding", "expected", "key", "key_base64", "secret", "text", "value"}),
+    "checksum": frozenset({"algo", "bytes_base64", "bytes_hex", "encoding", "expected", "text", "value"}),
+    "base64": frozenset({"action", "bytes_base64", "bytes_hex", "encoding", "op", "strip_padding", "text", "urlsafe", "value"}),
+    "hex": frozenset({"action", "bytes_base64", "bytes_hex", "encoding", "text", "value"}),
+    "url": frozenset({"action", "plus", "safe", "text", "value"}),
+    "html": frozenset({"action", "quote", "text", "value"}),
+    "jwt_decode": frozenset({"token", "value"}),
+    "json": frozenset({"action", "data", "indent", "sort_keys", "text", "value"}),
+}
 
 _ALGOS = {"md5", "sha1", "sha224", "sha256", "sha384", "sha512", "sha3_256", "sha3_512", "blake2b", "blake2s"}
 
@@ -239,6 +254,7 @@ def encode(mode: str = "hash", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("encode", mode, p, MODE_PARAMS)
     return {"hash": _hash, "hmac": _hmac_mode, "checksum": _checksum, "base64": _base64, "hex": _hex, "url": _url, "html": _html, "jwt_decode": _jwt_decode, "json": _json_mode}[mode](p)
 
 #: Worked examples for the reference page, one list per mode. Every one of them is

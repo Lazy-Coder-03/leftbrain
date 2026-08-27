@@ -17,11 +17,27 @@ from urllib.parse import urlparse
 
 import jsonschema
 
-from ..contract import TooLarge, ToolError, Unsupported, ok, tool
+from ..contract import TooLarge, ToolError, Unsupported, check_params, ok, tool
 from .collections_ import get_path
 from .text import check_pattern, redos_risk
 
 MODES = ("json_schema", "assert", "id", "email", "url", "phone", "ip", "sql_parse", "regex", "cidr")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "json_schema": frozenset({"data", "schema"}),
+    "assert": frozenset({"data", "rules"}),
+    "id": frozenset({"kind", "value"}),
+    "email": frozenset({"value"}),
+    "url": frozenset({"value"}),
+    "phone": frozenset({"region", "value"}),
+    "ip": frozenset({"value"}),
+    "sql_parse": frozenset({"dialect", "query", "sql", "value"}),
+    "regex": frozenset({"pattern", "value"}),
+    "cidr": frozenset({"network", "value"}),
+}
 
 # --------------------------------------------------------------------------- #
 # JSON Schema
@@ -791,6 +807,7 @@ def validate(mode: str = "assert", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("validate", mode, p, MODE_PARAMS)
     return {"json_schema": _json_schema, "assert": _assert, "id": _id, "email": _email, "url": _url, "phone": _phone, "ip": _ip, "sql_parse": _sql_parse, "regex": _regex, "cidr": _cidr}[mode](p)
 
 #: Shared fixture for the documented examples below.

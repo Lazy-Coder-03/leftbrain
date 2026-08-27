@@ -11,9 +11,24 @@ from decimal import ROUND_HALF_UP, Decimal
 from functools import lru_cache
 from typing import Any
 
-from ..contract import Ambiguous, ToolError, ok, tool
+from ..contract import Ambiguous, ToolError, check_params, ok, tool
 
 MODES = ("convert", "describe", "swatch", "contrast", "mix", "harmony", "nearest", "simulate", "grayscale")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "convert": frozenset({"decimals", "spaces", "value"}),
+    "describe": frozenset({"value"}),
+    "swatch": frozenset({"other", "size", "value"}),
+    "contrast": frozenset({"level", "other", "value"}),
+    "mix": frozenset({"decimals", "other", "ratio", "space", "value"}),
+    "harmony": frozenset({"kind", "value"}),
+    "nearest": frozenset({"palette", "value"}),
+    "simulate": frozenset({"image", "kind", "size", "value"}),
+    "grayscale": frozenset({"image", "method", "ramp", "size", "value"}),
+}
 
 SPACES = ("hex", "rgb", "hsl", "hsv", "cmyk", "lab")
 _SPACE_ALIASES = {"hsb": "hsv", "rgba": "rgb", "hsla": "hsl", "hsva": "hsv", "hsba": "hsv"}
@@ -696,6 +711,7 @@ def color(mode: str = "convert", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("color", mode, p, MODE_PARAMS)
     return {
         "convert": _convert,
         "describe": _describe,

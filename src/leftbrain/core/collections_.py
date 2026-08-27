@@ -11,10 +11,32 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..contract import Ambiguous, TooLarge, ToolError, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, check_params, ok, tool
 from .numbers import _dec_str, parse_number
 
 MODES = ("set_ops", "group_by", "pick_fields", "flatten", "unflatten", "paginate", "find_duplicates", "sort_by", "aggregate", "chunk", "filter", "pivot", "running", "outliers", "summarize", "to_csv")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "set_ops": frozenset({"a", "b", "case_insensitive", "delimiter", "has_header", "items", "key", "op"}),
+    "group_by": frozenset({"agg", "agg_field", "delimiter", "field", "has_header", "include_items", "items", "key"}),
+    "pick_fields": frozenset({"delimiter", "fields", "has_header", "items", "rename", "short_names"}),
+    "flatten": frozenset({"data", "delimiter", "depth", "flatten_lists", "has_header", "items", "separator"}),
+    "unflatten": frozenset({"data", "delimiter", "has_header", "items", "separator"}),
+    "paginate": frozenset({"delimiter", "has_header", "items", "page", "per_page"}),
+    "find_duplicates": frozenset({"case_insensitive", "delimiter", "has_header", "items", "key"}),
+    "sort_by": frozenset({"delimiter", "has_header", "items", "key", "keys", "order"}),
+    "aggregate": frozenset({"agg", "delimiter", "field", "has_header", "items", "ops"}),
+    "chunk": frozenset({"delimiter", "has_header", "items", "n", "size"}),
+    "filter": frozenset({"columns", "delimiter", "has_header", "items", "where"}),
+    "pivot": frozenset({"agg", "by", "column", "decimals", "delimiter", "has_header", "items", "pivot_columns"}),
+    "running": frozenset({"by", "column", "columns", "decimals", "delimiter", "has_header", "items"}),
+    "outliers": frozenset({"column", "decimals", "delimiter", "has_header", "items"}),
+    "summarize": frozenset({"columns", "decimals", "delimiter", "has_header", "items"}),
+    "to_csv": frozenset({"columns", "delimiter", "escape_formulas", "has_header", "items"}),
+}
 
 #: Above this many rows a CSV or record table is refused rather than answered slowly or partially.
 MAX_ROWS = 5000
@@ -943,6 +965,7 @@ def collections(mode: str = "set_ops", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("collections", mode, p, MODE_PARAMS)
     if mode in _TABLE_MODES:
         return _TABLE_MODES[mode](_load(p), p)
     notes = _inline_csv(mode, p)

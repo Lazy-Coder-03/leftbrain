@@ -57,14 +57,20 @@ def test_calculus():
     assert s == "x**2/2 + x + 1"
 
 
-def test_the_retired_from_to_bound_names_are_not_accepted():
-    """Bounds are `lower`/`upper`; a limit approaches `point`. Old names are simply not read."""
+def test_the_retired_from_to_bound_names_are_refused():
+    """Bounds are `lower`/`upper`; a limit approaches `point`.
+
+    These used to be *ignored*: `integrate from=0 to=3` quietly returned the indefinite
+    integral, and `limit to=2` approached 0. An answer computed from defaults after the
+    caller's arguments were dropped is the failure #28 §2a is about, so they are refused
+    now and the message names what replaced them.
+    """
     r = math_tool("integrate", expr="x^2", var="x", **{"from": 0, "to": 3})
-    assert r["ok"] and r["result"]["value"].endswith("+ C")  # no bounds seen -> indefinite
+    assert not r["ok"] and r["error"] == "invalid_input" and "'lower'" in r["message"]
     r = math_tool("limit", expr="1/x", var="x", **{"to": 2})
-    assert r["ok"] and r["result"]["decimal"] != "0.5"  # approached 0, the default, not 2
+    assert not r["ok"] and "'point'" in r["message"]
     r = math_tool("convert_form", expr="0.375", **{"to": "fraction"})
-    assert r["ok"] and r["result"]["value"] != "3/8"  # fell back to the default decimal form
+    assert not r["ok"] and "'form'" in r["message"]
 
 
 def test_ode():

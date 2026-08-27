@@ -97,6 +97,15 @@ this shape: `invalid_input`, the offending parameters under `details.parameters`
 An `internal` error never ships a stack trace to the caller — it is logged server-side. Set
 `LEFTBRAIN_DEBUG=1` to get a `trace` field back in the response as well.
 
+### Parameters
+
+Every mode declares what it reads, and a parameter it does not read is **refused**, not dropped.
+`datetime.age` takes `on`, so passing `ref_date` used to return the age as of *today* — an answer
+computed from a default after the caller's argument was discarded, with nothing to distinguish it
+from a right answer. The refusal names the mode, lists what it does accept, and suggests the
+closest match. Where two parameters are mutually exclusive (`significant` and `decimals`,
+`months` and `years`) the winner is stated in `assumptions` rather than chosen silently.
+
 ### Limits
 
 Every mode that can be asked for something enormous refuses it *before* computing, in
