@@ -284,3 +284,20 @@ def test_free_slots_abbreviations_and_errors():
     assert "92" in bad(participants=TRIO, start="2026-01-01", end="2026-12-31")
     # a weekly window needs a time of day, an absolute one a full timestamp on both ends
     assert "time" in bad(participants=[{"tz": "Asia/Kolkata", "windows": [{"start": "09:00", "end": "2026-09-07T17:00"}]}, TRIO[1]], start="2026-09-07")
+
+
+def test_unix_timestamps_as_digit_strings():
+    n = dt("parse", value=1787232546, tz="Asia/Kolkata")["result"]
+    s = dt("parse", value="1787232546", tz="Asia/Kolkata")
+    assert s["ok"], s
+    assert s["result"]["unix"] == n["unix"] == 1787232546 and s["result"]["iso"] == n["iso"]
+    assert "unix timestamp read as UTC" in s["assumptions"]
+    ms = dt("parse", value="1787232546000", tz="Asia/Kolkata")
+    assert ms["ok"] and ms["result"]["unix"] == 1787232546 and "timestamp read as milliseconds" in ms["assumptions"]
+    assert dt("parse", value=" -1000000000 ")["result"]["iso"] == "1938-04-24T22:13:20+00:00"  # negative epochs, surrounding whitespace
+    c = dt("convert_tz", value="1787232546", to_tz="Asia/Kolkata")
+    assert c["ok"] and c["result"]["converted"]["unix"] == 1787232546 and c["result"]["converted"]["utc_offset"] == "+05:30"
+    assert dt("add", value="1787232546", amount=1, unit="days")["result"]["unix"] == 1787232546 + 86400
+    # digit strings that are not timestamps keep their old readings
+    assert dt("parse", value="2026")["result"]["date"].startswith("2026-")  # a 4-digit string is still a year
+    assert dt("parse", value="20260827")["result"]["date"] == "2026-08-27"

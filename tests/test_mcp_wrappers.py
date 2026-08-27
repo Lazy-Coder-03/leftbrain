@@ -64,3 +64,9 @@ def test_the_retired_from_and_to_parameters_are_no_longer_in_the_signature(fn, k
 def test_a_range_with_no_start_is_refused_by_the_new_name():
     r = mcp.datetime(mode="diff")
     assert not r["ok"] and r["error"] == "invalid_input" and "'start'" in r["message"]
+
+
+def test_datetime_value_accepts_an_integer_timestamp_over_mcp():
+    r = mcp.datetime(mode="convert_tz", value=1787232546, to_tz="Asia/Kolkata")
+    assert r["ok"] and r["result"]["converted"]["unix"] == 1787232546
+    assert mcp.datetime(mode="parse", value="1787232546")["result"]["unix"] == 1787232546

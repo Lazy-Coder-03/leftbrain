@@ -6,6 +6,19 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `math`: `round(...)` over an expression with `vars` failed at parse time ("Cannot convert
+  expression to float") because it evaluated its argument before the variables were
+  substituted. It is now a deferred function that fires once the argument is numeric, and it
+  rounds half-up on the decimal value, returning an exact rational (`round(2.675, 2)` →
+  `67/25` = 2.68; `round(basic * 12 / 365 * unpaid_days, 2)` with vars → `5128.77`).
+- `datetime`: a unix timestamp given as a digit string (`"1787232546"`, `"1787232546000"`) was
+  read as a year and refused. Any 9–13 digit value, string or number, is now an epoch in every
+  mode that takes a `value` (`parse`, `convert_tz`, `add`, `diff`, …), with the existing
+  "unix timestamp read as UTC" / "read as milliseconds" assumptions; the MCP `value` parameter
+  accepts numbers as well as strings, so `convert_tz` can take an epoch straight from another tool.
+
 ## [0.2.0] - 2026-08-27
 
 Two new core tools — fourteen in all — and new modes on seven of the existing ones, plus a

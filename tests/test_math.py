@@ -108,3 +108,18 @@ def test_unknown_function_rejected():
 def test_plot_points_skips_undefined():
     r = math_tool("plot_points", expr="1/x", range=[-1, 1], n=3)
     assert r["result"]["count"] == 2 and r["warnings"]
+
+
+def test_round_defers_until_vars_are_substituted():
+    r = math_tool("eval", expr="round(rate * 12 / 365 * days, 2)", vars={"rate": 52000, "days": 3})
+    assert r["ok"], r
+    assert r["result"]["decimal"] == "5128.77" and r["result"]["exact"] == "512877/100"
+    # one argument rounds to an integer; half-up, the invoice rule, not the float default
+    assert math_tool("eval", expr="round(x)", vars={"x": "2.5"})["result"]["exact"] == "3"
+    r = math_tool("eval", expr="round(2.675, 2)")["result"]
+    assert r["exact"] == "67/25" and r["decimal"] == "2.68"  # the literal's decimal value, not its binary 2.67499…
+    # a symbol that is never substituted stays symbolic instead of crashing the parse
+    r = math_tool("eval", expr="round(y, 1) + 1")
+    assert r["ok"] and r["result"]["value"] == "round(y, 1) + 1"
+    # floor and ceil already deferred; pinned so they stay that way
+    assert math_tool("eval", expr="floor(a / 2) + ceil(a / 2)", vars={"a": 7})["result"]["exact"] == "7"
