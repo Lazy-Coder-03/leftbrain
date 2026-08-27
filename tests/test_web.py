@@ -824,6 +824,49 @@ def test_revoke_of_a_real_other_owner_key_is_refused(tmp_path):
     assert store.get_by_prefix(prefix).disabled is False  # still usable by its owner
 
 
+def test_dashboard_delete_removes_a_revoked_or_expired_key(tmp_path):
+    from leftbrain.keys import KeyStore
+
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        csrf = csrf_from(c.get("/dashboard").text)
+        key = new_key(c, "laptop", csrf)
+        prefix = key[:13]
+        page = c.get("/dashboard").text
+        assert f"/dashboard/keys/{prefix}/delete" not in page  # a live key offers Revoke, not Delete
+        r = c.post(f"/dashboard/keys/{prefix}/delete", data={"csrf": csrf})
+        assert r.status_code == 409 and "Revoke it first" in r.text
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).status_code == 200
+
+        c.post(f"/dashboard/keys/{prefix}/revoke", data={"csrf": csrf}, follow_redirects=False)
+        page = c.get("/dashboard").text
+        assert f"/dashboard/keys/{prefix}/delete" in page and "data-confirm" in page
+        r = c.post(f"/dashboard/keys/{prefix}/delete", data={"csrf": csrf}, follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == "/dashboard"
+        assert r.headers["cache-control"] == "no-store"
+        page = c.get("/dashboard").text
+        assert prefix not in page and "No keys yet" in page
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).status_code == 401  # gone, not disabled
+
+        # expired keys can be deleted straight away
+        store = KeyStore(str(tmp_path / "k.sqlite3"), secret="test-secret-0123456789")
+        _, stale = store.create("octo@example.com", note="stale", lifetime_days=1)
+        store.db.run("UPDATE keys SET expires_at=? WHERE prefix=?", ("2000-01-01T00:00:00+00:00", stale.prefix))
+        page = c.get("/dashboard").text
+        assert f"/dashboard/keys/{stale.prefix}/delete" in page and f"/dashboard/keys/{stale.prefix}/revoke" not in page
+        assert c.post(f"/dashboard/keys/{stale.prefix}/delete", data={"csrf": csrf}, follow_redirects=False).status_code == 302
+        assert store.get_by_prefix(stale.prefix) is None
+
+        # csrf and ownership guard the route like the others
+        assert c.post(f"/dashboard/keys/{prefix}/delete", data={"csrf": "nope"}).status_code == 403
+        raw, _ = store.create("other@example.com", note="theirs")
+        store.set_disabled(raw[:13], True)
+        r = c.post(f"/dashboard/keys/{raw[:13]}/delete", data={"csrf": csrf})
+        assert r.status_code == 403 and "different account" in r.text
+        assert store.get_by_prefix(raw[:13]) is not None
+        assert c.post("/dashboard/keys/lblz_nosuch1/delete", data={"csrf": csrf}).status_code == 403
+
+
 def test_callback_404_when_oauth_not_configured(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         r = c.get("/auth/github/callback?code=ok&state=x")
@@ -1062,13 +1105,25 @@ def test_dashboard_show_reveals_a_key_again(tmp_path):
 def test_dashboard_marks_keys_that_predate_reveal(tmp_path):
     from leftbrain.keys import KeyStore
 
-    KeyStore(str(tmp_path / "k.sqlite3")).create("octo@example.com", note="ancient")  # hash only
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    store.create("octo@example.com", note="ancient")  # hash only
+    _, signup = store.create("octo@example.com", note="self-serve signup")
     with TestClient(oauth_app(tmp_path)) as c:
         login_via_github(c)
         page = c.get("/dashboard").text
-        assert "created before reveal was enabled" in page and "/reveal" not in page
+        assert "created before reveal was enabled" not in page and "/reveal" not in page
+        assert page.count('class="pill off">legacy<') == 2 and "active<" not in page
+        assert "does not hold one of your 3 slots" in page
+        row = page.split(signup.prefix)[1].split("</tr>")[0]
+        assert "issued by email signup" in row  # the origin is explained, not just the note echoed
+        assert '>0 <span class="sub">/ 3</span>' in page  # legacy rows are not active slots
         body = article(c.get("/docs/quickstart").text)
         assert "lblz_…" in body and 'id="keypick"' not in body
+        # the cap is still 3 keys of the user's own: the legacy rows do not eat it
+        csrf = csrf_from(page)
+        for i in range(3):
+            assert "new-key" in c.post("/dashboard/keys", data={"name": f"k{i}", "csrf": csrf}).text
+        assert "3 active" in c.post("/dashboard/keys", data={"name": "k3", "csrf": csrf}).text
 
 
 def test_docs_without_a_key_keep_the_placeholder(tmp_path):
@@ -1249,7 +1304,8 @@ def test_expired_key_is_403_with_a_dated_message_and_frees_a_slot(tmp_path):
         page = c.get("/dashboard").text
         assert "expired 2026-01-02" in page and "2 <span" in page  # active count drops
         assert f"/dashboard/keys/{keys[0][:13]}/reveal" not in page  # no Show for an expired key
-        assert f"/dashboard/keys/{keys[0][:13]}/revoke" in page  # but it can still be cleaned up
+        assert f"/dashboard/keys/{keys[0][:13]}/revoke" not in page  # nothing left to revoke
+        assert f"/dashboard/keys/{keys[0][:13]}/delete" in page  # but it can still be cleaned up
         assert "new-key" in c.post("/dashboard/keys", data={"name": "again", "csrf": csrf}).text
 
 

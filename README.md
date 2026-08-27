@@ -161,7 +161,7 @@ With a store configured, `leftbrain-serve` also grows a web site:
 
 - `/` — landing page (browsers) or the JSON service description (`Accept: application/json`)
 - `/login` — GitHub OAuth; keys belong to the account's verified primary email
-- `/dashboard` — create up to 3 active keys with a lifetime of 30 / 90 / 365 days (or never, with a warning), see today's usage and when each key expires, show a key again, revoke
+- `/dashboard` — create up to 3 active keys with a lifetime of 30 / 90 / 365 days (or never, with a warning), see today's usage and when each key expires, show a key again, revoke, and delete a revoked or expired key for good. Keys issued before the server could show keys again are marked **legacy**: they still work if you saved them, but do not hold one of the 3 slots
 - `/docs` — quickstart with Windows PowerShell / macOS / Linux tabs, MCP client setup
 - `POST /demo/{numbers|convert|datetime|text}` — key-less demo, 30 req/min per IP
 
