@@ -31,7 +31,7 @@ Design rules:
 | `math` | eval, exact, simplify, expand, factor, solve, diff, integrate, limit, series, ode, matrix, stats, convert_form, plot_points | any arithmetic, `15% of 200`, complex numbers `(3+4i)(1-2i)`, trig (`angle` required), calculus, linear algebra, statistics — SymPy, sandboxed |
 | `datetime` | now, convert_tz, parse, add, diff, weekday, nth_weekday, business_days, overlap, duration_sum, recurrence, cron_next, age, fiscal | the current time, DST-correct conversions, "next Friday 5pm", month-end clamping, working days with public holidays, RRULE expansion, cron |
 | `scale` | – | 4 → 7 servings, price per kg → per 250 g, 3 workers × 5 days → 12 workers (`mode=inverse`), with every dependent quantity |
-| `convert` | units, temperature, currency | km→mi, sqft→sqm, °C→°F (absolute or delta), GB→GiB, USD→INR (needs a rate) |
+| `convert` | units, temperature, currency, fuel_economy, cooking, sizes | km→mi, sqft→sqm, °C→°F (absolute or delta), GB→GiB, USD→INR (needs a rate), mpg↔L/100 km (US or UK gallon, never guessed), cups↔grams by ingredient density, shoe and clothing size charts |
 | `holidays` | list, check, next, countries, subdivisions | public holidays for 150+ countries and their states |
 | `numbers` | compare, round, format, allocate, sequence, parse, to_words, semver | `9.11` vs `9.9`, half-up vs banker's rounding, `₹1,23,45,678.50`, splitting ₹100 three ways with no lost paisa, "One lakh twenty-three thousand… only", `1.10` > `1.9` |
 | `finance` | emi, compound, cagr, npv_irr, gst, percent | ₹10L at 8.5% for 20 years → ₹8,678.23 with the schedule that reconciles to zero, SIP future value, CAGR, NPV/IRR by bisection, ₹1,180 inclusive → ₹1,000 + ₹90 CGST + ₹90 SGST, 20% then 10% off is 28% not 30% |

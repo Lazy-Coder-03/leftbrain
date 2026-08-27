@@ -1,16 +1,18 @@
-"""convert - units, temperature and currency, exactly and unambiguously."""
+"""convert - units, temperature, currency, fuel economy, cooking measures and sizes, exactly and unambiguously."""
 
 from __future__ import annotations
 
 import re
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from fractions import Fraction
 from typing import Any
 
 import pint
 
-from ..contract import Ambiguous, ToolError, fail, ok, tool
+from ..contract import Ambiguous, ToolError, Unsupported, fail, ok, tool
+from .numbers import _dec_str, parse_number
 
-MODES = ("units", "temperature", "currency", "auto")
+MODES = ("units", "temperature", "currency", "fuel_economy", "cooking", "sizes", "auto")
 
 _ureg: pint.UnitRegistry | None = None
 
@@ -293,12 +295,473 @@ def _currency(p: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+# --------------------------------------------------------------------------- #
+# fuel economy, cooking measures, sizes - Decimal throughout
+# --------------------------------------------------------------------------- #
+
+_PREC = 40
+
+
+def _decimals(p: dict[str, Any], default: int) -> int:
+    decimals = int(p.get("decimals", default))
+    if not 0 <= decimals <= 10:
+        raise ToolError("decimals must be between 0 and 10")
+    return decimals
+
+
+def _quant(d: Decimal, decimals: int) -> Decimal:
+    return d.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+
+
+def _jsonnum(d: Decimal) -> int | float:
+    return int(d) if d == d.to_integral() else float(d)
+
+
+def _key(u: Any, field: str) -> str:
+    if u is None:
+        raise ToolError(f"'{field}' is required")
+    s = re.sub(r"\s+", " ", str(u).strip().lower())
+    if not s:
+        raise ToolError(f"'{field}' is empty")
+    return s
+
+
+def _positive_value(p: dict[str, Any]) -> Decimal:
+    val, _ = parse_number(p.get("value", 1))
+    if val <= 0:
+        raise ToolError("value must be greater than zero")
+    return val
+
+
+# --- fuel economy -------------------------------------------------------------
+
+_MILE_KM = Decimal("1.609344")  # international mile, exact
+_US_GALLON_L = Decimal("3.785411784")  # US liquid gallon, exact
+_UK_GALLON_L = Decimal("4.54609")  # imperial gallon, exact
+_FUEL_UNITS = ("mpg_us", "mpg_uk", "km_per_l", "l_per_100km")
+_FUEL_ALIASES: dict[str, str] = {
+    "mpg_us": "mpg_us", "mpg (us)": "mpg_us", "mpg us": "mpg_us", "us mpg": "mpg_us", "mpgus": "mpg_us",
+    "mi/gal (us)": "mpg_us", "miles per us gallon": "mpg_us", "miles per gallon (us)": "mpg_us",
+    "mpg_uk": "mpg_uk", "mpg (uk)": "mpg_uk", "mpg uk": "mpg_uk", "uk mpg": "mpg_uk", "mpguk": "mpg_uk",
+    "mpg_imperial": "mpg_uk", "mpg (imperial)": "mpg_uk", "imperial mpg": "mpg_uk", "mpg imperial": "mpg_uk",
+    "mi/gal (uk)": "mpg_uk", "miles per imperial gallon": "mpg_uk", "miles per gallon (uk)": "mpg_uk",
+    "km_per_l": "km_per_l", "km/l": "km_per_l", "kmpl": "km_per_l", "kml": "km_per_l", "kpl": "km_per_l",
+    "km per l": "km_per_l", "km per litre": "km_per_l", "km per liter": "km_per_l",
+    "kilometres per litre": "km_per_l", "kilometers per liter": "km_per_l",
+    "l_per_100km": "l_per_100km", "l/100km": "l_per_100km", "l/100 km": "l_per_100km", "l per 100 km": "l_per_100km",
+    "l per 100km": "l_per_100km", "litres per 100 km": "l_per_100km", "liters per 100 km": "l_per_100km",
+    "litres/100km": "l_per_100km", "liters/100km": "l_per_100km", "lp100km": "l_per_100km", "l/100": "l_per_100km",
+}
+_FUEL_AMBIGUOUS = {"mpg", "mi/gal", "miles per gallon", "mile per gallon"}
+_FUEL_LABEL = {"mpg_us": "mpg (US)", "mpg_uk": "mpg (UK)", "km_per_l": "km/L", "l_per_100km": "L/100 km"}
+
+
+def _fuel_unit(u: Any, field: str) -> str:
+    key = _key(u, field)
+    if key in _FUEL_AMBIGUOUS:
+        raise Ambiguous(f"'{u}' is per US gallon or per imperial gallon - a 20% difference; say which", field=field, options=["mpg_us", "mpg_uk"])
+    if key not in _FUEL_ALIASES:
+        raise ToolError(f"'{u}' is not a fuel-economy unit; use one of {', '.join(_FUEL_UNITS)}")
+    return _FUEL_ALIASES[key]
+
+
+def _fuel_economy(p: dict[str, Any]) -> dict[str, Any]:
+    src = _fuel_unit(p.get("from_unit"), "from_unit")
+    dst = _fuel_unit(p.get("to_unit"), "to_unit")
+    val = _positive_value(p)
+    decimals = _decimals(p, 2)
+    assumptions: list[str] = []
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        km_per_l = {
+            "mpg_us": lambda v: v * _MILE_KM / _US_GALLON_L,
+            "mpg_uk": lambda v: v * _MILE_KM / _UK_GALLON_L,
+            "km_per_l": lambda v: v,
+            "l_per_100km": lambda v: Decimal(100) / v,
+        }[src](val)
+        out_val = {
+            "mpg_us": lambda k: k * _US_GALLON_L / _MILE_KM,
+            "mpg_uk": lambda k: k * _UK_GALLON_L / _MILE_KM,
+            "km_per_l": lambda k: k,
+            "l_per_100km": lambda k: Decimal(100) / k,
+        }[dst](km_per_l)
+    if "mpg_us" in (src, dst):
+        assumptions.append(f"US gallon = {_US_GALLON_L} L; mile = {_MILE_KM} km")
+    if "mpg_uk" in (src, dst):
+        assumptions.append(f"imperial gallon = {_UK_GALLON_L} L; mile = {_MILE_KM} km")
+    if (src == "l_per_100km") != (dst == "l_per_100km"):
+        assumptions.append(
+            "L/100 km is an inverse quantity (100 ÷ km/L): doubling the mpg halves the L/100 km, but equal mpg steps are not equal fuel savings - "
+            "30→40 mpg (US) saves 1.96 L/100 km, 40→50 mpg saves only 1.18"
+        )
+    rounded = _quant(out_val, decimals)
+    assumptions.append(f"rounded half-up to {decimals} decimals")
+    return ok(
+        {
+            "value": _jsonnum(rounded),
+            "unit": dst,
+            "display": f"{_dec_str(rounded)} {_FUEL_LABEL[dst]}",
+            "from": {"value": _jsonnum(val), "unit": src},
+            "km_per_l": _jsonnum(_quant(km_per_l, 6)),
+        },
+        assumptions=assumptions,
+    )
+
+
+# --- cooking ------------------------------------------------------------------
+
+_US_FL_OZ_ML = Decimal("29.5735295625")  # exact
+_UK_FL_OZ_ML = Decimal("28.4130625")  # exact
+_OZ_G = Decimal("28.349523125")  # avoirdupois ounce, exact
+_LB_G = Decimal("453.59237")  # exact
+#: ml per cup / tablespoon / teaspoon / fluid ounce, by cup system.
+_CUP_SYSTEMS: dict[str, dict[str, Decimal]] = {
+    "us": {"cup": Decimal(240), "tbsp": Decimal(15), "tsp": Decimal(5), "fl_oz": _US_FL_OZ_ML},
+    "metric": {"cup": Decimal(250), "tbsp": Decimal(15), "tsp": Decimal(5), "fl_oz": _UK_FL_OZ_ML},
+    "uk": {"cup": Decimal(250), "tbsp": Decimal(15), "tsp": Decimal(5), "fl_oz": _UK_FL_OZ_ML},
+    "au": {"cup": Decimal(250), "tbsp": Decimal(20), "tsp": Decimal(5), "fl_oz": _UK_FL_OZ_ML},
+}
+_CUP_NOTES = {
+    "us": "US cup = 240 ml (the FDA/legal cup; the customary cup is 236.6 ml), tbsp = 15 ml, tsp = 5 ml, fl oz = 29.5735295625 ml",
+    "metric": "metric cup = 250 ml, tbsp = 15 ml, tsp = 5 ml, fl oz = 28.4130625 ml (imperial)",
+    "uk": "UK cup = 250 ml (modern UK recipes use the metric cup; the old imperial cup of 284 ml is not used), tbsp = 15 ml, tsp = 5 ml, fl oz = 28.4130625 ml (imperial)",
+    "au": "Australian cup = 250 ml, tbsp = 20 ml (not 15), tsp = 5 ml, fl oz = 28.4130625 ml (imperial)",
+}
+_COOKING_VOLUME = ("cup", "tbsp", "tsp", "ml", "l", "fl_oz")
+_COOKING_MASS = ("g", "kg", "oz_weight", "lb")
+_COOKING_ALIASES: dict[str, str] = {
+    "cup": "cup", "cups": "cup", "c": "cup",
+    "tbsp": "tbsp", "tbs": "tbsp", "tbl": "tbsp", "tablespoon": "tbsp", "tablespoons": "tbsp",
+    "tsp": "tsp", "teaspoon": "tsp", "teaspoons": "tsp",
+    "ml": "ml", "millilitre": "ml", "milliliter": "ml", "millilitres": "ml", "milliliters": "ml",
+    "l": "l", "litre": "l", "liter": "l", "litres": "l", "liters": "l",
+    "fl_oz": "fl_oz", "fl oz": "fl_oz", "fl. oz": "fl_oz", "fl.oz": "fl_oz", "floz": "fl_oz", "fluid ounce": "fl_oz", "fluid ounces": "fl_oz",
+    "g": "g", "gram": "g", "grams": "g", "gm": "g", "gms": "g",
+    "kg": "kg", "kilogram": "kg", "kilograms": "kg", "kgs": "kg",
+    "oz_weight": "oz_weight", "oz weight": "oz_weight", "oz (weight)": "oz_weight", "ounce (weight)": "oz_weight", "ounces (weight)": "oz_weight",
+    "lb": "lb", "lbs": "lb", "pound": "lb", "pounds": "lb",
+}
+_COOKING_AMBIGUOUS = {"oz", "ounce", "ounces"}
+#: Grams per 240 ml US cup, typical published values (spooned-and-levelled flour, packed brown sugar).
+_DENSITY_G_PER_CUP: dict[str, int] = {
+    "water": 240,
+    "milk": 245,
+    "cream": 240,
+    "yogurt": 245,
+    "oil": 218,
+    "honey": 340,
+    "maple_syrup": 320,
+    "flour": 120,
+    "cornstarch": 128,
+    "cocoa": 85,
+    "sugar": 200,
+    "brown_sugar": 220,
+    "powdered_sugar": 120,
+    "butter": 227,
+    "peanut_butter": 270,
+    "rice": 185,
+    "oats": 90,
+    "salt": 288,
+}
+_INGREDIENT_ALIASES: dict[str, str] = {
+    "all-purpose flour": "flour", "all purpose flour": "flour", "ap flour": "flour", "plain flour": "flour", "wheat flour": "flour", "maida": "flour",
+    "granulated sugar": "sugar", "white sugar": "sugar",
+    "packed brown sugar": "brown_sugar", "brown sugar (packed)": "brown_sugar",
+    "icing sugar": "powdered_sugar", "confectioners sugar": "powdered_sugar", "confectioners' sugar": "powdered_sugar", "confectioner's sugar": "powdered_sugar",
+    "vegetable oil": "oil", "olive oil": "oil", "cooking oil": "oil", "canola oil": "oil", "sunflower oil": "oil",
+    "cocoa powder": "cocoa", "unsweetened cocoa": "cocoa",
+    "rolled oats": "oats", "old-fashioned oats": "oats", "oatmeal": "oats",
+    "white rice": "rice", "uncooked rice": "rice", "long grain rice": "rice", "basmati": "rice", "basmati rice": "rice",
+    "table salt": "salt",
+    "heavy cream": "cream", "whipping cream": "cream", "double cream": "cream",
+    "greek yogurt": "yogurt", "yoghurt": "yogurt", "curd": "yogurt",
+    "corn starch": "cornstarch", "cornflour": "cornstarch", "corn flour": "cornstarch",
+    "whole milk": "milk", "skim milk": "milk",
+}
+
+
+def _cooking_unit(u: Any, field: str) -> str:
+    key = _key(u, field)
+    if key in _COOKING_AMBIGUOUS:
+        raise Ambiguous(f"'{u}' is a weight or a fluid measure; say which", field=field, options=["oz_weight", "fl_oz"])
+    if key not in _COOKING_ALIASES:
+        raise ToolError(f"'{u}' is not a cooking measure; use one of {', '.join(_COOKING_VOLUME + _COOKING_MASS)}")
+    return _COOKING_ALIASES[key]
+
+
+def _ingredient(p: dict[str, Any]) -> str:
+    raw = p.get("ingredient")
+    options = sorted(_DENSITY_G_PER_CUP)
+    if raw is None or not str(raw).strip():
+        raise Ambiguous("mass <-> volume depends on the ingredient; name one from the built-in density table", field="ingredient", options=options)
+    key = re.sub(r"\s+", " ", str(raw).strip().lower())
+    key = _INGREDIENT_ALIASES.get(key, key)
+    key = re.sub(r"[\s-]+", "_", key)
+    if key not in _DENSITY_G_PER_CUP:
+        raise Ambiguous(f"no density on file for '{raw}'; pick the closest from the table or measure by weight", field="ingredient", options=options)
+    return key
+
+
+def _cooking(p: dict[str, Any]) -> dict[str, Any]:
+    src = _cooking_unit(p.get("from_unit"), "from_unit")
+    dst = _cooking_unit(p.get("to_unit"), "to_unit")
+    val, _ = parse_number(p.get("value", 1))
+    if val < 0:
+        raise ToolError("value must not be negative")
+    decimals = _decimals(p, 2)
+    system = str(p.get("cup") or "us").strip().lower()
+    if system not in _CUP_SYSTEMS:
+        raise ToolError(f"cup must be one of {', '.join(_CUP_SYSTEMS)}")
+    assumptions: list[str] = []
+    warnings: list[str] = []
+    ml_per = {**_CUP_SYSTEMS[system], "ml": Decimal(1), "l": Decimal(1000)}
+    g_per = {"g": Decimal(1), "kg": Decimal(1000), "oz_weight": _OZ_G, "lb": _LB_G}
+    if {src, dst} & set(_CUP_SYSTEMS[system]):
+        assumptions.append(_CUP_NOTES[system] + ("" if p.get("cup") else " - pass cup=metric|uk|au for a 250 ml cup"))
+    src_vol, dst_vol = src in _COOKING_VOLUME, dst in _COOKING_VOLUME
+    extra: dict[str, Any] = {}
+    with localcontext() as ctx:
+        ctx.prec = _PREC
+        if src_vol == dst_vol:
+            table = ml_per if src_vol else g_per
+            out_val = val * table[src] / table[dst]
+            if p.get("ingredient"):
+                assumptions.append("ingredient not needed for a same-kind conversion; ignored")
+        else:
+            ing = _ingredient(p)
+            grams = _DENSITY_G_PER_CUP[ing]
+            density = Decimal(grams) / Decimal(240)
+            if src_vol:
+                out_val = val * ml_per[src] * density / g_per[dst]
+            else:
+                out_val = val * g_per[src] / density / ml_per[dst]
+            assumptions.append(f"{ing}: {grams} g per 240 ml (US cup) = {_dec_str(_quant(density, 4))} g/ml")
+            warnings.append("ingredient densities are approximate: flour and sugar vary 10-20% with how they are scooped, packed or sifted; weigh when it matters")
+            extra = {"ingredient": ing, "density_g_per_ml": _jsonnum(_quant(density, 4))}
+        if "oz_weight" in (src, dst):
+            assumptions.append(f"avoirdupois ounce = {_OZ_G} g")
+        if "lb" in (src, dst):
+            assumptions.append(f"pound = {_LB_G} g")
+    rounded = _quant(out_val, decimals)
+    assumptions.append(f"rounded half-up to {decimals} decimals")
+    out: dict[str, Any] = {"value": _jsonnum(rounded), "unit": dst, "display": f"{_dec_str(rounded)} {dst}", "from": {"value": _jsonnum(val), "unit": src}, **extra}
+    if {src, dst} & set(_CUP_SYSTEMS[system]):
+        out["cup_system"] = system
+    return ok(out, assumptions=assumptions, warnings=warnings)
+
+
+# --- sizes --------------------------------------------------------------------
+
+_SHOE_CHART = "generic adult shoe chart (US men = UK + 1, US women = US men + 1.5, EU and foot length in cm from the common athletic-footwear table)"
+#: (US men, UK, EU, foot length cm). US women = US men + 1.5.
+_SHOE_ROWS: tuple[tuple[str, str, str, str], ...] = (
+    ("4", "3", "36", "22"), ("4.5", "3.5", "36.5", "22.5"), ("5", "4", "37.5", "23"), ("5.5", "4.5", "38", "23.5"),
+    ("6", "5", "38.5", "24"), ("6.5", "5.5", "39", "24.5"), ("7", "6", "40", "25"), ("7.5", "6.5", "40.5", "25.5"),
+    ("8", "7", "41", "26"), ("8.5", "7.5", "42", "26.5"), ("9", "8", "42.5", "27"), ("9.5", "8.5", "43", "27.5"),
+    ("10", "9", "44", "28"), ("10.5", "9.5", "44.5", "28.5"), ("11", "10", "45", "29"), ("11.5", "10.5", "45.5", "29.5"),
+    ("12", "11", "46", "30"), ("12.5", "11.5", "47", "30.5"), ("13", "12", "47.5", "31"), ("13.5", "12.5", "48", "31.5"),
+    ("14", "13", "48.5", "32"), ("15", "14", "49.5", "33"),
+)
+_SHOE_TABLE: tuple[dict[str, Decimal], ...] = tuple(
+    {"us_men": Decimal(m), "us_women": Decimal(m) + Decimal("1.5"), "uk": Decimal(uk), "eu": Decimal(eu), "cm": Decimal(cm)}
+    for m, uk, eu, cm in _SHOE_ROWS
+)
+_SHOE_UNITS = ("us_men", "us_women", "uk", "eu", "cm")
+_SHOE_ALIASES: dict[str, str] = {
+    "us_men": "us_men", "us men": "us_men", "us men's": "us_men", "us mens": "us_men", "us (men)": "us_men", "us m": "us_men",
+    "us_women": "us_women", "us women": "us_women", "us women's": "us_women", "us womens": "us_women", "us (women)": "us_women", "us w": "us_women",
+    "uk": "uk", "gb": "uk", "eu": "eu", "eur": "eu", "europe": "eu", "cm": "cm", "centimetres": "cm", "centimeters": "cm", "foot length": "cm", "mondopoint": "cm",
+}
+_CLOTHING_UNITS = ("alpha", "chest_cm", "waist_cm")
+_CLOTHING_ALIASES: dict[str, str] = {
+    "alpha": "alpha", "letter": "alpha", "size": "alpha", "s-xl": "alpha",
+    "chest_cm": "chest_cm", "chest": "chest_cm", "bust": "chest_cm", "bust_cm": "chest_cm", "chest cm": "chest_cm", "bust cm": "chest_cm",
+    "waist_cm": "waist_cm", "waist": "waist_cm", "waist cm": "waist_cm",
+}
+_ALPHA_ALIASES = {"xxs": "XS", "xs": "XS", "s": "S", "small": "S", "m": "M", "medium": "M", "l": "L", "large": "L", "xl": "XL", "xxl": "XXL", "2xl": "XXL", "3xl": "3XL", "xxxl": "3XL"}
+#: The US chart is the generic inch-based retail chart (converted at 2.54 cm/in); the EU chart is the
+#: EN 13402-3 letter code, which is defined on chest/bust only. Bands are (min, max) in the chart's own unit.
+_CLOTHING_CHARTS: dict[tuple[str, str], dict[str, Any]] = {
+    ("us", "men"): {
+        "name": "generic US men's chart (chest / waist in inches, 2.54 cm per inch)",
+        "unit": "in",
+        "chest": {"XS": ("32", "34"), "S": ("34", "36"), "M": ("38", "40"), "L": ("42", "44"), "XL": ("46", "48"), "XXL": ("50", "52")},
+        "waist": {"XS": ("26", "28"), "S": ("28", "30"), "M": ("32", "34"), "L": ("36", "38"), "XL": ("40", "42"), "XXL": ("44", "46")},
+    },
+    ("us", "women"): {
+        "name": "generic US women's (misses) chart (bust / waist in inches, 2.54 cm per inch)",
+        "unit": "in",
+        "chest": {"XS": ("32", "33"), "S": ("34", "35"), "M": ("36", "37"), "L": ("38.5", "40"), "XL": ("42", "44"), "XXL": ("46", "48")},
+        "waist": {"XS": ("24", "25"), "S": ("26", "27"), "M": ("28", "29"), "L": ("30.5", "32"), "XL": ("34", "36"), "XXL": ("38", "40")},
+    },
+    ("eu", "men"): {
+        "name": "EN 13402-3 men's letter codes (chest in cm)",
+        "unit": "cm",
+        "chest": {"XS": ("78", "86"), "S": ("86", "94"), "M": ("94", "102"), "L": ("102", "110"), "XL": ("110", "118"), "XXL": ("118", "129"), "3XL": ("129", "141")},
+        "waist": None,
+    },
+    ("eu", "women"): {
+        "name": "EN 13402-3 women's letter codes (bust in cm)",
+        "unit": "cm",
+        "chest": {"XS": ("74", "82"), "S": ("82", "90"), "M": ("90", "98"), "L": ("98", "106"), "XL": ("106", "118"), "XXL": ("118", "131"), "3XL": ("131", "146")},
+        "waist": None,
+    },
+}
+_CLOTHING_REGIONS = ("us", "eu")
+_GENDERS = ("men", "women")
+_GENDER_ALIASES = {"men": "men", "man": "men", "male": "men", "m": "men", "mens": "men", "men's": "men", "women": "women", "woman": "women", "female": "women", "f": "women", "womens": "women", "women's": "women", "ladies": "women"}
+_IN_CM = Decimal("2.54")
+
+
+def _gender(p: dict[str, Any], *, required: bool) -> str | None:
+    raw = p.get("gender")
+    if raw is None:
+        if required:
+            raise Ambiguous("men's and women's charts differ; say which with gender", field="gender", options=list(_GENDERS))
+        return None
+    key = str(raw).strip().lower()
+    if key not in _GENDER_ALIASES:
+        raise ToolError(f"gender must be one of {', '.join(_GENDERS)}")
+    return _GENDER_ALIASES[key]
+
+
+def _shoe_unit(u: Any, field: str, gender: str | None) -> str:
+    key = _key(u, field)
+    if key in ("us", "usa", "american"):
+        if gender:
+            return f"us_{gender}"
+        raise Ambiguous(f"'{u}' shoe sizes differ for men and women by 1.5; say which (or pass gender)", field=field, options=["us_men", "us_women"])
+    if key not in _SHOE_ALIASES:
+        raise ToolError(f"'{u}' is not a shoe-size scale; use one of {', '.join(_SHOE_UNITS)}")
+    return _SHOE_ALIASES[key]
+
+
+def _shoes(p: dict[str, Any]) -> dict[str, Any]:
+    gender = _gender(p, required=False)
+    src = _shoe_unit(p.get("from_unit"), "from_unit", gender)
+    dst = _shoe_unit(p.get("to_unit"), "to_unit", gender)
+    val = _positive_value(p)
+    assumptions: list[str] = []
+    warnings = [f"shoe sizes are approximate and vary by brand and last; chart: {_SHOE_CHART}"]
+    if p.get("region"):
+        assumptions.append("region ignored for shoes: the scale names (us_men, us_women, uk, eu, cm) already carry it")
+    column = [row[src] for row in _SHOE_TABLE]
+    if not column[0] <= val <= column[-1]:
+        raise ToolError(f"{_dec_str(val)} {src} is outside the chart ({_dec_str(column[0])} to {_dec_str(column[-1])} {src})")
+    row = min(_SHOE_TABLE, key=lambda r: (abs(r[src] - val), r[src]))
+    if row[src] != val:
+        warnings.append(f"no chart row for {_dec_str(val)} {src}; nearest is {_dec_str(row[src])} {src}")
+    return ok(
+        {
+            "value": _jsonnum(row[dst]),
+            "unit": dst,
+            "display": f"{_dec_str(row[dst])} {dst}" + (" (foot length)" if dst == "cm" else ""),
+            "from": {"value": _jsonnum(val), "unit": src},
+            "row": {k: _jsonnum(v) for k, v in row.items()},
+            "chart": _SHOE_CHART,
+        },
+        assumptions=assumptions,
+        warnings=warnings,
+    )
+
+
+def _clothing_unit(u: Any, field: str) -> str:
+    key = _key(u, field)
+    if key not in _CLOTHING_ALIASES:
+        raise ToolError(f"'{u}' is not a clothing measure; use one of {', '.join(_CLOTHING_UNITS)}")
+    return _CLOTHING_ALIASES[key]
+
+
+def _band_cm(chart: dict[str, Any], measure: str, alpha: str, decimals: int) -> dict[str, int | float]:
+    lo, hi = (Decimal(x) for x in chart[measure][alpha])
+    if chart["unit"] == "in":
+        lo, hi = lo * _IN_CM, hi * _IN_CM
+    return {"min": _jsonnum(_quant(lo, decimals)), "max": _jsonnum(_quant(hi, decimals))}
+
+
+def _clothing(p: dict[str, Any]) -> dict[str, Any]:
+    src = _clothing_unit(p.get("from_unit"), "from_unit")
+    dst = _clothing_unit(p.get("to_unit"), "to_unit")
+    region = p.get("region")
+    if region is None:
+        raise Ambiguous("S-XL means a different chest on the US and EU charts; say which with region", field="region", options=list(_CLOTHING_REGIONS))
+    region = str(region).strip().lower()
+    if region not in _CLOTHING_REGIONS:
+        raise ToolError(f"region must be one of {', '.join(_CLOTHING_REGIONS)} for clothing")
+    gender = _gender(p, required=True)
+    chart = _CLOTHING_CHARTS[(region, gender)]
+    decimals = _decimals(p, 1)
+    for u in (src, dst):
+        if u == "waist_cm" and chart["waist"] is None:
+            raise Unsupported(f"{chart['name']} defines letter codes on chest/bust only; use region=us for waist")
+    warnings = [f"clothing sizes are approximate and vary by brand and cut; chart: {chart['name']}"]
+    assumptions: list[str] = []
+    if src == "alpha":
+        raw = str(p.get("value", "")).strip().lower()
+        if raw not in _ALPHA_ALIASES or _ALPHA_ALIASES[raw] not in chart["chest"]:
+            raise ToolError(f"'{p.get('value')}' is not a size on this chart; use one of {', '.join(chart['chest'])}")
+        alpha = _ALPHA_ALIASES[raw]
+        if alpha != raw.upper():
+            assumptions.append(f"'{p.get('value')}' read as {alpha}")
+        from_out: Any = alpha
+    else:
+        val = _positive_value(p)
+        measure = "chest" if src == "chest_cm" else "waist"
+        bands = {a: tuple(Decimal(x) * (_IN_CM if chart["unit"] == "in" else 1) for x in b) for a, b in chart[measure].items()}
+        names = list(bands)
+        alpha = next((a for a in names if bands[a][0] <= val < bands[a][1] or (a == names[-1] and val == bands[a][1])), None)
+        if alpha is None:
+            if val < bands[names[0]][0] or val > bands[names[-1]][1]:
+                raise ToolError(f"{_dec_str(val)} cm is outside the chart ({_dec_str(_quant(bands[names[0]][0], decimals))} to {_dec_str(_quant(bands[names[-1]][1], decimals))} cm {measure})")
+            alpha = min(names, key=lambda a: min(abs(bands[a][0] - val), abs(bands[a][1] - val)))
+            warnings.append(f"{_dec_str(val)} cm falls between two bands on this chart; nearest is {alpha}")
+        from_out = _jsonnum(val)
+    row: dict[str, Any] = {"alpha": alpha, "chest_cm": _band_cm(chart, "chest", alpha, decimals)}
+    if chart["waist"] is not None:
+        row["waist_cm"] = _band_cm(chart, "waist", alpha, decimals)
+    value = alpha if dst == "alpha" else row[dst]
+    if src != "alpha" and dst != "alpha" and src != dst:
+        warnings.append(f"{src} to {dst} goes through the letter size, so it is the chart's band, not a body proportion")
+    if dst != "alpha":
+        assumptions.append(f"band bounds rounded half-up to {decimals} decimals")
+    return ok(
+        {
+            "value": value,
+            "unit": dst,
+            "display": alpha if dst == "alpha" else f"{_dec_str(Decimal(str(value['min'])))}-{_dec_str(Decimal(str(value['max'])))} cm {dst[:-3]}",
+            "from": {"value": from_out, "unit": src},
+            "row": row,
+            "chart": chart["name"],
+        },
+        assumptions=assumptions,
+        warnings=warnings,
+    )
+
+
+def _sizes(p: dict[str, Any]) -> dict[str, Any]:
+    category = p.get("category")
+    if category is None:
+        raise Ambiguous("say whether this is a shoe or a clothing size with category", field="category", options=["shoe", "clothing"])
+    category = str(category).strip().lower()
+    if category in ("shoe", "shoes", "footwear"):
+        return _shoes(p)
+    if category in ("clothing", "clothes", "apparel", "garment"):
+        return _clothing(p)
+    raise ToolError("category must be shoe or clothing")
+
+
 @tool
 def convert(mode: str = "auto", **params: Any) -> dict[str, Any]:
-    """Convert units, temperatures or currencies. Refuses ambiguous units."""
+    """Convert units, temperatures, currencies, fuel economy, cooking measures or sizes. Refuses ambiguous units."""
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    if mode == "fuel_economy":
+        return _fuel_economy(p)
+    if mode == "cooking":
+        return _cooking(p)
+    if mode == "sizes":
+        return _sizes(p)
     src = str(p.get("from_unit") or "")
     dst = str(p.get("to_unit") or "")
     if mode == "currency" or (mode == "auto" and _CURRENCY_RE.match(src.strip().upper()) and _CURRENCY_RE.match(dst.strip().upper()) and src.strip().upper() not in ("DEG", "RAD") and len(src.strip()) == 3 and src.strip().isupper()):
@@ -407,6 +870,84 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "A rate table that does not cover both sides.",
             "args": {"mode": "currency", "value": 100, "from_unit": "AUD", "to_unit": "INR", "rates": {"USD": 1, "EUR": 0.92}},
+        },
+    ],
+    "fuel_economy": [
+        {
+            "caption": "US mpg to litres per 100 km — the inverse relation is spelled out.",
+            "args": {"mode": "fuel_economy", "value": 30, "from_unit": "mpg_us", "to_unit": "l_per_100km"},
+        },
+        {
+            "caption": "A European figure into imperial mpg.",
+            "args": {"mode": "fuel_economy", "value": 6.5, "from_unit": "l_per_100km", "to_unit": "mpg_uk"},
+        },
+        {
+            "caption": "km/L into US mpg, four decimals.",
+            "args": {"mode": "fuel_economy", "value": 15, "from_unit": "km/l", "to_unit": "mpg_us", "decimals": 4},
+        },
+        {
+            "caption": "`mpg` alone is US or imperial — a 20% difference — so both come back as options.",
+            "args": {"mode": "fuel_economy", "value": 30, "from_unit": "mpg", "to_unit": "l_per_100km"},
+        },
+        {
+            "caption": "Zero has no inverse.",
+            "args": {"mode": "fuel_economy", "value": 0, "from_unit": "mpg_us", "to_unit": "l_per_100km"},
+        },
+    ],
+    "cooking": [
+        {
+            "caption": "A cup of flour in grams, with the density used and the cup system declared.",
+            "args": {"mode": "cooking", "value": 1, "from_unit": "cup", "to_unit": "g", "ingredient": "flour"},
+        },
+        {
+            "caption": "Grams of sugar back into cups.",
+            "args": {"mode": "cooking", "value": 200, "from_unit": "g", "to_unit": "cups", "ingredient": "sugar"},
+        },
+        {
+            "caption": "An Australian tablespoon is 20 ml, not 15.",
+            "args": {"mode": "cooking", "value": 2, "from_unit": "tbsp", "to_unit": "ml", "cup": "au"},
+        },
+        {
+            "caption": "Mass to volume without an ingredient: the table comes back as options.",
+            "args": {"mode": "cooking", "value": 1, "from_unit": "cup", "to_unit": "g"},
+        },
+        {
+            "caption": "An ingredient the table does not know.",
+            "args": {"mode": "cooking", "value": 1, "from_unit": "cup", "to_unit": "g", "ingredient": "quinoa"},
+        },
+        {
+            "caption": "`oz` is a weight or a fluid measure.",
+            "args": {"mode": "cooking", "value": 8, "from_unit": "oz", "to_unit": "g", "ingredient": "butter"},
+        },
+    ],
+    "sizes": [
+        {
+            "caption": "A US men's shoe size in EU, with the whole chart row.",
+            "args": {"mode": "sizes", "category": "shoe", "value": 9, "from_unit": "us_men", "to_unit": "eu"},
+        },
+        {
+            "caption": "Foot length to a US women's size.",
+            "args": {"mode": "sizes", "category": "shoe", "value": 25, "from_unit": "cm", "to_unit": "us_women"},
+        },
+        {
+            "caption": "A 100 cm chest on the US men's chart.",
+            "args": {"mode": "sizes", "category": "clothing", "value": 100, "from_unit": "chest_cm", "to_unit": "alpha", "region": "us", "gender": "men"},
+        },
+        {
+            "caption": "What bust an EU women's M covers.",
+            "args": {"mode": "sizes", "category": "clothing", "value": "M", "from_unit": "alpha", "to_unit": "chest_cm", "region": "eu", "gender": "women"},
+        },
+        {
+            "caption": "A plain `us` shoe size is men's or women's — 1.5 sizes apart.",
+            "args": {"mode": "sizes", "category": "shoe", "value": 9, "from_unit": "us", "to_unit": "eu"},
+        },
+        {
+            "caption": "Clothing without a region: the chart is never guessed.",
+            "args": {"mode": "sizes", "category": "clothing", "value": 100, "from_unit": "chest_cm", "to_unit": "alpha", "gender": "men"},
+        },
+        {
+            "caption": "`category` is required.",
+            "args": {"mode": "sizes", "value": 9, "from_unit": "us_men", "to_unit": "eu"},
         },
     ],
     "auto": [

@@ -8,6 +8,17 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- `convert` `fuel_economy`: `mpg_us` / `mpg_uk` / `km_per_l` / `l_per_100km` with exact
+  constants; a bare `mpg` is `ambiguous` (US or imperial gallon), and any conversion that crosses
+  L/100 km states the inverse relation in `assumptions`.
+- `convert` `cooking`: cups, tbsp, tsp, ml, fl oz ↔ g, kg, oz, lb. Mass ↔ volume needs
+  `ingredient`, looked up in a built-in density table (18 staples; the grams-per-cup used are
+  stated); a missing or unknown ingredient returns the table as `needs.options`. `cup` selects the
+  US (240 ml, default and declared), metric, UK or Australian (20 ml tablespoon) system.
+- `convert` `sizes`: `category=shoe` converts US men / US women / UK / EU / cm on a generic
+  adult chart, snapping to the nearest half size with a warning; `category=clothing` maps XS–XXL
+  to chest and waist cm bands for a chart chosen by `region` (`us` inch-based, `eu` EN 13402-3)
+  and `gender`, both required. Every result warns that sizes are approximate and names the chart.
 - `validate` `cidr`: membership (`network` + `value` → `contains`, for an address or a smaller
   block) and overlap (a list of networks → every pair with `equal` / `a_contains_b` /
   `b_contains_a` / `disjoint`), plus a block's size, usable hosts, bounds and masks. Host bits

@@ -43,6 +43,86 @@ def test_convert_currency_requires_rates():
     assert abs(r["result"]["value"] - 9277.78) < 0.01
 
 
+def test_convert_fuel_economy():
+    r = lb.convert_tool(mode="fuel_economy", value=30, from_unit="mpg_us", to_unit="l_per_100km")
+    assert r["ok"] and r["result"]["value"] == 7.84 and r["result"]["unit"] == "l_per_100km"
+    assert any("inverse" in a for a in r["assumptions"])
+    assert any("3.785411784" in a for a in r["assumptions"])
+    assert lb.convert_tool(mode="fuel_economy", value=30, from_unit="mpg_uk", to_unit="l_per_100km")["result"]["value"] == 9.42
+    assert lb.convert_tool(mode="fuel_economy", value=30, from_unit="mpg_us", to_unit="km_per_l")["result"]["value"] == 12.75
+    assert lb.convert_tool(mode="fuel_economy", value=5, from_unit="l_per_100km", to_unit="mpg_us")["result"]["value"] == 47.04
+    assert lb.convert_tool(mode="fuel_economy", value=30, from_unit="mpg_us", to_unit="l_per_100km", decimals=4)["result"]["value"] == 7.8405
+    assert lb.convert_tool(mode="fuel_economy", value=15, from_unit="km/l", to_unit="kmpl")["result"]["value"] == 15
+    # a bare mpg is US or imperial: a 20% difference, never guessed
+    r = lb.convert_tool(mode="fuel_economy", value=30, from_unit="mpg", to_unit="l_per_100km")
+    assert r["error"] == "ambiguous" and r["needs"]["field"] == "from_unit" and r["needs"]["options"] == ["mpg_us", "mpg_uk"]
+    r = lb.convert_tool(mode="fuel_economy", value=8, from_unit="l_per_100km", to_unit="mpg")
+    assert r["error"] == "ambiguous" and r["needs"]["field"] == "to_unit"
+    assert lb.convert_tool(mode="fuel_economy", value=0, from_unit="mpg_us", to_unit="l_per_100km")["ok"] is False
+    assert lb.convert_tool(mode="fuel_economy", value=30, from_unit="mpg_us", to_unit="km")["ok"] is False
+
+
+def test_convert_cooking():
+    r = lb.convert_tool(mode="cooking", value=1, from_unit="cup", to_unit="g", ingredient="flour")
+    assert r["ok"] and r["result"]["value"] == 120 and r["result"]["unit"] == "g"
+    assert any("US cup" in a and "240" in a for a in r["assumptions"])
+    assert any("flour" in a and "120" in a for a in r["assumptions"])
+    assert any("approximate" in w for w in r["warnings"])
+    assert lb.convert_tool(mode="cooking", value=2, from_unit="cups", to_unit="g", ingredient="sugar")["result"]["value"] == 400
+    assert lb.convert_tool(mode="cooking", value=1, from_unit="cup", to_unit="g", ingredient="butter")["result"]["value"] == 227
+    assert lb.convert_tool(mode="cooking", value=100, from_unit="g", to_unit="cup", ingredient="flour")["result"]["value"] == 0.83
+    assert lb.convert_tool(mode="cooking", value=100, from_unit="g", to_unit="cup", ingredient="Plain Flour", decimals=4)["result"]["value"] == 0.8333
+    # volume to volume needs no ingredient; the cup system is declared and changes tbsp too
+    r = lb.convert_tool(mode="cooking", value=1, from_unit="cup", to_unit="ml")
+    assert r["result"]["value"] == 240 and any("US cup" in a for a in r["assumptions"])
+    assert lb.convert_tool(mode="cooking", value=1, from_unit="cup", to_unit="ml", cup="metric")["result"]["value"] == 250
+    assert lb.convert_tool(mode="cooking", value=1, from_unit="tbsp", to_unit="ml", cup="au")["result"]["value"] == 20
+    assert lb.convert_tool(mode="cooking", value=3, from_unit="tsp", to_unit="tbsp")["result"]["value"] == 1
+    assert lb.convert_tool(mode="cooking", value=8, from_unit="fl_oz", to_unit="ml")["result"]["value"] == 236.59
+    assert lb.convert_tool(mode="cooking", value=1, from_unit="lb", to_unit="g")["result"]["value"] == 453.59
+    assert lb.convert_tool(mode="cooking", value=1, from_unit="cup", to_unit="ml", cup="imperial")["ok"] is False
+    # mass <-> volume without an ingredient, or with one the table lacks
+    r = lb.convert_tool(mode="cooking", value=1, from_unit="cup", to_unit="g")
+    assert r["error"] == "ambiguous" and r["needs"]["field"] == "ingredient" and "flour" in r["needs"]["options"]
+    r = lb.convert_tool(mode="cooking", value=1, from_unit="cup", to_unit="g", ingredient="unobtainium")
+    assert r["error"] == "ambiguous" and r["needs"]["field"] == "ingredient" and "butter" in r["needs"]["options"]
+    r = lb.convert_tool(mode="cooking", value=8, from_unit="oz", to_unit="g", ingredient="flour")
+    assert r["error"] == "ambiguous" and r["needs"]["options"] == ["oz_weight", "fl_oz"]
+    assert lb.convert_tool(mode="cooking", value=8, from_unit="oz_weight", to_unit="g")["result"]["value"] == 226.8
+
+
+def test_convert_sizes():
+    r = lb.convert_tool(mode="sizes", category="shoe", value=9, from_unit="us_men", to_unit="eu")
+    assert r["ok"] and r["result"]["value"] == 42.5 and r["result"]["row"] == {"us_men": 9, "us_women": 10.5, "uk": 8, "eu": 42.5, "cm": 27}
+    assert any("approximate" in w and "chart" in w for w in r["warnings"])
+    assert lb.convert_tool(mode="sizes", category="shoe", value=8, from_unit="us_women", to_unit="uk")["result"]["value"] == 5.5
+    assert lb.convert_tool(mode="sizes", category="shoe", value=42, from_unit="eu", to_unit="us_men")["result"]["value"] == 8.5
+    r = lb.convert_tool(mode="sizes", category="shoe", value=27.2, from_unit="cm", to_unit="us_men")
+    assert r["result"]["value"] == 9 and any("nearest" in w for w in r["warnings"])
+    r = lb.convert_tool(mode="sizes", category="shoe", value=9, from_unit="us", to_unit="eu")
+    assert r["error"] == "ambiguous" and r["needs"]["options"] == ["us_men", "us_women"]
+    assert lb.convert_tool(mode="sizes", category="shoe", value=9, from_unit="us", to_unit="eu", gender="women")["result"]["value"] == 40.5
+    assert lb.convert_tool(mode="sizes", category="shoe", value=30, from_unit="us_men", to_unit="eu")["ok"] is False
+    r = lb.convert_tool(mode="sizes", value=9, from_unit="us_men", to_unit="eu")
+    assert r["error"] == "ambiguous" and r["needs"]["field"] == "category"
+    # clothing: the chart is named by region and gender, both required
+    r = lb.convert_tool(mode="sizes", category="clothing", value=100, from_unit="chest_cm", to_unit="alpha", region="us", gender="men")
+    assert r["ok"] and r["result"]["value"] == "M" and r["result"]["row"]["waist_cm"] == {"min": 81.3, "max": 86.4}
+    r = lb.convert_tool(mode="sizes", category="clothing", value="M", from_unit="alpha", to_unit="chest_cm", region="us", gender="men")
+    assert r["result"]["value"] == {"min": 96.5, "max": 101.6}
+    assert lb.convert_tool(mode="sizes", category="clothing", value="xl", from_unit="alpha", to_unit="waist_cm", region="us", gender="women")["result"]["value"] == {"min": 86.4, "max": 91.4}
+    assert lb.convert_tool(mode="sizes", category="clothing", value=100, from_unit="chest_cm", to_unit="alpha", region="eu", gender="men")["result"]["value"] == "M"
+    assert lb.convert_tool(mode="sizes", category="clothing", value=100, from_unit="chest_cm", to_unit="alpha", region="eu", gender="women")["result"]["value"] == "L"
+    r = lb.convert_tool(mode="sizes", category="clothing", value=94, from_unit="chest_cm", to_unit="alpha", region="us", gender="men")
+    assert r["result"]["value"] == "M" and any("nearest" in w for w in r["warnings"])
+    r = lb.convert_tool(mode="sizes", category="clothing", value=100, from_unit="chest_cm", to_unit="alpha", gender="men")
+    assert r["error"] == "ambiguous" and r["needs"]["field"] == "region" and r["needs"]["options"] == ["us", "eu"]
+    r = lb.convert_tool(mode="sizes", category="clothing", value=100, from_unit="chest_cm", to_unit="alpha", region="us")
+    assert r["error"] == "ambiguous" and r["needs"]["field"] == "gender"
+    assert lb.convert_tool(mode="sizes", category="clothing", value=90, from_unit="waist_cm", to_unit="alpha", region="eu", gender="men")["error"] == "unsupported"
+    assert lb.convert_tool(mode="sizes", category="clothing", value="XXXXL", from_unit="alpha", to_unit="chest_cm", region="us", gender="men")["ok"] is False
+
+
 # --- holidays --------------------------------------------------------------
 
 def test_holidays():
