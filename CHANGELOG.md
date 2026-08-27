@@ -6,6 +6,15 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The loading skeleton replaces the page instead of covering it.** The outgoing page was faded
+  to a quarter and the skeleton laid over the top, so both were on screen at once and the text
+  showed through the bars. The content now leaves the flow while the next page is on its way and
+  the skeleton stands in its place; the docs pages still replace only the article and keep the
+  sidebar readable. Coming back with the browser's Back button no longer leaves a stranded row
+  of skeleton lines above the restored page.
+
 ## [0.3.1] - 2026-08-27
 
 ### Added
