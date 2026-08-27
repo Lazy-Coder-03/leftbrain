@@ -8,6 +8,12 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- `validate` `cidr`: membership (`network` + `value` → `contains`, for an address or a smaller
+  block) and overlap (a list of networks → every pair with `equal` / `a_contains_b` /
+  `b_contains_a` / `disjoint`), plus a block's size, usable hosts, bounds and masks. Host bits
+  set are read as the network and recorded in `assumptions`.
+- `validate` `id` with `kind=isbn` returns both `isbn10` and `isbn13` for a valid number (a 979
+  book has no ISBN-10 form).
 - `encode` `hash` and `checksum` take `expected` and answer `matches` — compared in constant
   time against the hex, Base64 (or, for checksums, decimal) form, case- and whitespace-
   insensitive, with a `sha256sum`-style `<digest>  <file>` line accepted as-is. A mismatch is

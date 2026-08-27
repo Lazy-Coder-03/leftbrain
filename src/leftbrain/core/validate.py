@@ -20,7 +20,7 @@ import jsonschema
 from ..contract import ToolError, Unsupported, ok, tool
 from .collections_ import get_path
 
-MODES = ("json_schema", "assert", "id", "email", "url", "phone", "ip", "sql_parse", "regex")
+MODES = ("json_schema", "assert", "id", "email", "url", "phone", "ip", "sql_parse", "regex", "cidr")
 
 # --------------------------------------------------------------------------- #
 # JSON Schema
@@ -342,6 +342,20 @@ def isbn_ok(s: str) -> tuple[bool, str]:
     return False, "must be 10 or 13 characters"
 
 
+def isbn_forms(d: str) -> tuple[str | None, str]:
+    """Both forms of a valid ISBN: (isbn10 or None for a 979 book, isbn13)."""
+    d = _digits(d).upper()
+    if len(d) == 10:
+        core = "978" + d[:9]
+        check = (10 - sum(int(c) * (3 if i % 2 else 1) for i, c in enumerate(core)) % 10) % 10
+        return d, core + str(check)
+    if not d.startswith("978"):
+        return None, d
+    core = d[3:12]
+    r = 11 - sum((10 - i) * int(c) for i, c in enumerate(core)) % 11
+    return core + ("0" if r == 11 else "X" if r == 10 else str(r)), d
+
+
 def ean_ok(s: str) -> bool:
     d = _digits(s)
     if not d.isdigit() or len(d) not in (8, 12, 13, 14):
@@ -406,6 +420,8 @@ def _id(p: dict[str, Any]) -> dict[str, Any]:
     elif kind == "isbn":
         v, which = isbn_ok(s)
         out.update({"valid": v, "format": which if v else None, "reason": None if v else which})
+        if v:
+            out["isbn10"], out["isbn13"] = isbn_forms(s)
     elif kind in ("ean", "upc", "gtin", "ean13", "ean8", "upca"):
         d = _digits(s)
         out.update({"valid": ean_ok(d), "length": len(d), "format": {8: "EAN-8", 12: "UPC-A", 13: "EAN-13", 14: "GTIN-14"}.get(len(d))})
@@ -577,6 +593,62 @@ def _ip(p: dict[str, Any]) -> dict[str, Any]:
         return ok({"valid": False, "value": s, "reason": str(e)})
 
 
+def _network(s: Any, field: str, assumptions: list[str]) -> ipaddress.IPv4Network | ipaddress.IPv6Network:
+    text = str(s).strip()
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError as e:
+        raise ToolError(f"{field}: {e}") from None
+    if str(net) != text and "/" in text:
+        assumptions.append(f"{text} has host bits set; read as {net}")
+    return net
+
+
+def _cidr(p: dict[str, Any]) -> dict[str, Any]:
+    spec = p.get("network")
+    if spec is None:
+        raise ToolError("'network' is required: a CIDR block, or a list of two or more to test for overlap")
+    assumptions: list[str] = []
+    if isinstance(spec, list):
+        if len(spec) < 2:
+            raise ToolError("'network' as a list needs two or more blocks to compare")
+        nets = [_network(x, "network", assumptions) for x in spec]
+        pairs = []
+        for i in range(len(nets)):
+            for j in range(i + 1, len(nets)):
+                a, b = nets[i], nets[j]
+                if a.version != b.version:
+                    relation = "disjoint"
+                elif a == b:
+                    relation = "equal"
+                elif b.subnet_of(a):
+                    relation = "a_contains_b"
+                elif a.subnet_of(b):
+                    relation = "b_contains_a"
+                else:
+                    relation = "disjoint"
+                pairs.append({"a": str(a), "b": str(b), "overlap": relation != "disjoint", "relation": relation})
+        return ok({"networks": [str(n) for n in nets], "overlaps": any(x["overlap"] for x in pairs), "pairs": pairs}, assumptions=assumptions + ["CIDR blocks either nest or are disjoint; a partial overlap cannot occur"])
+    net = _network(spec, "network", assumptions)
+    hosts = net.num_addresses - 2 if net.version == 4 and net.prefixlen < 31 else net.num_addresses
+    out: dict[str, Any] = {"network": str(net), "version": net.version, "prefixlen": net.prefixlen, "num_addresses": net.num_addresses, "usable_hosts": hosts, "first": str(net[0]), "last": str(net[-1]), "netmask": str(net.netmask), "hostmask": str(net.hostmask), "private": net.is_private}
+    if p.get("value") is not None:
+        raw = str(p["value"]).strip()
+        try:
+            member: Any = ipaddress.ip_network(raw, strict=False) if "/" in raw else ipaddress.ip_address(raw)
+        except ValueError as e:
+            raise ToolError(f"value: {e}") from None
+        if member.version != net.version:
+            out["contains"] = False
+            assumptions.append(f"{raw} is IPv{member.version} and {net} is IPv{net.version}; they cannot overlap")
+        elif isinstance(member, (ipaddress.IPv4Network, ipaddress.IPv6Network)):
+            out["contains"] = member.subnet_of(net)
+        else:
+            out["contains"] = member in net
+        out["value"] = str(member)
+    return ok(out, assumptions=assumptions)
+
+
 # --------------------------------------------------------------------------- #
 # SQL
 # --------------------------------------------------------------------------- #
@@ -651,11 +723,11 @@ def _regex(p: dict[str, Any]) -> dict[str, Any]:
 
 @tool
 def validate(mode: str = "assert", **params: Any) -> dict[str, Any]:
-    """Deterministic checks. Modes: json_schema, assert, id, email, url, phone, ip, sql_parse, regex."""
+    """Deterministic checks. Modes: json_schema, assert, id, email, url, phone, ip, sql_parse, regex, cidr."""
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
-    return {"json_schema": _json_schema, "assert": _assert, "id": _id, "email": _email, "url": _url, "phone": _phone, "ip": _ip, "sql_parse": _sql_parse, "regex": _regex}[mode](p)
+    return {"json_schema": _json_schema, "assert": _assert, "id": _id, "email": _email, "url": _url, "phone": _phone, "ip": _ip, "sql_parse": _sql_parse, "regex": _regex, "cidr": _cidr}[mode](p)
 
 #: Shared fixture for the documented examples below.
 _EX_LEAVE_DOC = {"employee": {"id": "E-19", "email": "asha@example.com"}, "leave": {"type": "casual", "days": 3, "start": "2025-09-01"}, "approvals": ["manager"]}
@@ -735,6 +807,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "id", "kind": "aadhaar", "value": "2345 6789 0124"},
         },
         {
+            "caption": "An ISBN in either form is verified and returned in both — the ISBN-13 a shop wants and the ISBN-10 on the old jacket.",
+            "args": {"mode": "id", "kind": "isbn", "value": "0-306-40615-2"},
+        },
+        {
             "caption": "`value` is required.",
             "args": {"mode": "id", "kind": "card"},
         },
@@ -805,6 +881,24 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Something that is not an address at all.",
             "args": {"mode": "ip", "value": "300.1.1.1"},
+        },
+    ],
+    "cidr": [
+        {
+            "caption": "Is this address inside the allowlisted block? A boolean, plus the block's size and bounds.",
+            "args": {"mode": "cidr", "network": "10.0.0.0/24", "value": "10.0.0.200"},
+        },
+        {
+            "caption": "Do these blocks overlap? Every pair is named with its relation — CIDR blocks either nest or are disjoint.",
+            "args": {"mode": "cidr", "network": ["10.0.0.0/16", "10.0.5.0/24", "192.168.0.0/24"]},
+        },
+        {
+            "caption": "A block with host bits set is read as its network, and the reading is recorded.",
+            "args": {"mode": "cidr", "network": "192.168.1.77/24"},
+        },
+        {
+            "caption": "A prefix that does not fit the address family.",
+            "args": {"mode": "cidr", "network": "10.0.0.0/33"},
         },
     ],
     "sql_parse": [

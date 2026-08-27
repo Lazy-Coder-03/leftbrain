@@ -2189,7 +2189,8 @@ VALIDATE = ToolDoc(
                 "`gstin`, `pan`, `aadhaar` (Verhoeff), `isbn`, `ean`/`upc`/`gtin`, `ifsc`, `vin`, "
                 "`uuid`, `upi`, `pincode`, `ssn`, `verhoeff`, `mod97`. An identifier that fails its "
                 "checksum is a successful call reporting `valid: false` — only an unknown `kind` or a "
-                "missing value is an error. Card numbers come back masked, never echoed in full."
+                "missing value is an error. Card numbers come back masked, never echoed in full. A valid "
+                "ISBN is returned in both forms (`isbn10`, `isbn13`); a 979 book has no ISBN-10."
             ),
             params=(
                 Param("kind", "Which scheme to check against.", required=True),
@@ -2263,6 +2264,24 @@ VALIDATE = ToolDoc(
             never_fails=(
                 "Nothing makes this mode return `ok: false`. An unparseable value comes back as "
                 "`valid: false` with the parser's reason."
+            ),
+        ),
+        Mode(
+            name="cidr",
+            purpose="Membership and overlap of CIDR blocks.",
+            description=(
+                "Answers the two questions an allowlist raises: is this address (or smaller block) "
+                "inside that network — `contains` — and do these blocks overlap. One `network` returns "
+                "its size, usable host count, bounds and masks; add `value` for membership. A list of "
+                "two or more networks returns every pair with its relation — `equal`, "
+                "`a_contains_b`, `b_contains_a` or `disjoint`; CIDR blocks cannot partially overlap. "
+                "A block written with host bits set is read as its network and the reading recorded. "
+                "An unparseable network or value is an error; a mixed IPv4/IPv6 comparison is a "
+                "`contains: false` with the reason in `assumptions`."
+            ),
+            params=(
+                Param("network", "A CIDR block, or a list of two or more to compare.", required=True),
+                Param("value", "An address or block to test for membership in `network`."),
             ),
         ),
         Mode(

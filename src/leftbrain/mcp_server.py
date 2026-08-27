@@ -409,17 +409,19 @@ def validate(
     sql: str | None = None,
     dialect: str | None = None,
     pattern: str | None = None,
+    network: str | list[str] | None = None,
 ) -> dict[str, Any]:
     """Use to CHECK instead of judge: evaluate policy rules over a JSON document
     (assert: rules=[{path:"leave.days", op:"lte", value:2}] -> pass/fail + score), validate
     against a JSON Schema, verify identifiers by checksum (kind=card|iban|gstin|pan|aadhaar|isbn|
-    ean|ifsc|vin|uuid|upi), check email/url/phone/ip syntax, or parse SQL before running it
+    ean|ifsc|vin|uuid|upi; isbn returns both forms), check email/url/phone/ip syntax, test CIDR
+    membership and overlap (cidr: network, value), or parse SQL before running it
     (sql_parse flags writes, DELETE/UPDATE without WHERE, tables touched).
-    mode: json_schema | assert | id | email | url | phone | ip | sql_parse | regex
+    mode: json_schema | assert | id | email | url | phone | ip | sql_parse | regex | cidr
     assert ops: eq ne gt gte lt lte between in not_in contains starts_with ends_with matches
     exists missing empty not_empty type len_eq len_gt len_lt before after is_email is_url is_date unique sum_eq each
     """
-    return validate_mod.validate(mode, **_clean(dict(data=data, rules=rules, schema=schema, kind=kind, value=value, region=region, sql=sql, dialect=dialect, pattern=pattern)))
+    return validate_mod.validate(mode, **_clean(dict(data=data, rules=rules, schema=schema, kind=kind, value=value, region=region, sql=sql, dialect=dialect, pattern=pattern, network=network)))
 
 
 @server.tool(name="random")

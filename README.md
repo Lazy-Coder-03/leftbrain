@@ -37,7 +37,7 @@ Design rules:
 | `finance` | emi, compound, cagr, npv_irr, gst, percent | ₹10L at 8.5% for 20 years → ₹8,678.23 with the schedule that reconciles to zero, SIP future value, CAGR, NPV/IRR by bisection, ₹1,180 inclusive → ₹1,000 + ₹90 CGST + ₹90 SGST, 20% then 10% off is 28% not 30% |
 | `text` | count, regex_match, regex_replace, diff, sort, dedupe, extract, find, similarity | character/word/occurrence counts, running a regex, exact diffs, natural sort, extracting emails/phones/GSTINs, edit distance and best-match from a list |
 | `collections` | set_ops, group_by, aggregate, pick_fields, flatten, unflatten, paginate, find_duplicates, sort_by, chunk | what's in list A but not B, group-by with sums, multi-key sorts — past the ~20-item cliff |
-| `validate` | json_schema, assert, id, email, url, phone, ip, sql_parse, regex | rule checks over JSON (`{path, op, value}` → pass/fail + score), Luhn/IBAN/GSTIN/PAN/Aadhaar/ISBN/EAN/VIN checksums, `DELETE` without `WHERE` |
+| `validate` | json_schema, assert, id, email, url, phone, ip, sql_parse, regex, cidr | rule checks over JSON (`{path, op, value}` → pass/fail + score), Luhn/IBAN/GSTIN/PAN/Aadhaar/ISBN/EAN/VIN/IFSC/UPI checksums and formats, ISBN-10 ↔ 13, is-this-IP-in-that-block and block overlap, `DELETE` without `WHERE` |
 | `random` | uuid, int, float, pick, shuffle, token, bool, sample | real randomness: UUID v4/v7, seeded ints, secure tokens/OTPs, A/B buckets |
 | `geo_offline` | tz_for_place, tz_for_coords, distance, country, zone_info | "Mumbai" → `Asia/Kolkata`, haversine distance, a country's zones — no network |
 | `encode` | hash, hmac, checksum, base64, hex, url, html, jwt_decode, json | SHA-256, HMAC, CRC32, base64 — models hallucinate all of these; `expected` → `matches` in constant time |
