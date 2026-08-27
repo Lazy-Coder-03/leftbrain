@@ -2569,7 +2569,7 @@ ENCODE = ToolDoc(
     ),
     when=(
         "Any hash, HMAC, checksum, Base64 or URL encoding — never write one from memory.",
-        "Verifying a webhook signature: pass `expected` and get a constant-time comparison.",
+        "Verifying a webhook signature or a download: pass `expected` and get a constant-time `matches` instead of eyeballing two hex strings.",
         "Inspecting a JWT's claims without a library (the signature is *not* verified).",
         "Validating, pretty-printing or minifying JSON, with the exact error position when it fails.",
     ),
@@ -2589,11 +2589,14 @@ ENCODE = ToolDoc(
                 "byte length that was hashed. Input may be text, or raw bytes given as "
                 "`bytes_base64`/`bytes_hex`. A non-string input is serialised as compact JSON with "
                 "sorted keys, and that choice is reported in `assumptions` — it is what makes the "
-                "hash reproducible."
+                "hash reproducible. Pass `expected` — hex or Base64, any case, or a whole "
+                "`sha256sum` line — and the response adds `matches`, compared in constant time; a "
+                "mismatch is still `ok: true`, because it is an answer."
             ),
             params=(
                 Param("text", "The input. Non-strings become compact sorted JSON."),
                 Param("algo", "Digest algorithm.", default="`sha256`"),
+                Param("expected", "A digest to verify against: hex or Base64, or a `<digest>  <file>` line."),
                 Param("encoding", "Text encoding before hashing.", default="`utf-8`"),
                 Param("bytes_base64", "Raw bytes as Base64, instead of `text`."),
                 Param("bytes_hex", "Raw bytes as hex, instead of `text`."),
@@ -2621,11 +2624,13 @@ ENCODE = ToolDoc(
             description=(
                 "Computes a non-cryptographic checksum — `crc32` or `adler32` — returning the value as "
                 "an unsigned integer and as eight hex digits. For integrity against corruption, not "
-                "against tampering; use `hash` or `hmac` for that."
+                "against tampering; use `hash` or `hmac` for that. With `expected` the response adds "
+                "`matches`."
             ),
             params=(
                 Param("text", "The input."),
                 Param("algo", "Checksum algorithm.", default="`crc32`"),
+                Param("expected", "A value to verify against, as hex or the unsigned integer."),
                 Param("bytes_hex", "Raw bytes as hex, instead of `text`."),
             ),
         ),

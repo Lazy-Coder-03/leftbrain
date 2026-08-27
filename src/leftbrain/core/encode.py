@@ -39,13 +39,32 @@ def _bytes(p: dict[str, Any]) -> bytes:
     return t.encode(p.get("encoding") or "utf-8")
 
 
+def clean_expected(expected: Any) -> str:
+    """An expected digest as the user pasted it: trimmed, and a ``sha256sum``-style ``<digest>  <file>`` line reduced to the digest."""
+    s = str(expected).strip()
+    return s.split()[0] if s else s
+
+
+def digest_matches(expected: Any, *forms: str) -> bool:
+    """Constant-time comparison of ``expected`` against every textual form of a digest (hex, Base64, decimal)."""
+    exp = clean_expected(expected)
+    hit = False
+    for form in forms:
+        hit |= _hmac.compare_digest(form.lower(), exp.lower())  # hex and decimal are case-free; Base64 is compared exactly below
+        hit |= _hmac.compare_digest(form, exp)
+    return hit
+
+
 def _hash(p: dict[str, Any]) -> dict[str, Any]:
     algo = (p.get("algo") or p.get("algorithm") or "sha256").lower().replace("-", "_")
     if algo not in _ALGOS:
         raise ToolError(f"algo must be one of {', '.join(sorted(_ALGOS))}")
     data = _bytes(p)
     h = hashlib.new(algo, data)
-    return ok({"algo": algo, "hex": h.hexdigest(), "base64": base64.b64encode(h.digest()).decode(), "bytes": len(data), "input_encoding": p.get("encoding") or "utf-8"}, assumptions=["input hashed as UTF-8 bytes; JSON inputs serialised compact with sorted keys"] if not isinstance(p.get("text", p.get("value")), str) and not p.get("bytes_base64") and not p.get("bytes_hex") else [])
+    out = {"algo": algo, "hex": h.hexdigest(), "base64": base64.b64encode(h.digest()).decode(), "bytes": len(data), "input_encoding": p.get("encoding") or "utf-8"}
+    if p.get("expected") is not None:
+        out["matches"] = digest_matches(p["expected"], out["hex"], out["base64"])
+    return ok(out, assumptions=["input hashed as UTF-8 bytes; JSON inputs serialised compact with sorted keys"] if not isinstance(p.get("text", p.get("value")), str) and not p.get("bytes_base64") and not p.get("bytes_hex") else [])
 
 
 def _hmac_mode(p: dict[str, Any]) -> dict[str, Any]:
@@ -59,8 +78,7 @@ def _hmac_mode(p: dict[str, Any]) -> dict[str, Any]:
     mac = _hmac.new(kb, _bytes(p), algo)
     out = {"algo": algo, "hex": mac.hexdigest(), "base64": base64.b64encode(mac.digest()).decode()}
     if p.get("expected") is not None:
-        exp = str(p["expected"]).strip().lower()
-        out["matches"] = _hmac.compare_digest(mac.hexdigest(), exp) or _hmac.compare_digest(out["base64"], str(p["expected"]).strip())
+        out["matches"] = digest_matches(p["expected"], out["hex"], out["base64"])
     return ok(out)
 
 
@@ -73,7 +91,10 @@ def _checksum(p: dict[str, Any]) -> dict[str, Any]:
         v = zlib.adler32(data) & 0xFFFFFFFF
     else:
         raise ToolError("algo must be crc32 or adler32")
-    return ok({"algo": algo, "value": v, "hex": f"{v:08x}"})
+    out: dict[str, Any] = {"algo": algo, "value": v, "hex": f"{v:08x}"}
+    if p.get("expected") is not None:
+        out["matches"] = digest_matches(p["expected"], out["hex"], str(v))
+    return ok(out)
 
 
 def _base64(p: dict[str, Any]) -> dict[str, Any]:
@@ -214,6 +235,14 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "hash", "bytes_hex": "deadbeef", "algo": "sha1"},
         },
         {
+            "caption": "Verifying a download or a message against a published digest: `matches` is compared in constant time. A `sha256sum`-style `<digest>  <file>` line works as-is.",
+            "args": {"mode": "hash", "text": "abc", "expected": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  abc.txt"},
+        },
+        {
+            "caption": "A mismatch is an answer, not an error: `ok` stays true and `matches` is false.",
+            "args": {"mode": "hash", "text": "abd", "expected": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+        },
+        {
             "caption": "An unknown algorithm lists the supported ones.",
             "args": {"mode": "hash", "text": "hello", "algo": "sha999"},
         },
@@ -252,6 +281,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Adler-32 of the same input.",
             "args": {"mode": "checksum", "text": "hello world", "algo": "adler32"},
+        },
+        {
+            "caption": "Checking against an expected value, given as hex or as the unsigned integer.",
+            "args": {"mode": "checksum", "text": "hello world", "expected": "0d4a1185"},
         },
         {
             "caption": "Only CRC32 and Adler-32 are checksums here.",

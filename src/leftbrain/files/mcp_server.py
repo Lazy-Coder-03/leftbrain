@@ -14,7 +14,7 @@ from . import tools
 server = MCPServer(
     "leftbrain-files",
     title="leftbrain files",
-    instructions="Read PDFs, inspect images, produce base64 data URIs for vision calls, and read local files. Access is limited to LEFTBRAIN_FILE_ROOTS.",
+    instructions="Read PDFs, inspect images, produce base64 data URIs for vision calls, read local files, and hash a file to verify a download. Access is limited to LEFTBRAIN_FILE_ROOTS.",
     version=__version__,
 )
 
@@ -39,6 +39,8 @@ def files(
     glob: str | None = None,
     recursive: bool | None = None,
     limit: int | None = None,
+    algo: str | None = None,
+    expected: str | None = None,
 ) -> dict[str, Any]:
     """Use for local files an agent cannot open by itself.
     mode:
@@ -48,8 +50,9 @@ def files(
     - image_to_base64 (path, format=JPEG|PNG|WEBP, max_side, max_bytes, quality) - data URI plus ready-made Anthropic/OpenAI image blocks
     - base64_to_file (base64, path, overwrite) - write decoded bytes
     - file_info (path) | read_text (path, start_line, end_line) | list_dir (path, glob, recursive)
+    - file_hash (path, algo=sha256|sha1|md5|blake2b|crc32, expected) - streamed digest of any size; with expected (hex, Base64, or a sha256sum line) adds matches
     """
-    params = {k: v for k, v in dict(path=path, pages=pages, layout=layout, max_chars=max_chars, password=password, base64=base64, format=format, max_side=max_side, max_bytes=max_bytes, quality=quality, overwrite=overwrite, encoding=encoding, start_line=start_line, end_line=end_line, glob=glob, recursive=recursive, limit=limit).items() if v is not None}
+    params = {k: v for k, v in dict(path=path, pages=pages, layout=layout, max_chars=max_chars, password=password, base64=base64, format=format, max_side=max_side, max_bytes=max_bytes, quality=quality, overwrite=overwrite, encoding=encoding, start_line=start_line, end_line=end_line, glob=glob, recursive=recursive, limit=limit, algo=algo, expected=expected).items() if v is not None}
     return tools.files(mode, **params)
 
 

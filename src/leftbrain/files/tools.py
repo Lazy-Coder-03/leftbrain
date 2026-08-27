@@ -12,12 +12,16 @@ import hashlib
 import io
 import mimetypes
 import os
+import zlib
 from pathlib import Path
 from typing import Any
 
 from ..contract import ToolError, ok, tool
+from ..core.encode import _ALGOS, digest_matches
 
-MODES = ("pdf_text", "pdf_info", "image_info", "image_to_base64", "base64_to_file", "file_info", "read_text", "list_dir")
+_HASH_ALGOS = sorted(_ALGOS | {"crc32"})
+
+MODES = ("pdf_text", "pdf_info", "image_info", "image_to_base64", "base64_to_file", "file_info", "read_text", "list_dir", "file_hash")
 
 _MAX_READ = 20 * 1024 * 1024  # 20 MB
 
@@ -270,6 +274,40 @@ def _file_info(p: dict[str, Any]) -> dict[str, Any]:
     return ok(out)
 
 
+def _file_hash(p: dict[str, Any]) -> dict[str, Any]:
+    """Digest of a file, streamed in 1 MiB chunks so size is bounded only by the roots."""
+    path = resolve_path(p.get("path"))
+    if not path.is_file():
+        raise ToolError(f"not a file: {path}")
+    algo = (p.get("algo") or "sha256").lower().replace("-", "_")
+    if algo not in _HASH_ALGOS:
+        raise ToolError(f"algo must be one of {', '.join(_HASH_ALGOS)}")
+    size = 0
+    crc = 0
+    h = hashlib.new(algo) if algo != "crc32" else None
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            size += len(chunk)
+            if h is not None:
+                h.update(chunk)
+            else:
+                crc = zlib.crc32(chunk, crc)
+    out: dict[str, Any] = {"path": str(path), "name": path.name, "algo": algo, "bytes": size}
+    forms: tuple[str, ...]
+    if h is not None:
+        out["hex"] = h.hexdigest()
+        out["base64"] = base64.b64encode(h.digest()).decode()
+        forms = (out["hex"], out["base64"])
+    else:
+        crc &= 0xFFFFFFFF
+        out["value"] = crc
+        out["hex"] = f"{crc:08x}"
+        forms = (out["hex"], str(crc))
+    if p.get("expected") is not None:
+        out["matches"] = digest_matches(p["expected"], *forms)
+    return ok(out)
+
+
 def _magic(head: bytes) -> str | None:
     sigs = [(b"%PDF", "pdf"), (b"\x89PNG", "png"), (b"\xff\xd8\xff", "jpeg"), (b"GIF8", "gif"), (b"PK\x03\x04", "zip/office"), (b"RIFF", "riff (webp/wav/avi)"), (b"\x1f\x8b", "gzip"), (b"BM", "bmp"), (b"II*\x00", "tiff"), (b"MM\x00*", "tiff"), (b"{", "json?"), (b"<", "xml/html?")]
     for sig, name in sigs:
@@ -340,8 +378,8 @@ def _list_dir(p: dict[str, Any]) -> dict[str, Any]:
 
 @tool
 def files(mode: str = "file_info", **params: Any) -> dict[str, Any]:
-    """File tools. Modes: pdf_text, pdf_info, image_info, image_to_base64, base64_to_file, file_info, read_text, list_dir."""
+    """File tools. Modes: pdf_text, pdf_info, image_info, image_to_base64, base64_to_file, file_info, read_text, list_dir, file_hash."""
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
-    return {"pdf_text": _pdf_text, "pdf_info": _pdf_info, "image_info": _image_info, "image_to_base64": _image_to_base64, "base64_to_file": _base64_to_file, "file_info": _file_info, "read_text": _read_text, "list_dir": _list_dir}[mode](p)
+    return {"pdf_text": _pdf_text, "pdf_info": _pdf_info, "image_info": _image_info, "image_to_base64": _image_to_base64, "base64_to_file": _base64_to_file, "file_info": _file_info, "read_text": _read_text, "list_dir": _list_dir, "file_hash": _file_hash}[mode](p)
