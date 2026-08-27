@@ -5,13 +5,16 @@ from __future__ import annotations
 from decimal import Decimal, localcontext
 from typing import Any
 
-from ..contract import Ambiguous, ToolError, Unsupported, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, ok, tool
 from .numbers import _ROUND_MODES, _dec_str, parse_number
 
 MODES = ("emi", "compound", "cagr", "npv_irr", "gst", "percent")
 
 MAX_MONTHS = 1200  # a century of monthly instalments
 MAX_CASHFLOWS = 10_000
+#: Years a compounding term may cover. Beyond this the power overflows Decimal, and the
+#: question stopped being about money long before.
+MAX_YEARS = 10_000
 _PERIODS_PER_YEAR = {"annual": 1, "yearly": 1, "semiannual": 2, "quarterly": 4, "monthly": 12, "weekly": 52, "daily": 365}
 _PREC = 40
 
@@ -147,6 +150,15 @@ def _compound(p: dict[str, Any]) -> dict[str, Any]:
         years = _num(p, "months", positive=True) / 12
     else:
         raise ToolError("'years' or 'months' is required")
+    if years > MAX_YEARS:
+        # (1 + i) ** (m * years) overflows Decimal long before this is a sensible question;
+        # it used to surface as `internal` plus a bare InvalidOperation (#28 SS4).
+        raise TooLarge(
+            f"a term of {float(years):,.0f} years is past what compound interest can be computed over; "
+            f"the limit is {MAX_YEARS:,}",
+            details={"years": float(years), "limit": MAX_YEARS},
+            hint="Use a term of a few hundred years or less.",
+        )
     contribution = _num(p, "contribution", required=False, nonneg=True) or Decimal(0)
     timing = str(p.get("contribution_timing", "end")).lower()
     if timing not in ("end", "begin"):

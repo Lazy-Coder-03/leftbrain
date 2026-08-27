@@ -968,7 +968,7 @@ DATETIME = ToolDoc(
             ),
             params=(
                 Param("value", "Starting date.", default="`now`"),
-                Param("amount", "How much to add; negative subtracts.", required=True),
+                Param("amount", "How much to add; negative subtracts. Up to 4 000 000 — beyond that no calendar date can hold the result.", required=True),
                 Param("unit", "`seconds`, `minutes`, `hours`, `days`, `weeks`, `fortnights`, `months`, `quarters`, `years`, `business_days`.", required=True),
                 Param("region", "ISO country code whose public holidays to skip, for `business_days`."),
                 Param("subdiv", "State/province code for regional holidays."),
@@ -1755,7 +1755,8 @@ FINANCE = ToolDoc(
                 "future value, the interest earned and the effective annual rate the compounding "
                 "implies. A `contribution` is added every compounding period, at its `end` (ordinary "
                 "annuity) or `begin` (annuity due) — the SIP case. When no compounding is given, "
-                "annual is used and said so in `assumptions`."
+                "annual is used and said so in `assumptions`. A term over 10 000 years is refused: "
+                "the power overflows before the answer means anything."
             ),
             params=(
                 Param("principal", "Opening balance; may be 0 for a pure contribution plan.", required=True),

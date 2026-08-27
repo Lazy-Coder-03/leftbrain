@@ -46,6 +46,15 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **Predictable inputs are phrased instead of raising Python exceptions** (#28 §4): five modes
+  reported what broke inside leftbrain rather than what the caller did wrong.
+  `collections.unflatten {"a": 1, "a.b": 2}` was `TypeError: 'int' object does not support item
+  assignment` and now names the key that is both a value and a prefix; `scale` with `to_qty: 0`
+  was `ZeroDivisionError: Fraction(1, 0)`; `datetime.add amount=1e9 unit=years` was
+  `ValueError: year must be in 1..9999` and is now a stated 4 000 000 limit; `finance.compound
+  years=1000000` was `internal` plus a bare `InvalidOperation` and is now `too_large` at 10 000
+  years; `convert.units value=1e400` was `OverflowError: int too large to convert to float` and
+  is now a stated 1e300 magnitude limit. Each carries `details` and a `hint`.
 - **SSRF in `url_check`** (#28 §5): `http://169.254.169.254/latest/meta-data/` — the cloud
   metadata service, which answers with credentials — was actually fetched, as were `localhost`
   and RFC 1918 addresses. The host is now resolved and judged before the connection is opened and

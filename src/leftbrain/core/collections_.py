@@ -234,6 +234,22 @@ def _flatten(p: dict[str, Any]) -> dict[str, Any]:
     raise ToolError("'data' must be a list or object")
 
 
+def _descend(child: Any, parts: list[Any], i: int, key: str, sep: str) -> Any:
+    """Step into `child`, refusing the case where it already holds a value.
+
+    `{"a": 1, "a.b": 2}` asks for `a` to be a number and an object at once. It used to be a
+    bare `TypeError: 'int' object does not support item assignment` (#28 SS4).
+    """
+    if isinstance(child, (dict, list)):
+        return child
+    held = sep.join(str(x) for x in parts[: i + 1])
+    raise ToolError(
+        f"key {held!r} is both a value and a prefix of {key!r}; it cannot be a value and an object at once",
+        details={"key": held, "conflicts_with": key},
+        hint="Rename one of the two keys, or drop the scalar one.",
+    )
+
+
 def _unflatten(p: dict[str, Any]) -> dict[str, Any]:
     data = p.get("data")
     if not isinstance(data, dict):
@@ -257,14 +273,14 @@ def _unflatten(p: dict[str, Any]) -> dict[str, Any]:
                 else:
                     if cur[part] is None:
                         cur[part] = [] if nxt_is_idx else {}
-                    cur = cur[part]
+                    cur = _descend(cur[part], parts, i, str(k), sep)
             else:
                 if last:
                     cur[part] = v
                 else:
                     if part not in cur or cur[part] is None:
                         cur[part] = [] if nxt_is_idx else {}
-                    cur = cur[part]
+                    cur = _descend(cur[part], parts, i, str(k), sep)
     return ok({"data": root})
 
 

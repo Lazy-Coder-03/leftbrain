@@ -9,7 +9,7 @@ from typing import Any
 
 import pint
 
-from ..contract import Ambiguous, ToolError, Unsupported, fail, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, fail, ok, tool
 from .numbers import _dec_str, parse_number
 
 MODES = ("units", "temperature", "currency", "fuel_economy", "cooking", "sizes", "auto")
@@ -154,12 +154,35 @@ def _norm_unit(u: Any, assume: str | None, field: str, assumptions: list[str]) -
     return s.replace("²", "**2").replace("³", "**3").replace("^", "**")
 
 
+#: Pint converts through `float`, so a magnitude past its range is an `OverflowError`
+#: rather than an answer. Refused with the number named instead (#28 SS4).
+MAX_MAGNITUDE = Fraction(10) ** 300
+
+
+def _check_magnitude(value: Fraction) -> None:
+    if abs(value) <= MAX_MAGNITUDE:
+        return
+    raise TooLarge(
+        "the value is too large to convert; unit conversion works up to about 1e300",
+        details={"limit": "1e300"},
+        hint="Scale the number down and convert the smaller magnitude.",
+    )
+
+
 def _parse_value(v: Any) -> Fraction:
     if isinstance(v, bool):
         raise ToolError("value must be a number")
     if isinstance(v, int):
         return Fraction(v)
     if isinstance(v, float):
+        # JSON has no infinity, but a client that writes 1e400 hands us one, and
+        # `Fraction('inf')` is a bare ValueError (#28 SS4).
+        if v != v or v in (float("inf"), float("-inf")):
+            raise ToolError(
+                "value is infinite or not a number; a conversion needs a finite value",
+                details={"value": str(v)},
+                hint="Numbers above about 1e308 cannot be written as a JSON number - pass a string instead.",
+            )
         return Fraction(repr(v))
     if isinstance(v, str):
         s = v.strip().replace(",", "").replace("_", "")
@@ -193,6 +216,7 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     assume = p.get("assume")
     val = _parse_value(p.get("value", 1))
+    _check_magnitude(val)
     src = _norm_unit(p.get("from_unit"), assume, "from_unit", assumptions)
     dst = _norm_unit(p.get("to_unit"), assume, "to_unit", assumptions)
     precision = int(p.get("precision", 10))
