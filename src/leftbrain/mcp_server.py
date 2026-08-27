@@ -129,7 +129,7 @@ def math(
 @server.tool(name="datetime")
 def datetime(
     mode: str = "now",
-    value: str | None = None,
+    value: str | int | float | None = None,
     tz: str | list[str | dict[str, str]] | None = None,
     from_tz: str | None = None,
     to_tz: str | dict[str, str] | list[str | dict[str, str]] | None = None,

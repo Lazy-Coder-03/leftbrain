@@ -193,7 +193,26 @@ _SAFE_NAMES: dict[str, Any] = {
     # no builtins
     "__builtins__": {},
 }
-_SAFE_NAMES["round"] = lambda x, n=0: sp.Float(round(float(sp.N(x)), int(n)))  # noqa: E731
+class _Round(sp.Function):
+    """``round(x, n)`` that waits until ``x`` is numeric — so it survives parsing with symbols in it and fires once ``vars`` are substituted. Half-up on the decimal value, returned exactly (``round(2.675, 2)`` is ``67/25``, i.e. 2.68)."""
+
+    nargs = (1, 2)
+
+    @classmethod
+    def eval(cls, x: Any, n: Any = sp.S.Zero) -> Any:
+        if not (x.is_number and n.is_number and n.is_integer):
+            return None
+        from decimal import ROUND_HALF_UP, Decimal
+
+        places = int(n)
+        # a literal like 2.675 is a binary Float underneath (2.67499999…); its printed value is what the caller meant
+        d = Decimal(str(x)) if isinstance(x, sp.Float) else Decimal(str(sp.N(x, 40)))
+        q = d.quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+        return sp.Rational(str(q))
+
+
+_Round.__name__ = _Round.__qualname__ = "round"  # so an unevaluated call prints as round(y, 1), not _Round(y, 1)
+_SAFE_NAMES["round"] = _Round
 
 _FORBIDDEN = re.compile(
     r"(__|\bimport\b|\blambda\b|\bexec\b|\beval\b|\bopen\b|\bgetattr\b|\bsetattr\b"

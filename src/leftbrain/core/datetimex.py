@@ -378,12 +378,12 @@ def parse_dt(
         dt, date_only = value, False
     elif isinstance(value, date):
         dt, date_only = datetime(value.year, value.month, value.day), True
-    elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        v = float(value)
+    elif (isinstance(value, (int, float)) and not isinstance(value, bool)) or (isinstance(value, str) and re.fullmatch(r"-?\d{9,13}", value.strip())):
+        v = float(value if not isinstance(value, str) else value.strip())  # a 9-13 digit string is an epoch, never a year
         if v > 1e12:
             v /= 1000.0
             assumptions.append("timestamp read as milliseconds")
-        dt = datetime.fromtimestamp(v, tz=UTC)
+        dt = datetime(1970, 1, 1, tzinfo=UTC) + timedelta(seconds=v)  # not fromtimestamp(): Windows refuses negative epochs
         date_only = False
         assumptions.append("unix timestamp read as UTC")
     else:
