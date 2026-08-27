@@ -79,6 +79,22 @@ curl https://leftbrain.idlesync.in/docs/tools/holidays | jq '.modes[].name'
 and honours that key's scope. Use it when you are already connected; use `/docs/tools` when you
 are deciding whether to.
 
+### Connecting an app
+
+An app that reads a **config file** can send `Authorization: Bearer lblz_…`, which is all
+leftbrain wants. An app configured through a **browser dialog** can only offer what the dialog
+offers — and neither Claude's web connector form nor ChatGPT's has a place for a static key.
+
+| client | works today |
+| --- | --- |
+| Claude Code, Claude Desktop, Cursor, VS Code | yes — a `headers` block, see [MCP clients](https://leftbrain.idlesync.in/docs/clients) |
+| Claude on the web, ChatGPT | not yet — the dialogs expect OAuth |
+
+For Claude on the web, use the desktop app: same account, and the connector lives in
+`claude_desktop_config.json`. For ChatGPT, put a header-injecting proxy in front and point the
+connector at that with **No Auth** — the docs carry a Cloudflare Worker that does it in a dozen
+lines, and the trade it makes. OAuth on `/mcp` is the real fix and is tracked as its own issue.
+
 ## The contract
 
 Every tool returns the same envelope:
