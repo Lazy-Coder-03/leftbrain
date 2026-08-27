@@ -49,6 +49,9 @@ MODES = (
 #: Zones a single `now` or `convert_tz` call may report on. 500 of them is a 110 KB
 #: response for one instant (#28 SS2e).
 MAX_TZ_TARGETS = 50
+#: The largest step `add` will take, in whatever unit was asked for. Year 9999 is the end of
+#: the calendar Python models, and 4 million days is well past it in any unit.
+MAX_ADD_AMOUNT = 4_000_000
 #: Days `business_days` will walk. A century is 36 525 iterations and a holiday list
 #: to match; the answer is a number, so the range is bounded rather than trimmed.
 MAX_BUSINESS_DAY_SPAN = 3660
@@ -760,6 +763,16 @@ def _mode_add(p: dict[str, Any]) -> dict[str, Any]:
     if amount is None or unit is None:
         raise ToolError("add needs 'amount' and 'unit'")
     amount = float(amount)
+    # The proleptic Gregorian calendar Python models stops at year 9999, so an amount that
+    # walks past it is a range problem, not the bare `ValueError: year must be in 1..9999`
+    # that used to come back (#28 SS4).
+    if abs(amount) > MAX_ADD_AMOUNT:
+        raise ToolError(
+            f"amount {amount:,.0f} is beyond what a calendar date can express; "
+            f"the largest step this mode takes is {MAX_ADD_AMOUNT:,}",
+            details={"amount": amount, "limit": MAX_ADD_AMOUNT, "unit": unit},
+            hint="Dates run from year 1 to year 9999; use a smaller amount.",
+        )
     dt, date_only, a = parse_dt(value, tz=p.get("tz"), locale=p.get("locale"), field="value")
     warnings: list[str] = []
     steps: list[str] = []

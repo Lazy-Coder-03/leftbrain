@@ -63,6 +63,13 @@ def scale(**params: Any) -> dict[str, Any]:
             raise ToolError("from_qty cannot be zero")
         from_unit, to_unit = p.get("from_unit"), p.get("to_unit")
         to_qty = _parse_value(p["to_qty"]) if p.get("to_qty") is not None else None
+        if to_qty == 0:
+            # inverse scaling divides by it, which was a bare ZeroDivisionError (#28 SS4).
+            raise ToolError(
+                "to_qty is 0; scaling to zero has no answer",
+                details={"to_qty": 0},
+                hint="Give a to_qty greater than zero.",
+            )
         if to_qty is None:
             if to_unit is None:
                 raise ToolError("'to_qty' (or 'to_unit') is required")
