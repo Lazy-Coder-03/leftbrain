@@ -1572,6 +1572,23 @@ NUMBERS = ToolDoc(
                 Param("suffix_only", "Append “only”, as invoices do.", default="`true`"),
             ),
         ),
+        Mode(
+            name="semver",
+            purpose="Order version strings the SemVer way.",
+            description=(
+                "Compares or sorts version strings as versions, not decimals — `1.10` is newer than "
+                "`1.9`. Precedence follows SemVer 2.0: major, minor, patch numerically; a release "
+                "above every pre-release of it; pre-release identifiers left to right, numeric ones "
+                "numerically and before alphanumeric ones, a shorter prefix first. Build metadata "
+                "(`+…`) is returned but never decides the order. A leading `v` and a missing minor or "
+                "patch are tolerated and recorded in `assumptions`."
+            ),
+            params=(
+                Param("values", "Two or more version strings."),
+                Param("a", "First version, with `b`; gives a `relation`."),
+                Param("b", "Second version."),
+            ),
+        ),
     ),
 )
 
@@ -1889,6 +1906,27 @@ TEXT = ToolDoc(
                 Param("substring", "The string to find.", required=True),
                 Param("case_sensitive", "Match case.", default="`false`"),
                 Param("context", "Characters of context on each side.", default="40"),
+            ),
+        ),
+        Mode(
+            name="similarity",
+            purpose="Edit distance, and the best match from a list.",
+            description=(
+                "Levenshtein distance by codepoint and a 0–1 `ratio` (1 minus distance over the longer "
+                "length). Give `a` and `b` for one pair, or `text` and `items` to rank a list of "
+                "candidates and return the `best` one with its index — for mapping what a user typed "
+                "onto a menu, or spotting near-duplicate names. Case is folded and whitespace "
+                "normalised by default; both are stated in `assumptions`. Strings are capped at 5,000 "
+                "characters."
+            ),
+            params=(
+                Param("a", "One string of a pair."),
+                Param("b", "The other."),
+                Param("text", "The input to match against `items`."),
+                Param("items", "Candidate strings to rank."),
+                Param("case_insensitive", "Fold case before comparing.", default="`true`"),
+                Param("normalize_whitespace", "Collapse runs of whitespace first.", default="`true`"),
+                Param("limit", "How many ranked candidates to return.", default="5"),
             ),
         ),
     ),

@@ -278,8 +278,9 @@ def numbers(
     """Use to compare numbers (9.11 vs 9.9), round with a stated rule, format for a locale
     (Indian 12,34,567 / currency / percent / compact), split an amount so shares sum exactly
     (allocate: total, parts or weights), generate sequences, parse "₹1.2 Cr"/"2.5k"/"12%",
-    or spell an amount in words (to_words: system=indian|international, currency=INR).
-    mode: compare | round | format | allocate | sequence | parse | to_words
+    or spell an amount in words (to_words: system=indian|international, currency=INR), or order
+    version strings (semver: 1.10 > 1.9, pre-releases per SemVer 2.0).
+    mode: compare | round | format | allocate | sequence | parse | to_words | semver
     """
     return numbers_mod.numbers(mode, **_clean(dict(values=values, a=a, b=b, value=value, decimals=decimals, significant=significant, nearest=nearest, rounding=rounding, locale=locale, style=style, currency=currency, accounting=accounting, total=total, parts=parts, weights=weights, percentages=percentages, labels=labels, method=method, kind=kind, start=start, step=step, ratio=ratio, end=end, n=n, system=system, suffix_only=suffix_only)))
 
@@ -352,8 +353,9 @@ def text(
 ) -> dict[str, Any]:
     """Use to count characters/words/occurrences ("how many r in strawberry"), run or test a
     regex, produce an exact diff between two texts, sort strings (natural order), remove
-    duplicates, find positions, or extract emails/phones/urls/dates/ids from text.
-    mode: count | regex_match | regex_replace | diff | sort | dedupe | extract | find
+    duplicates, find positions, extract emails/phones/urls/dates/ids from text, or measure how
+    alike two strings are and pick the best match from a list (similarity: Levenshtein).
+    mode: count | regex_match | regex_replace | diff | sort | dedupe | extract | find | similarity
     """
     return text_mod.text(mode, **_clean(dict(text=text, what=what, substring=substring, case_sensitive=case_sensitive, pattern=pattern, flags=flags, replacement=replacement, count=count, a=a, b=b, granularity=granularity, items=items, key=key, order=order, natural=natural, case_insensitive=case_insensitive, unique=unique, limit=limit, context=context, normalize_whitespace=normalize_whitespace, overlapping=overlapping)))
 
