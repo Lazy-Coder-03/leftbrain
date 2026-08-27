@@ -223,7 +223,7 @@ def test_no_documented_parameter_uses_a_retired_name():
 
 @pytest.mark.parametrize("tool", toolref.CATALOGUE, ids=_ids)
 def test_tool_page_renders_with_an_anchor_per_mode(client, tool):
-    r = client.get(f"/docs/tools/{tool.name}")
+    r = client.get(f"/docs/tools/{tool.name}", headers={"Accept": "text/html"})
     assert r.status_code == 200
     assert f"<h1>{tool.name}</h1>" in r.text
     for mode in tool.modes:
@@ -236,7 +236,7 @@ def test_tool_page_renders_with_an_anchor_per_mode(client, tool):
 
 @pytest.mark.parametrize("tool", toolref.EXTERNAL_CATALOGUE, ids=_ids)
 def test_network_tool_page_documents_without_calling_out(client, tool):
-    r = client.get(f"/docs/tools/{tool.name}")
+    r = client.get(f"/docs/tools/{tool.name}", headers={"Accept": "text/html"})
     assert r.status_code == 200
     assert f"<h1>{tool.name}</h1>" in r.text
     assert "network tool" in r.text.lower()
@@ -249,7 +249,7 @@ def test_network_tool_page_documents_without_calling_out(client, tool):
 
 
 def test_tools_index_lists_every_tool(client):
-    r = client.get("/docs/tools")
+    r = client.get("/docs/tools", headers={"Accept": "text/html"})
     assert r.status_code == 200 and "<h1>Tools</h1>" in r.text
     for tool in toolref.CATALOGUE + toolref.EXTERNAL_CATALOGUE:
         assert f'href="/docs/tools/{tool.name}"' in r.text, tool.name
@@ -267,7 +267,7 @@ def test_unknown_tool_is_a_branded_404(client):
 
 def test_pages_have_no_raw_markdown_artefacts(client):
     for name in ("math", "convert", "validate", "weather", "fx_rate"):
-        text = client.get(f"/docs/tools/{name}").text
+        text = client.get(f"/docs/tools/{name}", headers={"Accept": "text/html"}).text
         body = text.split('<article class="doc">')[1]
         assert "| ---" not in body and "\n## " not in body
         assert "```" not in body and ":::" not in body
@@ -277,7 +277,7 @@ def test_pages_have_no_raw_markdown_artefacts(client):
 @pytest.mark.parametrize("tool", [t for t in toolref.CATALOGUE if t.modes], ids=_ids)
 def test_every_example_says_which_half_you_send(client, tool):
     """Request and response are colour-coded, so a reader never confuses input with output."""
-    body = client.get(f"/docs/tools/{tool.name}").text.split('<article class="doc">')[1]
+    body = client.get(f"/docs/tools/{tool.name}", headers={"Accept": "text/html"}).text.split('<article class="doc">')[1]
     assert '<div class="io io-req"><span class="io-label">Request · tools/call</span>' in body
     assert '<div class="io io-res"><span class="io-label">Response · you get this back</span>' in body
     # one labelled response for every labelled request — the failures are paired too
@@ -293,7 +293,7 @@ def test_the_failure_examples_are_labelled_too(client):
 
 
 def test_the_tools_index_has_no_colour_legend(client):
-    body = client.get("/docs/tools").text.split('<article class="doc">')[1]
+    body = client.get("/docs/tools", headers={"Accept": "text/html"}).text.split('<article class="doc">')[1]
     assert "blue blocks" not in body and "green blocks" not in body
 
 

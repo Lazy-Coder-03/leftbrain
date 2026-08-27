@@ -56,6 +56,29 @@ Design rules:
 
 For custom agent loops that cannot open files themselves (hosted agents like Claude Code already can). `pdf_text`, `pdf_info`, `image_info`, `image_to_base64` (resize/compress to a byte budget; returns ready-made Anthropic and OpenAI image blocks), `base64_to_file`, `file_info`, `read_text`, `list_dir`, `file_hash` (streamed sha256/sha1/md5/blake2b/crc32 of a file of any size; pass `expected` — a digest or a whole `sha256sum` line — to get `matches`, the way to verify a download). Access is limited to `LEFTBRAIN_FILE_ROOTS`.
 
+## Finding out what it can do
+
+Three endpoints need no key, so an agent can look before it signs up:
+
+```bash
+curl https://leftbrain.idlesync.in/            # name, version, endpoints, auth mode
+curl https://leftbrain.idlesync.in/healthz     # {"ok": true, "version": "0.3.0"}
+curl https://leftbrain.idlesync.in/docs/tools  # every tool, its modes, and the contract
+```
+
+`/docs/tools` and `/docs/tools/<name>` answer in **JSON to a client and HTML to a browser** —
+the same content negotiation `/` uses, so there is one URL per thing rather than two. The JSON
+carries what the reference page carries minus the executed responses: each mode's purpose,
+every parameter with its type, default and whether it is required, and the example arguments.
+
+```bash
+curl https://leftbrain.idlesync.in/docs/tools/holidays | jq '.modes[].name'
+```
+
+`tools/list` over `/mcp` is the other machine-readable route; it needs a key, reports no modes,
+and honours that key's scope. Use it when you are already connected; use `/docs/tools` when you
+are deciding whether to.
+
 ## The contract
 
 Every tool returns the same envelope:

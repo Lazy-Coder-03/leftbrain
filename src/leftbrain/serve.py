@@ -386,7 +386,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
 
         if wants_html(request):
             return await landing(request, store, cfg)
-        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if (store and cfg.open_signup) else None, "login": "/login", "docs": "/docs", "transport": "streamable-http", "stateless": stateless})
+        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if (store and cfg.open_signup) else None, "login": "/login", "docs": "/docs", "tools": "/docs/tools", "transport": "streamable-http", "stateless": stateless})
 
     async def healthz(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "version": __version__})
