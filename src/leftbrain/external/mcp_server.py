@@ -5,13 +5,12 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from mcp.server import MCPServer
-
 from .. import __version__
+from ..mcp_contract import ContractMCPServer
 from ..scopes import enforce
 from . import tools
 
-server = MCPServer(
+server = ContractMCPServer(
     "leftbrain-external",
     title="leftbrain external",
     instructions="Network-backed facts the model cannot know: live weather, exchange rates, geocoding, URL reachability. Results are as-of the moment of the call.",

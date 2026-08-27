@@ -6,12 +6,11 @@ import argparse
 import os
 from typing import Any
 
-from mcp.server import MCPServer
-
 from .. import __version__
+from ..mcp_contract import ContractMCPServer
 from . import tools
 
-server = MCPServer(
+server = ContractMCPServer(
     "leftbrain-files",
     title="leftbrain files",
     instructions="Read PDFs, inspect images, produce base64 data URIs for vision calls, read local files, and hash a file to verify a download. Access is limited to LEFTBRAIN_FILE_ROOTS.",

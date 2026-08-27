@@ -6,9 +6,12 @@ backlog and each one is written to be picked up cold.
 ## Conventions
 
 - **Deterministic, ambiguity-refusing.** Every tool returns `{ok, result, assumptions[], warnings[]}`
-  or `{ok:false, error, message, needs?}`. When two readings are plausible (IST, 03/04/2025, ton,
-  oz, annual vs monthly rate, GST-inclusive vs exclusive) return `needs.options`; never guess
-  silently. Anything interpreted on the caller's behalf goes in `assumptions`.
+  or `{ok:false, error, message, retryable, needs?, details?, hint?}`. When two readings are
+  plausible (IST, 03/04/2025, ton, oz, annual vs monthly rate, GST-inclusive vs exclusive) return
+  `needs.options`; never guess silently. Anything interpreted on the caller's behalf goes in
+  `assumptions`. The failure codes are `contract.CODES` — that dict is the single list, and it
+  also says which ones are worth retrying (`busy` and `internal`, nothing else). A traceback is a
+  server-side log line, never part of a response unless `LEFTBRAIN_DEBUG` is set.
 - **No judge-like tools.** Rules and arithmetic only; nothing that asks a model to grade.
 - **One tool, not two that overlap.** A new capability that an existing mode already covers is a
   new mode at most — see how `finance.percent.split` reuses `numbers.allocate`.
