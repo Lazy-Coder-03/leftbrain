@@ -110,8 +110,12 @@ p.keybar.hint a{color:var(--accent)}
 .skel-lines i{display:block;height:12px;border-radius:3px;background:var(--line);opacity:.55}
 .skel-lines i:nth-child(2){width:78%}.skel-lines i:nth-child(3){width:64%}.skel-lines i:nth-child(4){width:86%}.skel-lines i:nth-child(5){width:40%}
 .doc{position:relative}
-.doc.is-loading>*:not(.skel-lines){opacity:.25;transition:opacity .15s}
-.doc.is-loading>.skel-lines{position:absolute;inset:0 0 auto 0;padding:24px 0}
+.doc.is-loading>*:not(.skel-lines),#page.is-loading>*:not(.skel-lines){opacity:.25;transition:opacity .15s}
+.doc.is-loading>.skel-lines,#page.is-loading>.skel-lines{position:absolute;inset:0 0 auto 0;padding:24px 0}
+#page{position:relative;min-height:40vh}
+#page.is-loading>.skel-lines{padding:32px 0}
+/* the skeleton stands in for a page, so give it a heading bar and a body block */
+#page.is-loading>.skel-lines i:first-child{height:26px;width:42%;opacity:.7}
 .keys.is-loading tbody{opacity:.35}
 .btn.is-busy{opacity:.6;pointer-events:none}
 @keyframes skel-shimmer{to{transform:translateX(100%)}}

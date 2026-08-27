@@ -3,7 +3,11 @@
   function skeleton(n) { var h = '<div class="skel-lines">'; for (var i = 0; i < n; i++) h += '<i></i>'; return h + '</div>'; }
   // Server-rendered pages: show a skeleton the instant a same-origin navigation or form submit starts.
   function startLoading(target) {
-    var doc = document.querySelector('.doc') || document.querySelector('main') || document.body;
+    // `.doc` first: the docs pages dim only the article and keep the sidebar readable.
+    // `#page` is the wrapper every template has, so no page falls through to <body> and
+    // prepends a skeleton above the nav.
+    var doc = document.querySelector('.doc') || document.getElementById('page');
+    if (!doc) return;
     if (!doc.classList.contains('is-loading')) { doc.classList.add('is-loading'); doc.insertAdjacentHTML('afterbegin', skeleton(6)); }
     if (target && target.classList && target.classList.contains('btn')) target.classList.add('is-busy');
   }

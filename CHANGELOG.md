@@ -6,6 +6,17 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **The loading skeleton now covers every page.** `site.js` looked for `.doc`, then `<main>`,
+  then `document.body`, so only the docs pages showed it correctly: the dashboard got the
+  markup with no CSS to position or dim it, and the landing, login and error pages prepended
+  skeleton lines above the nav. Every template now renders inside one `#page` wrapper, which
+  the script targets and the stylesheet positions and dims. The docs pages still dim only the
+  article, so the sidebar stays readable.
+- The site footer linked to the repository, which is private. It links to the tool reference
+  instead.
+
 ## [0.3.0] - 2026-08-27
 
 ### Added
