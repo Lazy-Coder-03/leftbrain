@@ -29,7 +29,7 @@ Design rules:
 | Tool | Modes | Replaces the model's guess at… |
 |---|---|---|
 | `math` | eval, exact, simplify, expand, factor, solve, diff, integrate, limit, series, ode, matrix, stats, convert_form, plot_points | any arithmetic, `15% of 200`, complex numbers `(3+4i)(1-2i)`, trig (`angle` required), calculus, linear algebra, statistics — SymPy, sandboxed |
-| `datetime` | now, convert_tz, parse, add, diff, weekday, nth_weekday, business_days, overlap, duration_sum, recurrence, cron_next, age, fiscal | the current time, DST-correct conversions, "next Friday 5pm", month-end clamping, working days with public holidays, RRULE expansion, cron |
+| `datetime` | now, convert_tz, parse, add, diff, weekday, nth_weekday, business_days, overlap, duration_sum, free_slots, recurrence, cron_next, age, fiscal | the current time, DST-correct conversions, "next Friday 5pm", month-end clamping, working days with public holidays, common free slots across time zones, RRULE expansion, cron |
 | `scale` | – | 4 → 7 servings, price per kg → per 250 g, 3 workers × 5 days → 12 workers (`mode=inverse`), with every dependent quantity |
 | `convert` | units, temperature, currency | km→mi, sqft→sqm, °C→°F (absolute or delta), GB→GiB, USD→INR (needs a rate) |
 | `holidays` | list, check, next, countries, subdivisions | public holidays for 150+ countries and their states |

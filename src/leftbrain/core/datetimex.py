@@ -1,7 +1,7 @@
 """datetime - clocks, calendars and timezones, done exactly.
 
 Modes: now, convert_tz, parse, add, diff, weekday, nth_weekday, business_days,
-overlap, duration_sum, recurrence, cron_next, age, fiscal.
+overlap, duration_sum, free_slots, recurrence, cron_next, age, fiscal.
 
 Principles:
 * IANA zone names only.  Abbreviations like "IST" or "CST" are ambiguous and
@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import calendar
 import re
-from datetime import UTC, date, datetime, timedelta, timezone, tzinfo
+from datetime import UTC, date, datetime, time, timedelta, timezone, tzinfo
+from itertools import combinations
 from typing import Any
 from zoneinfo import ZoneInfo, available_timezones
 
@@ -38,6 +39,7 @@ MODES = (
     "business_days",
     "overlap",
     "duration_sum",
+    "free_slots",
     "recurrence",
     "cron_next",
     "age",
@@ -1047,6 +1049,245 @@ def _hhmm(secs: float) -> str:
     return f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}"
 
 
+# --------------------------------------------------------------------------- #
+# Free slots across timezones
+# --------------------------------------------------------------------------- #
+
+_CLOCK_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+_MAX_SEARCH_DAYS = 92
+_MAX_SLOTS = 500
+
+Interval = tuple[datetime, datetime]
+
+
+def _clock(value: Any, name: str) -> tuple[int, int] | None:
+    """A bare time of day such as ``09:00`` -> (9, 0); anything else -> None."""
+    if not isinstance(value, str):
+        return None
+    m = _CLOCK_RE.match(value)
+    if not m:
+        return None
+    hh, mm = int(m.group(1)), int(m.group(2))
+    if hh > 23 or mm > 59:
+        raise ToolError(f"{name}: {value.strip()!r} is not a time of day")
+    return hh, mm
+
+
+def _offset_str(dt: datetime) -> str:
+    off = dt.utcoffset() or timedelta(0)
+    sign = "+" if off >= timedelta(0) else "-"
+    off = abs(off)
+    return f"{sign}{off.seconds // 3600:02d}:{(off.seconds // 60) % 60:02d}"
+
+
+def _union(intervals: list[Interval]) -> list[Interval]:
+    """Merge overlapping or touching half-open intervals into a sorted, disjoint list."""
+    out: list[Interval] = []
+    for s, e in sorted(intervals):
+        if out and s <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+def _intersect(a: list[Interval], b: list[Interval]) -> list[Interval]:
+    """Intersection of two sorted, disjoint interval lists."""
+    out: list[Interval] = []
+    i = j = 0
+    while i < len(a) and j < len(b):
+        s, e = max(a[i][0], b[j][0]), min(a[i][1], b[j][1])
+        if s < e:
+            out.append((s, e))
+        if a[i][1] < b[j][1]:
+            i += 1
+        else:
+            j += 1
+    return out
+
+
+def _minutes(s: datetime, e: datetime) -> int:
+    return int((e - s).total_seconds() // 60)
+
+
+def _window_days(days: Any, name: str) -> tuple[set[int], list[str] | None]:
+    if days is None:
+        return set(range(7)), None
+    if isinstance(days, str):
+        days = [days]
+    if not isinstance(days, list) or not days:
+        raise ToolError(f"{name}.days must be a list of weekday names such as ['mon', 'tue']")
+    idx: set[int] = set()
+    for d in days:
+        key = str(d).strip().lower()
+        if key not in _WD_INDEX:
+            raise ToolError(f"{name}.days: unknown weekday {d!r}; use names like 'mon' or 'monday'")
+        idx.add(_WD_INDEX[key])
+    return idx, [_WEEKDAYS[i][:3] for i in sorted(idx)]
+
+
+def _participant(part: Any, idx: int, first: date, last: date) -> tuple[dict[str, Any], tzinfo, list[Interval], list[str]]:
+    """One participant -> (echo, tzinfo, merged UTC availability, assumptions)."""
+    name = f"participants[{idx}]"
+    if not isinstance(part, dict):
+        raise ToolError(f"{name} must be {{'tz': ..., 'label': ..., 'windows': [...]}}")
+    if "tz" not in part:
+        raise ToolError(f"{name} has no 'tz' (an IANA name such as 'Asia/Kolkata')")
+    tz, tzname, a = resolve_tz(part["tz"])
+    label = part.get("label")
+    if label is not None and not isinstance(label, str):
+        raise ToolError(f"{name}.label must be a string")
+    label = label or tzname
+    assumptions = [f"{label}: {x}" for x in a]
+    windows = part.get("windows")
+    if not isinstance(windows, list) or not windows:
+        raise ToolError(f"{name} ({label}) needs 'windows': [{{'start': '09:00', 'end': '17:00', 'days': ['mon', ...]}}, ...]")
+    intervals: list[Interval] = []
+    echo: list[dict[str, Any]] = []
+
+    def expand(ls: datetime, le: datetime, what: str) -> None:
+        us, ue = ls.astimezone(UTC), le.astimezone(UTC)
+        if ls.utcoffset() != le.utcoffset():
+            assumptions.append(
+                f"{label}: {what} crosses a DST change (UTC offset {_offset_str(ls)} -> {_offset_str(le)}); "
+                f"expanded through UTC to {us.strftime('%H:%M')}-{ue.strftime('%H:%M')} UTC, {_minutes(us, ue)} minutes"
+            )
+        if us < ue:
+            intervals.append((us, ue))
+
+    for w_i, w in enumerate(windows):
+        wname = f"{name}.windows[{w_i}]"
+        if not isinstance(w, dict) or "start" not in w or "end" not in w:
+            raise ToolError(f"{wname} must have 'start' and 'end'")
+        s_clock, e_clock = _clock(w["start"], f"{wname}.start"), _clock(w["end"], f"{wname}.end")
+        if (s_clock is None) != (e_clock is None):
+            raise ToolError(f"{wname}: start and end must both be times of day (a weekly window) or both full timestamps (a one-off window)")
+        if s_clock is not None and e_clock is not None:
+            if e_clock <= s_clock:
+                raise ToolError(f"{wname}: end must be after start ({w['start']} -> {w['end']}); overnight windows are not supported")
+            day_idx, day_names = _window_days(w.get("days"), wname)
+            hhmm = f"{s_clock[0]:02d}:{s_clock[1]:02d}-{e_clock[0]:02d}:{e_clock[1]:02d}"
+            echo.append({"start": hhmm[:5], "end": hhmm[6:], **({"days": day_names} if day_names is not None else {})})
+            d = first
+            while d <= last:
+                if d.weekday() in day_idx:
+                    expand(datetime.combine(d, time(*s_clock), tzinfo=tz), datetime.combine(d, time(*e_clock), tzinfo=tz), f"window {hhmm} on {d.isoformat()}")
+                d += timedelta(days=1)
+        else:
+            ls, s_only, a1 = parse_dt(w["start"], tz=tz, field=f"{wname}.start")
+            le, e_only, a2 = parse_dt(w["end"], tz=tz, field=f"{wname}.end")
+            if s_only or e_only:
+                raise ToolError(f"{wname}: a one-off window needs a time of day on both ends, e.g. 2026-09-01T09:00")
+            if le <= ls:
+                raise ToolError(f"{wname}: end must be after start")
+            assumptions += [f"{label}: {x}" for x in a1 + a2 if f"{label}: {x}" not in assumptions]
+            echo.append({"start": ls.isoformat(), "end": le.isoformat()})
+            expand(ls, le, f"window {ls.isoformat()} -> {le.isoformat()}")
+    return {"label": label, "tz": tzname, "windows": echo}, tz, _union(intervals), assumptions
+
+
+def _mode_free_slots(p: dict[str, Any]) -> dict[str, Any]:
+    participants = p.get("participants")
+    if not isinstance(participants, list) or len(participants) < 2:
+        raise ToolError("free_slots needs at least two 'participants', each {'tz': 'Asia/Kolkata', 'label': ..., 'windows': [{'start': '09:00', 'end': '17:00', 'days': ['mon', ...]}]}")
+    granularity = p.get("granularity", 30)
+    duration = p.get("duration", granularity)
+    for what, v in (("granularity", granularity), ("duration", duration)):
+        if isinstance(v, bool) or not isinstance(v, int | float) or v != int(v) or v <= 0:
+            raise ToolError(f"{what} must be a positive whole number of minutes")
+    granularity, duration = int(granularity), int(duration)
+    limit = p.get("limit", 20)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= _MAX_SLOTS:
+        raise ToolError(f"limit must be 1..{_MAX_SLOTS}")
+    assumptions: list[str] = []
+    if p.get("start") is not None:
+        s, _, a = parse_dt(p["start"], tz="UTC", field="start")
+        start, assumptions = s.date(), assumptions + a
+    else:
+        start = datetime.now(UTC).date()
+        assumptions.append("no 'start' given; searched from today (UTC)")
+    if p.get("end") is not None:
+        e, _, a = parse_dt(p["end"], tz="UTC", field="end")
+        end, assumptions = e.date(), assumptions + a
+    else:
+        end = start + timedelta(days=7)
+        assumptions.append(f"no 'end' given; searched 7 days, to {end.isoformat()}")
+    if end < start:
+        raise ToolError(f"end {end.isoformat()} is before start {start.isoformat()}")
+    span = (end - start).days + 1
+    if span > _MAX_SEARCH_DAYS:
+        raise ToolError(f"search range is {span} days; the maximum is {_MAX_SEARCH_DAYS}")
+    range_start = datetime.combine(start, time(), tzinfo=UTC)
+    range_end = datetime.combine(end + timedelta(days=1), time(), tzinfo=UTC)
+
+    # local calendars are expanded a day either side of the UTC range: a Monday morning in
+    # Auckland is Sunday evening in UTC
+    people = [_participant(part, i, start - timedelta(days=1), end + timedelta(days=1)) for i, part in enumerate(participants)]
+    labels = [echo["label"] for echo, _, _, _ in people]
+    if len(set(labels)) != len(labels):
+        raise ToolError(f"participant labels must be distinct: {labels}")
+    for _, _, _, a in people:
+        assumptions += [x for x in a if x not in assumptions]
+    clipped = [_intersect(iv, [(range_start, range_end)]) for _, _, iv, _ in people]
+    common = clipped[0]
+    for c in clipped[1:]:
+        common = _intersect(common, c)
+
+    warnings: list[str] = []
+    when = f"between {start.isoformat()} and {end.isoformat()}"
+    if not common:
+        idle = [labels[i] for i, c in enumerate(clipped) if not c]
+        for name in idle:
+            warnings.append(f"{name} has no availability {when}")
+        live = [i for i, c in enumerate(clipped) if c]
+        pairs = [f"{labels[i]} and {labels[j]} never overlap" for i, j in combinations(live, 2) if not _intersect(clipped[i], clipped[j])]
+        if pairs:
+            warnings.append(f"no common free time {when}: " + "; ".join(pairs))
+        elif not idle:
+            warnings.append(f"no common free time {when}: every pair overlaps somewhere, but no instant is free for all {len(people)} at once")
+
+    per_day: dict[date, int] = {}
+    for s, e in common:
+        cur = s
+        while cur < e:
+            nxt = min(e, datetime.combine(cur.date() + timedelta(days=1), time(), tzinfo=UTC))
+            per_day[cur.date()] = per_day.get(cur.date(), 0) + _minutes(cur, nxt)
+            cur = nxt
+
+    step, length = timedelta(minutes=granularity), timedelta(minutes=duration)
+    starts: list[datetime] = []
+    for s, e in common:
+        t = s
+        while t + length <= e:
+            starts.append(t)
+            t += step
+    if common and not starts:
+        warnings.append(f"common free time exists but no stretch fits a {duration}-minute meeting; the longest is {max(_minutes(s, e) for s, e in common)} minutes")
+    if len(starts) > limit:
+        warnings.append(f"{len(starts) - limit} more slots not shown; raise 'limit' (max {_MAX_SLOTS}) or narrow the range")
+
+    slots = []
+    for t in starts[:limit]:
+        local = []
+        for echo, tz, _, _ in people:
+            ls, le = t.astimezone(tz), (t + length).astimezone(tz)
+            local.append({"label": echo["label"], "tz": echo["tz"], "start": ls.isoformat(), "end": le.isoformat(), "weekday": ls.strftime("%A")})
+        slots.append({"utc": {"start": t.isoformat(), "end": (t + length).isoformat()}, "local": local, "minutes": duration})
+    out = {
+        "range": {"start": start.isoformat(), "end": end.isoformat(), "tz": "UTC"},
+        "duration_minutes": duration,
+        "granularity_minutes": granularity,
+        "participants": [echo for echo, _, _, _ in people],
+        "total_slots": len(starts),
+        "slots": slots,
+        "per_day": [{"date": d.isoformat(), "weekday": d.strftime("%A"), "overlap_minutes": m} for d, m in sorted(per_day.items())],
+        "total_overlap_minutes": sum(per_day.values()),
+    }
+    assumptions.append("the search range is UTC dates, both ends inclusive; each participant's weekly windows are laid on their own local calendar, then everything is intersected in UTC")
+    assumptions.append("windows and slots are half-open [start, end); slots begin at the start of each common stretch and step by granularity")
+    return ok(out, assumptions=assumptions, warnings=warnings)
+
+
 def _mode_recurrence(p: dict[str, Any]) -> dict[str, Any]:
     rule = p.get("rule") or p.get("rrule")
     if not rule:
@@ -1210,6 +1451,7 @@ def datetime_tool(mode: str = "now", **params: Any) -> dict[str, Any]:
         "business_days": _mode_business_days,
         "overlap": _mode_overlap,
         "duration_sum": _mode_duration_sum,
+        "free_slots": _mode_free_slots,
         "recurrence": _mode_recurrence,
         "cron_next": _mode_cron_next,
         "age": _mode_age,
@@ -1480,6 +1722,36 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "An interval that runs backwards.",
             "args": {"mode": "duration_sum", "ranges": [{"start": "2025-08-26T11:00:00", "end": "2025-08-26T09:00:00"}]},
+        },
+    ],
+    "free_slots": [
+        {
+            "caption": "Kolkata, London and New York, weekly office windows: the common stretch is 11:00-14:30 UTC each weekday, shown in all three zones.",
+            "args": {"mode": "free_slots", "participants": [{"tz": "Asia/Kolkata", "label": "Kolkata", "windows": [{"start": "09:00", "end": "20:00", "days": ["mon", "tue", "wed", "thu", "fri"]}]}, {"tz": "Europe/London", "label": "London", "windows": [{"start": "08:00", "end": "16:00", "days": ["mon", "tue", "wed", "thu", "fri"]}]}, {"tz": "America/New_York", "label": "New York", "windows": [{"start": "07:00", "end": "11:00", "days": ["mon", "tue", "wed", "thu", "fri"]}]}], "start": "2026-09-07", "end": "2026-09-08", "duration": 60, "limit": 4},
+        },
+        {
+            "caption": "Two people, one window each, given as local timestamps rather than a weekly pattern.",
+            "args": {"mode": "free_slots", "participants": [{"tz": "Asia/Kolkata", "label": "Asha", "windows": [{"start": "2026-09-01T09:00", "end": "2026-09-01T12:00"}]}, {"tz": "Europe/London", "label": "Ben", "windows": [{"start": "2026-09-01T05:00", "end": "2026-09-01T08:00"}]}], "start": "2026-09-01", "end": "2026-09-01", "duration": 60},
+        },
+        {
+            "caption": "Plain office hours in all three cities never meet: still `ok`, with an empty list and a warning naming the pair that never overlaps.",
+            "args": {"mode": "free_slots", "participants": [{"tz": "Asia/Kolkata", "label": "Kolkata", "windows": [{"start": "09:00", "end": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"]}]}, {"tz": "Europe/London", "label": "London", "windows": [{"start": "09:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri"]}]}, {"tz": "America/New_York", "label": "New York", "windows": [{"start": "09:00", "end": "17:00", "days": ["mon", "tue", "wed", "thu", "fri"]}]}], "start": "2026-09-07", "end": "2026-09-11"},
+        },
+        {
+            "caption": "A window that spans New York's spring-forward on 8 March 2026 is four hours long, not five, and `assumptions` says so.",
+            "args": {"mode": "free_slots", "participants": [{"tz": "America/New_York", "label": "NY", "windows": [{"start": "00:00", "end": "05:00", "days": ["sun"]}]}, {"tz": "Europe/London", "label": "LDN", "windows": [{"start": "05:00", "end": "10:00", "days": ["sun"]}]}], "start": "2026-03-08", "end": "2026-03-08", "granularity": 60},
+        },
+        {
+            "caption": "An abbreviation is refused with the concrete zones to pick from, as everywhere else.",
+            "args": {"mode": "free_slots", "participants": [{"tz": "IST", "windows": [{"start": "09:00", "end": "17:00"}]}, {"tz": "Europe/London", "windows": [{"start": "09:00", "end": "17:00"}]}], "start": "2026-09-07"},
+        },
+        {
+            "caption": "One participant is not a meeting.",
+            "args": {"mode": "free_slots", "participants": [{"tz": "Asia/Kolkata", "windows": [{"start": "09:00", "end": "17:00"}]}], "start": "2026-09-07"},
+        },
+        {
+            "caption": "A window that ends before it starts.",
+            "args": {"mode": "free_slots", "participants": [{"tz": "Asia/Kolkata", "windows": [{"start": "17:00", "end": "09:00"}]}, {"tz": "Europe/London", "windows": [{"start": "09:00", "end": "17:00"}]}], "start": "2026-09-07"},
         },
     ],
     "recurrence": [
