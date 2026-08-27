@@ -136,16 +136,28 @@ def _get_pool() -> Any:
         # which is what has to sit below the ingress timeout.
         CONSTS.term_timeout = _env_float("LEFTBRAIN_WORKER_TERM_GRACE", 0.5)
         try:
-            _pool = ProcessPool(
+            pool = ProcessPool(
                 max_workers=settings.max_inflight,
                 max_tasks=settings.max_tasks,
                 initializer=_limit_child,
                 context=_context(),
             )
-        except Exception as e:  # pragma: no cover - defensive
+            # Prove a worker can actually start before anything depends on it. `forkserver`
+            # re-imports `__main__` in the child, so an interpreter whose `__main__` is not
+            # an importable file - `python -c`, a piped script, some embedded hosts - kills
+            # every worker at startup and the pool is broken from its first call. Running
+            # in-process is a worse guarantee but a working one; silently answering `busy`
+            # to everything forever is neither.
+            pool.schedule(_probe, timeout=30).result(timeout=30)
+        except Exception as e:
             _unavailable = f"{type(e).__name__}: {e}"
-            log.warning("compute isolation off: %s", _unavailable)
+            log.warning("compute isolation off, running in-process: %s", _unavailable)
+            try:
+                pool.stop()
+            except Exception:  # pragma: no cover - the pool may already be broken
+                pass
             return None
+        _pool = pool
     return _pool
 
 
@@ -174,11 +186,25 @@ def isolation_active() -> bool:
     return settings.enabled and _get_pool() is not None
 
 
+def _probe() -> bool:
+    """Cheapest possible task: does a worker start and answer at all?"""
+    return True
+
+
 def _call(tool: str, mode: str, params: dict[str, Any]) -> dict[str, Any]:
     """The child's whole job: look the tool up by name and run it."""
     import leftbrain
 
     return leftbrain.TOOLS[tool](mode, **params)
+
+
+def _timed(fn: Any, mode: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Run in this process, still reporting what it cost (#28 SS6)."""
+    started = time.monotonic()
+    out = fn(mode, **params)
+    if isinstance(out, dict):
+        out["compute_ms"] = round((time.monotonic() - started) * 1000)
+    return out
 
 
 def run_guarded(tool: str, mode: str, params: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
@@ -191,24 +217,38 @@ def run_guarded(tool: str, mode: str, params: dict[str, Any], *, timeout: float 
     import leftbrain
 
     if not settings.enabled:
-        return leftbrain.TOOLS[tool](mode, **params)
+        return _timed(leftbrain.TOOLS[tool], mode, params)
     pool = _get_pool()
     if pool is None:
-        return leftbrain.TOOLS[tool](mode, **params)
+        return _timed(leftbrain.TOOLS[tool], mode, params)
     deadline = settings.timeout if timeout is None else min(float(timeout), settings.timeout)
     started = time.monotonic()
     try:
         future = pool.schedule(_call, args=(tool, mode, params), timeout=deadline)
-    except Exception as e:  # pool stopping, or full beyond its queue
-        log.warning("could not schedule %s.%s: %s", tool, mode, e)
-        return fail(
-            "busy",
-            "the server could not take this call right now; nothing was computed",
-            details={"tool": tool, "mode": mode},
-            hint="Retry in a moment.",
-        )
+    except Exception as e:
+        # The pool is gone rather than busy: a worker died at startup, or it was stopped
+        # underneath us. Rebuild once; if that fails too, run in-process rather than
+        # refusing every call from now on.
+        log.warning("rebuilding the worker pool after %s: %s", type(e).__name__, e)
+        shutdown()
+        pool = _get_pool()
+        if pool is None:
+            return _timed(leftbrain.TOOLS[tool], mode, params)
+        try:
+            future = pool.schedule(_call, args=(tool, mode, params), timeout=deadline)
+        except Exception as again:
+            log.warning("could not schedule %s.%s: %s", tool, mode, again)
+            return fail(
+                "busy",
+                "the server could not take this call right now; nothing was computed",
+                details={"tool": tool, "mode": mode},
+                hint="Retry in a moment.",
+            )
     try:
-        return future.result(timeout=deadline + settings.queue_timeout)
+        out = future.result(timeout=deadline + settings.queue_timeout)
+        if isinstance(out, dict):
+            out["compute_ms"] = round((time.monotonic() - started) * 1000)
+        return out
     except FutureTimeout:
         future.cancel()
         elapsed = round(time.monotonic() - started, 2)

@@ -97,6 +97,27 @@ this shape: `invalid_input`, the offending parameters under `details.parameters`
 An `internal` error never ships a stack trace to the caller — it is logged server-side. Set
 `LEFTBRAIN_DEBUG=1` to get a `trace` field back in the response as well.
 
+### What a call cost
+
+Every response carries a `meta` block. It never affects `ok`.
+
+```json
+{"ok": true, "result": {...}, "assumptions": [], "warnings": [],
+ "meta": {"tool": "math", "mode": "eval", "latency_ms": 12, "compute_ms": 9,
+          "version": "0.2.0", "truncated": false, "request_id": "9f2c1a4b7e0d3c88",
+          "quota": {"remaining_today": 987, "daily_quota": 1000, "rpm": 60}}}
+```
+
+`latency_ms` is the wall time in the server, `compute_ms` the time in the engine, and
+`truncated` is lifted out of the result so a caller reading a list knows it is not the whole
+list. `quota` lets an agent back off before it hits a 429. `request_id` is echoed as
+`X-Request-Id` — send your own and it is kept, so one id spans both sides of a trace — and
+`X-Leftbrain-Latency-Ms` carries the latency, so both are visible without parsing the body.
+
+`compute_ms` is also the regression alarm for the ceiling above: **a response whose
+`compute_ms` exceeds its own deadline is a timeout that did not fire.** That was measurably the
+case before the worker landed, when a call with `timeout=5` was still computing at 9.53 s.
+
 ### Parameters
 
 Every mode declares what it reads, and a parameter it does not read is **refused**, not dropped.

@@ -27,6 +27,7 @@ import argparse
 import hmac
 import json
 import os
+import time
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
@@ -37,7 +38,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
-from . import __version__
+from . import __version__, observe
 from .scopes import Scope, allowed_tools, current_scope
 
 MCP_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp")
@@ -127,6 +128,40 @@ class SecurityHeadersMiddleware:
         await self.app(scope, receive, send_wrapper)
 
 
+class RequestMetaMiddleware:
+    """Stamp every request with an id and report what it cost (#28 SS6).
+
+    The id and the latency go out as headers as well as inside `meta`, so they are visible
+    without parsing the body - and so a caller can quote the id when reporting a slow call.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        incoming = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        # An id the caller already assigned is kept, so a trace spans both sides.
+        request_id = (incoming.get(observe.REQUEST_ID_HEADER) or "")[:64] or observe.new_request_id()
+        token = observe.current_request_id.set(request_id)
+        started = time.perf_counter()
+
+        async def send_wrapper(message: Any) -> None:
+            if message["type"] == "http.response.start":
+                headers = list(message.get("headers", []))
+                headers.append((observe.REQUEST_ID_HEADER.encode(), request_id.encode()))
+                headers.append((observe.LATENCY_HEADER.encode(), str(round((time.perf_counter() - started) * 1000)).encode()))
+                message = {**message, "headers": headers}
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_wrapper)
+        finally:
+            observe.current_request_id.reset(token)
+
+
 def _bearer(scope: Any) -> str:
     headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
     auth = headers.get("authorization", "")
@@ -161,6 +196,9 @@ class AuthMiddleware:
                 scope.setdefault("state", {})["auth"] = {"kind": "key", "key": verdict.key, "remaining": verdict.remaining}
                 extra = {"x-ratelimit-remaining-today": str(verdict.remaining), "x-ratelimit-limit-day": str(verdict.key.daily_quota), "x-ratelimit-limit-minute": str(verdict.key.rpm)}
                 key_scope = verdict.key.scope
+                # The same numbers the headers carry, so `meta.quota` can show them and an
+                # agent can back off before it hits a 429 (#28 SS6).
+                quota_token = observe.current_quota.set({"remaining_today": verdict.remaining, "daily_quota": verdict.key.daily_quota, "rpm": verdict.key.rpm})
                 token = current_scope.set(key_scope)  # what enforce() reads inside every tool
                 try:
                     if key_scope is not None and scope.get("method") == "POST" and _under(scope.get("path", ""), MCP_PREFIXES):
@@ -169,6 +207,7 @@ class AuthMiddleware:
                         await self._with_headers(scope, receive, send, extra)
                 finally:
                     current_scope.reset(token)
+                    observe.current_quota.reset(quota_token)
                 return
             extra = {"retry-after": str(verdict.retry_after)} if verdict.retry_after else {}
             await self._reject(scope, receive, send, verdict.status, verdict.reason, verdict.message or "key rejected", extra)
@@ -407,7 +446,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store)
-    return SecurityHeadersMiddleware(app)
+    return RequestMetaMiddleware(SecurityHeadersMiddleware(app))
 
 
 def app_from_env() -> Any:
