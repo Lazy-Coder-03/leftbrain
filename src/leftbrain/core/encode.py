@@ -8,6 +8,7 @@ import hashlib
 import hmac as _hmac
 import html
 import json
+import re
 import zlib
 from datetime import UTC
 from typing import Any
@@ -125,6 +126,15 @@ def _base64(p: dict[str, Any]) -> dict[str, Any]:
     if action == "decode":
         s = str(p.get("text") or p.get("value") or "").strip()
         s += "=" * (-len(s) % 4)
+        if urlsafe and ("+" in s or "/" in s):
+            # `urlsafe_b64decode` translates `-_` to `+/` and then accepts `+/` as well, so
+            # the flag was accepted and had no effect on standard-alphabet input (#28 SS3.13).
+            raise ToolError(
+                "urlsafe=true but the text uses the standard alphabet ('+' or '/'); "
+                "the URL-safe alphabet uses '-' and '_'",
+                details={"urlsafe": True},
+                hint="Drop urlsafe, or pass text encoded with the URL-safe alphabet.",
+            )
         try:
             raw = base64.urlsafe_b64decode(s) if (urlsafe or "-" in s or "_" in s) else base64.b64decode(s, validate=False)
         except (binascii.Error, ValueError) as e:
@@ -155,6 +165,10 @@ def _hex(p: dict[str, Any]) -> dict[str, Any]:
         return ok({"text": None, "base64": base64.b64encode(raw).decode(), "bytes": len(raw)}, warnings=["not valid UTF-8"])
 
 
+#: A `%` that is not followed by two hex digits: `unquote` passes it through untouched.
+_BAD_ESCAPE = re.compile(r"%(?![0-9a-fA-F]{2})[^\s]{0,2}")
+
+
 def _url(p: dict[str, Any]) -> dict[str, Any]:
     action = (p.get("action") or "encode").lower()
     s = str(p.get("text") if "text" in p else p.get("value") or "")
@@ -162,7 +176,13 @@ def _url(p: dict[str, Any]) -> dict[str, Any]:
         plus = bool(p.get("plus", False))
         return ok({"encoded": quote_plus(s, safe=p.get("safe", "")) if plus else quote(s, safe=p.get("safe", "/"))})
     if action == "decode":
-        return ok({"decoded": unquote_plus(s) if p.get("plus") else unquote(s)})
+        # `unquote` leaves a malformed escape exactly as it found it, so `a%zz` decoded to
+        # `a%zz` and the caller had no way to know an escape was broken (#28 SS3.13).
+        bad = _BAD_ESCAPE.findall(s)
+        return ok(
+            {"decoded": unquote_plus(s) if p.get("plus") else unquote(s)},
+            warnings=[f"{', '.join(dict.fromkeys(bad))} is not a valid percent-escape and was left as written"] if bad else [],
+        )
     raise ToolError("action must be encode or decode")
 
 

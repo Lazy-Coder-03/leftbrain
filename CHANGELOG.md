@@ -68,6 +68,26 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **The small list** (#28 §3.13): sixteen findings that were each wrong or silent rather than
+  dangerous. `random.sample` with more groups than items left some empty and said nothing;
+  `random.float decimals=100` ignored the parameter (a binary float has ~17 significant digits,
+  so it is now 0..15 and anything larger is refused); `encode.base64 urlsafe=true` decoded
+  standard-alphabet text anyway; `encode.url` left a malformed `%zz` escape untouched with no
+  note; `validate.url` accepted embedded credentials and punycode/Cyrillic look-alike hosts
+  silently, and now warns about both; `validate.ip` rejected the scoped IPv6 form
+  `fe80::1%eth0` (RFC 4007), which is now valid with the `zone` reported;
+  `validate.sql_parse` counted a trailing comment as a third statement;
+  `numbers.parse` rejected the Unicode minus `−5`, which is what copy-paste from a document
+  produces; `collections.find_duplicates` with `case_insensitive` did not also trim, so
+  `"a@x.com "` and `"A@x.com"` were different; `collections.aggregate` had no `median`
+  although `math.stats` did; `datetime.recurrence` refused `every other tuesday`, the short
+  form people actually write; `holidays.list` for a year the calendar has no data for looked
+  identical to a year with no holidays, and years past 2075 are now marked as estimated;
+  `text.sort` sorted `éclair` after `Zebra` without saying it does no locale collation; and
+  `text.count` now reports `graphemes` — what a reader sees, so a ZWJ family emoji is one
+  character rather than five — and warns when text carries bidi controls or zero-width
+  characters, which are invisible, count towards length, and are how a filename is made to
+  read backwards.
 - **Unknown parameters are refused instead of silently dropped** (#28 §2a). Every tool kept the
   keys it recognised and discarded the rest, so `datetime.age dob=… ref_date=…` returned the age
   as of *today* (the parameter is `on`) and `math.plot_points start=… end=…` plotted the default

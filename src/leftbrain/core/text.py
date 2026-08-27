@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import re
+import unicodedata
 from typing import Any
 
 from ..contract import TooLarge, ToolError, Unsupported, check_params, ok, tool
@@ -266,6 +267,60 @@ def _compile(pattern: Any, flags: Any) -> re.Pattern[str]:
         raise ToolError(f"invalid regex: {e}") from None
 
 
+#: Characters that join what precedes them into one visible cluster.
+_JOINERS = "\u200d\ufe0f\ufe0e"
+#: Emoji skin-tone modifiers, which attach to the emoji before them.
+_MODIFIERS = range(0x1F3FB, 0x1F400)
+#: Controls that reorder or hide text without printing anything themselves.
+_BIDI_CONTROLS = "\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069"
+_ZERO_WIDTH = "\u200b\u200c\u200d\ufeff\u2060"
+
+
+def _graphemes(t: str) -> int:
+    """How many characters a reader sees.
+
+    A short UAX #29: a cluster continues across combining marks, zero-width joiners and
+    the code point after one, variation selectors, emoji modifiers, and pairs of regional
+    indicators. Enough for counting; not a full segmentation library.
+    """
+    count, i, n = 0, 0, len(t)
+    while i < n:
+        count += 1
+        i += 1
+        while i < n:
+            ch = t[i]
+            if unicodedata.combining(ch) or ch in _JOINERS or ord(ch) in _MODIFIERS:
+                i += 1
+                if t[i - 1] == "\u200d" and i < n:  # a ZWJ joins whatever follows it
+                    i += 1
+                continue
+            if 0x1F1E6 <= ord(ch) <= 0x1F1FF and 0x1F1E6 <= ord(t[i - 1]) <= 0x1F1FF:
+                i += 1  # a flag is two regional indicators
+                continue
+            break
+    return count
+
+
+def _hidden_characters(t: str) -> list[str]:
+    """Controls that change what text looks like without being visible themselves."""
+    out = []
+    bidi = sorted({ch for ch in t if ch in _BIDI_CONTROLS})
+    if bidi:
+        out.append(
+            "contains bidi control character(s) "
+            + ", ".join(f"U+{ord(c):04X}" for c in bidi)
+            + ": the text may not read in the order it is stored (a filename spoofing trick)"
+        )
+    zero = sorted({ch for ch in t if ch in _ZERO_WIDTH and ch != "\u200d"})
+    if zero:
+        out.append(
+            "contains zero-width character(s) "
+            + ", ".join(f"U+{ord(c):04X}" for c in zero)
+            + ": they are invisible but count towards length and break exact comparison"
+        )
+    return out
+
+
 def _count(p: dict[str, Any]) -> dict[str, Any]:
     t = _text(p)
     what = (p.get("what") or "all").lower()
@@ -285,10 +340,15 @@ def _count(p: dict[str, Any]) -> dict[str, Any]:
         "paragraphs": len(paragraphs),
         "bytes_utf8": len(t.encode("utf-8")),
         "tokens_estimate": max(1, round(len(t) / 4)) if t else 0,
+        # What a reader sees. A ZWJ family emoji is five code points and one character
+        # to anyone looking at it, and `chars: 5` was the answer to a question nobody
+        # asked (#28 SS3.13).
+        "graphemes": _graphemes(t),
     }
     assumptions = ["tokens_estimate ≈ chars/4 (model-specific tokenizers differ)"]
+    hidden = _hidden_characters(t)
     if what == "all":
-        return ok(stats, assumptions=assumptions)
+        return ok(stats, assumptions=assumptions, warnings=hidden)
     if what in ("occurrences", "substring", "occurrence"):
         sub = p.get("substring") or p.get("needle")
         if not sub:
@@ -424,6 +484,7 @@ def _sort(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"items are not comparable: {e}") from None
     if natural:
         assumptions.append("natural sort (file2 < file10)")
+    assumptions.append("ordered by code point, with no locale collation: accented letters sort after z (éclair after Zebra)")
     if ci:
         assumptions.append("case-insensitive")
     if reverse:
@@ -592,6 +653,10 @@ _EX_CONTACT = "Ping ops@example.com or billing@mailinator.com, docs at https://l
 #: current instant with "volatile": True.
 EXAMPLES: dict[str, list[dict[str, Any]]] = {
     "count": [
+        {
+            "caption": "A ZWJ family emoji is five code points and one character to a reader; `graphemes` is the count people mean.",
+            "args": {"mode": "count", "text": "\U0001f469\u200d\U0001f469\u200d\U0001f467 family"},
+        },
         {
             "caption": "How many `r` in strawberry — counted, with positions.",
             "args": {"mode": "count", "text": "strawberry", "what": "occurrences", "substring": "r"},

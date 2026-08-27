@@ -29,6 +29,8 @@ MODE_PARAMS: dict[str, frozenset[str]] = {
 }
 
 _MAX_N = 10000
+#: Places a binary float can actually be rounded to.
+MAX_DECIMALS = 15
 
 
 def _rng(seed: Any) -> _random.Random:
@@ -95,7 +97,17 @@ def _float(p: dict[str, Any]) -> dict[str, Any]:
     rng = _rng(p.get("seed"))
     vals = [rng.uniform(lo, hi) for _ in range(n)]
     if dec is not None:
-        vals = [round(v, int(dec)) for v in vals]
+        # `round(v, 100)` is a no-op on a binary float: it has ~17 significant digits, so
+        # asking for 100 silently returned full precision (#28 SS3.13).
+        dec = int(dec)
+        if not 0 <= dec <= MAX_DECIMALS:
+            raise ToolError(
+                f"decimals must be 0..{MAX_DECIMALS}; a float carries about 17 significant digits, "
+                f"so {dec} would not round anything",
+                details={"decimals": dec, "limit": MAX_DECIMALS},
+                hint="Use numbers.round on an exact decimal if you need more.",
+            )
+        vals = [round(v, dec) for v in vals]
     return ok({"value": vals[0], "values": vals} if n == 1 else {"values": vals, "count": n})
 
 
@@ -196,10 +208,17 @@ def _sample(p: dict[str, Any]) -> dict[str, Any]:
         names = list(groups) if isinstance(groups, list) else [f"group{i + 1}" for i in range(int(groups))]
         pool = list(items)
         rng.shuffle(pool)
-        out = {name: [] for name in names}
+        out: dict[str, list[Any]] = {name: [] for name in names}
         for i, x in enumerate(pool):
             out[names[i % len(names)]].append(x)
-        return ok({"groups": out, "sizes": {k: len(v) for k, v in out.items()}}, assumptions=["round-robin after shuffle; sizes differ by at most 1"])
+        empty = [k for k, v in out.items() if not v]
+        return ok(
+            {"groups": out, "sizes": {k: len(v) for k, v in out.items()}},
+            assumptions=["round-robin after shuffle; sizes differ by at most 1"],
+            # 3 items into 10 groups leaves 7 empty ones, which was reported as a success
+            # with no hint that the split could not be made (#28 SS3.13).
+            warnings=[f"{len(empty)} of {len(names)} groups are empty: there are only {len(items)} items to spread"] if empty else [],
+        )
     k = int(p.get("k", p.get("n", 1)))
     if k > len(items):
         raise ToolError("k exceeds number of items")

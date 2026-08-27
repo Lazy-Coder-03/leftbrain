@@ -53,6 +53,10 @@ _SUFFIX = {"k": 3, "thousand": 3, "m": 6, "mn": 6, "million": 6, "b": 9, "bn": 9
 _CURRENCY_SYMBOLS = {"₹": "INR", "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "rs": "INR", "rs.": "INR", "inr": "INR", "usd": "USD"}
 
 
+#: Characters a document uses where a keyboard would type `-`.
+_DASHES = str.maketrans({"\u2212": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", "\u2796": "-"})
+
+
 def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     """Parse '1,23,456.78', '₹1.2L', '3.4 Cr', '2.5k', '12%', '(500)' into a Decimal."""
     assumptions: list[str] = []
@@ -67,6 +71,9 @@ def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     if isinstance(v, Fraction):
         return Decimal(v.numerator) / Decimal(v.denominator), assumptions
     s = str(v).strip().lower()
+    # U+2212 MINUS SIGN, and the dashes a word processor substitutes for one, are what a
+    # number copied out of a document actually contains (#28 SS3.13).
+    s = s.translate(_DASHES)
     if not s:
         raise ToolError("empty number")
     neg = False

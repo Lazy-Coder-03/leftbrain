@@ -22,6 +22,9 @@ MODE_PARAMS: dict[str, frozenset[str]] = {
     "subdivisions": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
 }
 
+#: Past this year, lunar and observed-date rules are projections rather than calendars.
+_ESTIMATED_AFTER = 2075
+
 #: Upcoming holidays `next` will return; the search window is two calendar years.
 MAX_NEXT = 100
 
@@ -119,7 +122,15 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
             long_weekends.append({"date": k.isoformat(), "name": hm[k], "spans": f"{(k - timedelta(days=k.weekday() - 4 if k.weekday() == 4 else 2)).isoformat()} to {(k + timedelta(days=2 if k.weekday() == 4 else 0)).isoformat()}"})
     out = {"region": code, "subdiv": subdiv, "years": years, "count": len(items), "holidays": items, "long_weekends": long_weekends}
     assumptions = [] if subdiv else ["national holidays only; pass subdiv (e.g. state code) for regional ones" if _hol.list_supported_countries().get(code) else ""]
-    return ok(out, assumptions=[x for x in assumptions if x])
+    # An empty list because the calendar has no data for that year reads exactly like an
+    # empty list because there are no holidays. Say which (#28 SS3.13).
+    warnings = []
+    if not hm:
+        span = f"{min(years)}" if len(years) == 1 else f"{min(years)}-{max(years)}"
+        warnings.append(f"the holiday calendar has no data for {code} in {span}; this is not the same as 'no holidays'")
+    elif any(y > _ESTIMATED_AFTER for y in years):
+        warnings.append(f"years after {_ESTIMATED_AFTER} are estimated: lunar and observed-date rules are not fixed that far ahead")
+    return ok(out, assumptions=[x for x in assumptions if x], warnings=warnings)
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
 #: executed when /docs/tools/holidays is built and sorted by the result into
