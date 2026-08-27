@@ -221,24 +221,50 @@ def _zone_entry(z: str) -> dict[str, Any]:
     }
 
 
+def _on_globe(lat: float, lon: float, name: str) -> tuple[float, float]:
+    """Coordinates that exist. `lat=91` used to return a timezone and a 10 118 km distance."""
+    if not -90 <= lat <= 90:
+        raise ToolError(
+            f"{name} latitude {lat} is off the globe; latitude runs from -90 to 90",
+            details={name: {"lat": lat, "lon": lon}},
+            hint="Check whether lat and lon are the wrong way round.",
+        )
+    if not -180 <= lon <= 180:
+        raise ToolError(
+            f"{name} longitude {lon} is off the globe; longitude runs from -180 to 180",
+            details={name: {"lat": lat, "lon": lon}},
+            hint="Check whether lat and lon are the wrong way round.",
+        )
+    return lat, lon
+
+
 def _point(v: Any, name: str, assumptions: list[str]) -> tuple[float, float]:
     if isinstance(v, dict) and "lat" in v and ("lon" in v or "lng" in v):
-        return float(v["lat"]), float(v.get("lon", v.get("lng")))
+        return _on_globe(float(v["lat"]), float(v.get("lon", v.get("lng"))), name)
     if isinstance(v, (list, tuple)) and len(v) == 2:
-        return float(v[0]), float(v[1])
+        return _on_globe(float(v[0]), float(v[1]), name)
     if isinstance(v, str):
         m = re.fullmatch(r"\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*", v)
         if m:
-            return float(m.group(1)), float(m.group(2))
+            return _on_globe(float(m.group(1)), float(m.group(2)), name)
         zs = lookup_zone(v)
+        if len(zs) > 1:
+            raise Ambiguous(f"'{v}' is not specific enough; pass coordinates", field=name, options=zs)
         if len(zs) == 1:
             zones, _, _ = _tables()
             meta = zones.get(zs[0])
-            if meta and meta["lat"] is not None:
-                assumptions.append(f"'{v}' approximated by the coordinates of its timezone's reference city ({zs[0]})")
-                return meta["lat"], meta["lon"]
-        if len(zs) > 1:
-            raise Ambiguous(f"'{v}' is not specific enough; pass coordinates", field=name, options=zs)
+            # The coordinates on a zone belong to its *reference city*, so they are the right
+            # answer for "Kolkata" and the wrong one for "Delhi" - which also resolves to
+            # Asia/Kolkata. Substituting the centroid put Delhi and Mumbai 0 km apart and
+            # said so only in an assumption nobody reads before trusting the number (#28 SS2d).
+            if meta and meta["lat"] is not None and _norm(zs[0].rsplit("/", 1)[-1].replace("_", " ")) == _norm(v):
+                return _on_globe(meta["lat"], meta["lon"], name)
+            raise Ambiguous(
+                f"'{v}' is not a place leftbrain has coordinates for; its timezone "
+                f"({zs[0]}) locates the zone's reference city, not '{v}'",
+                field=name,
+                options=[f"{{\"lat\": …, \"lon\": …}} for {v}", f"geocode '{v}' first with the external geo tool"],
+            )
     raise ToolError(f"{name} must be {{lat, lon}}, [lat, lon], 'lat,lon' or a known place name")
 
 
@@ -361,6 +387,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "distance": [
+        {
+            "caption": "A place leftbrain only knows a timezone for is refused rather than approximated - Delhi and Mumbai both sit in Asia/Kolkata, which put them 0 km apart.",
+            "args": {"mode": "distance", "origin": "Delhi", "destination": "Mumbai"},
+        },
         {
             "caption": "Mumbai to Delhi, by coordinates.",
             "args": {"mode": "distance", "origin": [19.076, 72.8777], "destination": [28.6139, 77.209]},

@@ -65,7 +65,7 @@ def test_a_date_beyond_the_calendar_says_so():
 
 def test_compound_over_a_million_years_is_refused_as_input():
     r = finance("compound", principal=1000, rate=5, rate_period="annual", years=1000000, compounding="daily")
-    assert r["error"] in ("invalid_input", "too_large") and r["retryable"] is False
+    assert r["error"] == "invalid_input" and r["retryable"] is False
 
 
 def test_an_infinite_value_is_refused_with_words():

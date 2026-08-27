@@ -718,7 +718,9 @@ MATH = ToolDoc(
                 "(`x^2 - 5*x + 6 = 0`); relational operators produce an inequality solution set instead. "
                 "If there are more unknowns than equations the tool refuses to guess which to solve for "
                 "and returns `needs.options`. `domain` narrows the search to real, integer or positive "
-                "solutions — with no domain, variables are complex."
+                "solutions — with no domain, variables are complex. When no closed form exists — a "
+                "degree-40 polynomial, say — the roots are found numerically instead, said so in "
+                "`assumptions`; “no solutions found” was the one answer that could not be true."
             ),
             params=(
                 Param("equations", "The equations. A single string is accepted.", default="—"),
@@ -930,7 +932,9 @@ DATETIME = ToolDoc(
                 "Converts an instant from one zone to another, or to several at once by passing a list "
                 "as `to_tz`. The response repeats the source instant and gives each target with its "
                 "offset and a `day_shift` (−1, 0 or +1) so nobody has to work out whether the date "
-                "moved. A bare date is refused: midnight in which zone?"
+                "moved. A bare date is refused: midnight in which zone? A wall time the clocks skipped "
+                "(`2026-03-08 02:30` in New York) or repeated (`2026-11-01 01:30`) is answered with a "
+                "warning naming which it is — the DST cases that are silently wrong everywhere else."
             ),
             params=(
                 Param("value", "The instant to convert. `now` or omitted uses the current instant.", default="`now`"),
@@ -1036,7 +1040,9 @@ DATETIME = ToolDoc(
                 "NETWORKDAYS). Weekends are configurable — pass `weekend: [friday, saturday]` for the "
                 "Gulf working week — and a `region` (plus optional `subdiv`) pulls in that country’s "
                 "public holidays. The response lists the holidays it skipped and, for short ranges, "
-                "every working date. The range is capped at 3 660 days (about ten years)."
+                "every working date, and reports `sign` and `direction` the way `diff` does when `end` is "
+                "before `start` rather than swapping them silently. The range is capped at 3 660 days "
+                "(about ten years)."
             ),
             params=(
                 Param("start", "Start of the range.", required=True),
@@ -1302,13 +1308,13 @@ CONVERT = ToolDoc(
                 "absolute reading (25 °C is 77 °F) and a difference (a rise of 25 °C is a rise of 45 °F) "
                 "are different sums. Absolute is the default and is stated in `assumptions`; pass "
                 "`delta: true` for a difference. `C`, `F`, `K`, `°C`, `celsius`, `degF` and friends all "
-                "resolve."
+                "resolve. A *reading* below absolute zero is refused; a *difference* may be any sign."
             ),
             params=(
                 Param("value", "The temperature.", default="1"),
                 Param("from_unit", "Source scale: `C`, `F`, `K`, `degR`…", required=True),
                 Param("to_unit", "Target scale.", required=True),
-                Param("delta", "Treat the value as a difference, not a reading.", default="`false`"),
+                Param("delta", "Treat the value as a difference, not a reading. A difference may be below absolute zero; a reading may not, and is refused.", default="`false`"),
                 Param("precision", "Significant digits in the result.", default="10"),
             ),
         ),
@@ -1321,7 +1327,8 @@ CONVERT = ToolDoc(
                 "the rate used is echoed in `assumptions`. Without either, the call fails with "
                 "`needs_rates` and tells you how to get one. The result carries both the rounded value "
                 "and `value_exact` as a fraction, so a chain of conversions never accumulates rounding "
-                "error."
+                "error. A rate of zero or less is refused — a rate is how many `to_unit` one "
+                "`from_unit` buys."
             ),
             params=(
                 Param("value", "The amount.", default="1"),
@@ -1462,7 +1469,7 @@ HOLIDAYS = ToolDoc(
                 Param("region", "ISO country code (`IN`, `US`, `GB`); `UK` is accepted as `GB`.", required=True),
                 Param("year", "The year.", default="current year"),
                 Param("years", "Several years at once."),
-                Param("month", "Filter the list to one month; long weekends still cover the year."),
+                Param("month", "Filter the list to one month, 1..12. Filters `long_weekends` too."),
                 Param("subdiv", "State or province code for regional holidays."),
                 Param("categories", "Holiday categories, where the country's calendar defines them."),
             ),
@@ -2786,7 +2793,8 @@ GEO = ToolDoc(
                 "Finds the timezone whose reference city is closest to the given coordinates, and "
                 "returns the two next-closest as alternatives with their distances. This is a "
                 "nearest-city heuristic, not a boundary lookup — the response warns as much, and near "
-                "a border you should verify with a shapefile-based service."
+                "a border you should verify with a shapefile-based service. Coordinates off the globe "
+                "(`lat` outside −90..90, `lon` outside −180..180) are refused."
             ),
             params=(
                 Param("lat", "Latitude in decimal degrees.", required=True),
@@ -2800,12 +2808,13 @@ GEO = ToolDoc(
             description=(
                 "Haversine distance between two points, returned in kilometres, miles, nautical miles "
                 "and metres, with the initial bearing in degrees and as a compass point. Endpoints may "
-                "be `{lat, lon}`, `[lat, lon]`, `\"lat,lon\"` or a place name — and a place name is "
-                "approximated by its timezone's reference city, which the response says out loud. This "
-                "is straight-line distance, never driving distance."
+                "be `{lat, lon}`, `[lat, lon]`, `\"lat,lon\"` or a place leftbrain has coordinates for. A "
+                "name it only knows a *timezone* for is refused with `needs`, not approximated: Delhi "
+                "and Mumbai both sit in Asia/Kolkata, so substituting that zone's reference city put "
+                "them 0 km apart. This is straight-line distance, never driving distance."
             ),
             params=(
-                Param("origin", "Origin: coordinates or a place name.", required=True),
+                Param("origin", "Origin: coordinates, or a place leftbrain has coordinates for. A name it only knows a *timezone* for is refused rather than approximated.", required=True),
                 Param("destination", "Destination: coordinates or a place name.", required=True),
             ),
         ),

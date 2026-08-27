@@ -5,7 +5,7 @@ from __future__ import annotations
 from decimal import Decimal, localcontext
 from typing import Any
 
-from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, ok, tool
+from ..contract import Ambiguous, ToolError, Unsupported, ok, tool
 from .numbers import _ROUND_MODES, _dec_str, parse_number
 
 MODES = ("emi", "compound", "cagr", "npv_irr", "gst", "percent")
@@ -153,7 +153,7 @@ def _compound(p: dict[str, Any]) -> dict[str, Any]:
     if years > MAX_YEARS:
         # (1 + i) ** (m * years) overflows Decimal long before this is a sensible question;
         # it used to surface as `internal` plus a bare InvalidOperation (#28 SS4).
-        raise TooLarge(
+        raise ToolError(
             f"a term of {float(years):,.0f} years is past what compound interest can be computed over; "
             f"the limit is {MAX_YEARS:,}",
             details={"years": float(years), "limit": MAX_YEARS},
