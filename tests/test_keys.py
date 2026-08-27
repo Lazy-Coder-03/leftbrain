@@ -2,7 +2,7 @@ import json
 
 from starlette.testclient import TestClient
 
-from leftbrain.keys import KeyStore
+from leftbrain.keys import MAX_ACTIVE_KEYS_PER_EMAIL, KeyStore
 from leftbrain.serve import build_app
 from leftbrain.web.config import WebConfig
 
@@ -119,6 +119,26 @@ def test_reveal_roundtrip_and_ownership(tmp_path):
     assert store.reveal("me@example.com", "lblz_nosuch1") is None
     assert store.set_disabled(info.prefix, True)
     assert store.reveal("me@example.com", info.prefix) is None  # revoked keys never come back
+
+
+def test_legacy_keys_are_flagged_and_do_not_hold_a_slot(tmp_path):
+    db = str(tmp_path / "k.sqlite3")
+    plain = KeyStore(db)
+    _, old = plain.create("a@b.co", note="self-serve signup")  # hash only, pre-reveal
+    assert plain.get_by_prefix(old.prefix).legacy is False  # without a secret nothing is legacy
+
+    store = KeyStore(db, secret="s" * 20)
+    info = store.get_by_prefix(old.prefix)
+    assert info.legacy and not info.revealable and info.usable and not info.holds_slot
+    assert "legacy" not in info.to_dict()
+    assert store._active_count("a@b.co") == 0  # the legacy key does not block the cap
+    made = [store.create_for_owner("a@b.co", f"k{i}") for i in range(MAX_ACTIVE_KEYS_PER_EMAIL)]
+    assert all(raw for raw, _ in made) and all(not i.legacy and i.holds_slot for _, i in made)
+    raw, reason = store.create_for_owner("a@b.co", "one too many")
+    assert raw is None and "active keys" in reason
+    # revoking the legacy row frees nothing, since it held nothing
+    assert store.set_disabled(old.prefix, True)
+    assert store.create_for_owner("a@b.co", "still capped")[0] is None
 
 
 def test_reveal_needs_a_secret_and_does_not_survive_rotation(tmp_path):

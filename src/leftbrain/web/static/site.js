@@ -17,6 +17,7 @@
   });
   document.addEventListener('submit', function (e) {
     var f = e.target; if (!(f instanceof HTMLFormElement)) return;
+    if (f.hasAttribute('data-confirm') && !window.confirm(f.getAttribute('data-confirm'))) { e.preventDefault(); return; }
     var table = document.querySelector('table.keys'); if (table) table.classList.add('is-loading');
     var btn = f.querySelector('button[type="submit"], .btn'); if (btn) btn.classList.add('is-busy');
     if (f.classList.contains('keybar')) startLoading(btn);

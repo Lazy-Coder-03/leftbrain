@@ -213,7 +213,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         )
 
         keys = store.list(user.email) if store else []
-        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if k.usable), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "lifetimes": LIFETIME_CHOICES, "default_lifetime": DEFAULT_LIFETIME_DAYS, "never_warning": NEVER_EXPIRES_WARNING, "new_key": None, "revealed": False, "can_reveal": bool(store and store.can_reveal), "error": None, **extra}
+        return {"page": "dashboard", "user": user, "keys": keys, "csrf": auth.csrf_token(cfg.secret or "", user), "today_total": sum(k.used_today for k in keys), "active": sum(1 for k in keys if k.holds_slot), "max_keys": MAX_ACTIVE_KEYS_PER_EMAIL, "daily_quota": DEFAULT_DAILY, "lifetimes": LIFETIME_CHOICES, "default_lifetime": DEFAULT_LIFETIME_DAYS, "never_warning": NEVER_EXPIRES_WARNING, "new_key": None, "revealed": False, "can_reveal": bool(store and store.can_reveal), "error": None, **extra}
 
     def parse_form_lifetime(value: str) -> tuple[bool, int | None]:
         """The create form's lifetime: one of the offered day counts, ``never``, or the default when absent."""
@@ -288,6 +288,25 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         store.set_disabled(prefix, True)
         return no_store(RedirectResponse("/dashboard", status_code=302))
 
+    async def delete_key(request: Request) -> Response:
+        """Drop a revoked or expired key and its usage rows for good; a key that still works must be revoked first."""
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return fail_page(request, 403, "Form expired", "Please go back to the dashboard and try again.")
+        if store is None:
+            return keys_unavailable(request)
+        prefix = request.path_params["prefix"]
+        if not store.owns(user.email, prefix):
+            return fail_page(request, 403, "Not your key", "That key belongs to a different account.")
+        info = store.get_by_prefix(prefix)
+        if info is not None and info.usable:
+            return fail_page(request, 409, "Revoke it first", f"{prefix} still works. Revoke it, then delete it.")
+        store.revoke(prefix)  # the store's revoke is the hard delete; the dashboard's Revoke only disables
+        return no_store(RedirectResponse("/dashboard", status_code=302))
+
     return [
         Route("/login", login),
         Route("/auth/github/callback", callback),
@@ -296,6 +315,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/dashboard/keys", create_key, methods=["POST"]),
         Route("/dashboard/keys/{prefix}/reveal", reveal_key, methods=["POST"]),
         Route("/dashboard/keys/{prefix}/revoke", revoke_key, methods=["POST"]),
+        Route("/dashboard/keys/{prefix}/delete", delete_key, methods=["POST"]),
         Route("/demo/{tool}", demo, methods=["POST"]),
         Route("/docs", docs_page),
         Route("/docs/tools/{name}", tool_page),

@@ -145,6 +145,7 @@ class KeyInfo:
     used_today: int = 0
     revealable: bool = False  # a decryptable copy of the key exists
     expires_at: str | None = None  # UTC ISO; None never expires
+    legacy: bool = False  # issued before this store could reveal keys; it can never be shown again
 
     @property
     def expired(self) -> bool:
@@ -166,8 +167,13 @@ class KeyInfo:
     def expiring_soon(self) -> bool:
         return self.days_left is not None and self.days_left <= EXPIRY_WARNING_DAYS and not self.expired
 
+    @property
+    def holds_slot(self) -> bool:
+        """Counts towards the owner's active-key cap: usable, and not a legacy key nobody can show again."""
+        return self.usable and not self.legacy
+
     def to_dict(self) -> dict[str, Any]:
-        fields = {k: v for k, v in self.__dict__.items() if k != "revealable"}
+        fields = {k: v for k, v in self.__dict__.items() if k not in ("revealable", "legacy")}
         return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today)}
 
 
@@ -278,10 +284,13 @@ class KeyStore:
 
     def _info(self, row: dict[str, Any]) -> KeyInfo:
         used = self.db.scalar("SELECT count FROM usage WHERE key_hash=? AND day=?", (row["key_hash"], _today()))
-        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0), revealable=bool(row.get("secret_enc")) and self.can_reveal, expires_at=row.get("expires_at"))
+        encrypted = bool(row.get("secret_enc"))
+        return KeyInfo(row["prefix"], row["owner"], row["note"], row["created_at"], bool(row["disabled"]), row["daily_quota"], row["rpm"], row["last_used"], int(used or 0), revealable=encrypted and self.can_reveal, expires_at=row.get("expires_at"), legacy=self.can_reveal and not encrypted)
 
     def _active_count(self, owner: str) -> int:
-        return int(self.db.scalar(f"SELECT COUNT(*) FROM keys WHERE owner=? AND {_ACTIVE}", (owner, _now())) or 0)
+        """Keys holding one of the owner's slots. Legacy keys (issued before reveal) hold none: the owner cannot see them, so they must not block a key they can."""
+        legacy = " AND secret_enc IS NOT NULL" if self.can_reveal else ""
+        return int(self.db.scalar(f"SELECT COUNT(*) FROM keys WHERE owner=? AND {_ACTIVE}{legacy}", (owner, _now())) or 0)
 
     def get_by_prefix(self, prefix: str) -> KeyInfo | None:
         row = self.db.one("SELECT * FROM keys WHERE prefix = ?", (prefix,))
