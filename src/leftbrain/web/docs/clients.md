@@ -46,6 +46,65 @@ Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/m
 ```
 :::
 
+## Claude Desktop, Claude on the web, and ChatGPT
+
+The apps split into two groups, and the line between them is **where the config lives**.
+
+| client | how it connects | works today |
+| --- | --- | --- |
+| Claude Code | `--header` on the add command | ✅ |
+| Claude Desktop, Cursor, VS Code | a config file with `headers` | ✅ |
+| Claude on the **web** (claude.ai → Connectors) | a dialog with no header field | ❌ |
+| ChatGPT (Settings → Connectors → Create) | **OAuth / No Auth / Mixed** only | ❌ |
+
+An app that reads a config file can send `Authorization: Bearer lblz_…`, which is all leftbrain
+wants. An app configured through a *browser dialog* can only offer what the dialog offers, and
+neither Claude's web connector form nor ChatGPT's has a place to put a static key — they expect
+the server to speak OAuth, which leftbrain does not yet ([#34](/docs/tools)).
+
+### If you use Claude on the web
+
+**Use the desktop app for leftbrain.** It is the same account and the same conversations; only
+the connector lives locally, in `claude_desktop_config.json` as shown above. This is the shortest
+path by a wide margin and needs nothing from us.
+
+### If you need ChatGPT, or the web app specifically
+
+Put something in front of leftbrain that holds the key, and point the connector at *that* with
+**No Auth**. A dozen lines on any edge platform:
+
+:::request
+```js
+// Cloudflare Worker. LEFTBRAIN_KEY is a secret; it never reaches the client.
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const target = "https://leftbrain.idlesync.in/mcp" + url.search;
+    return fetch(target, {
+      method: request.method,
+      headers: { ...Object.fromEntries(request.headers), authorization: `Bearer ${env.LEFTBRAIN_KEY}` },
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
+    });
+  },
+};
+```
+:::
+
+The trade is explicit: **the Worker's URL becomes the credential**, because anyone who has it can
+call leftbrain as you. So give it a long random hostname or path, put the key it carries on a
+tight scope from the [Keys page](/dashboard) — a connector rarely needs all eighteen tools — and
+revoke that key rather than the Worker if the URL leaks.
+
+The same shape works on Vercel, Deno Deploy, Fly, or an nginx `proxy_set_header`. What it does
+not do is make the problem go away; it moves the secret somewhere a browser dialog can reach.
+
+### The real fix
+
+leftbrain speaking OAuth, so the connector dialogs can do what they are built for. That is
+[issue #34](/docs/tools) — the MCP SDK already ships the protocol surface, so it is one provider
+class plus token storage rather than an implementation from scratch. Until it lands, the table
+above is the honest state of things.
+
 ## Python (official `mcp` client)
 
 :::request

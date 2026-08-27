@@ -6,6 +6,14 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Docs: connecting Claude Desktop, Claude on the web, and ChatGPT.** Which clients can carry a
+  bearer key today and which cannot, why (a config file can set a header; a browser connector
+  dialog cannot), and what to do about the two that cannot: use the desktop app for Claude, or
+  put a header-injecting proxy in front for ChatGPT — with a Cloudflare Worker to copy and the
+  trade it makes stated, since the proxy's URL becomes the credential.
+
 ### Changed
 
 - **The per-key tool scope is a tree.** It was a three-column grid of blocks whose columns ran
