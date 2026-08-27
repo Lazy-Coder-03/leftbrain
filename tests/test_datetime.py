@@ -107,7 +107,7 @@ def test_the_retired_from_to_names_are_not_accepted():
     r = dt("business_days", **{"from": "2026-10-01", "to": "2026-10-31"})
     assert not r["ok"] and r["error"] == "invalid_input" and "'start' and 'end'" in r["message"]
     r = dt("cron_next", expr="0 9 * * 1-5", tz="Asia/Kolkata", n=1, **{"from": "2026-08-28T10:00"})
-    assert r["ok"] and "no 'start' given; started from now" in r["assumptions"]
+    assert not r["ok"] and "'start'" in r["message"]  # was: silently started from now
 
 
 def test_business_days_inclusive():

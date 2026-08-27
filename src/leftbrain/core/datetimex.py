@@ -26,7 +26,7 @@ from dateutil import parser as duparser
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 
-from ..contract import Ambiguous, TooLarge, ToolError, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, check_params, ok, tool
 
 MODES = (
     "now",
@@ -45,6 +45,30 @@ MODES = (
     "age",
     "fiscal",
 )
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+#: Names that used to work. Kept only so the refusal can say what replaced them.
+RENAMED_PARAMS = {"from": "'start'", "from_": "'start'", "to": "'end'"}
+
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "now": frozenset({"tz"}),
+    "convert_tz": frozenset({"date", "datetime", "from_tz", "locale", "to_tz", "value"}),
+    "parse": frozenset({"date", "locale", "ref_date", "text", "tz", "value"}),
+    "add": frozenset({"amount", "date", "extra_holidays", "locale", "region", "subdiv", "tz", "unit", "value", "weekend"}),
+    "diff": frozenset({"a", "b", "end", "extra_holidays", "locale", "region", "start", "subdiv", "tz", "unit", "weekend"}),
+    "weekday": frozenset({"date", "locale", "tz", "value"}),
+    "nth_weekday": frozenset({"date", "month", "n", "tz", "value", "weekday", "year"}),
+    "business_days": frozenset({"end", "extra_holidays", "include_end", "include_start", "locale", "region", "start", "subdiv", "tz", "weekend"}),
+    "overlap": frozenset({"a", "b", "locale", "tz"}),
+    "duration_sum": frozenset({"items", "locale", "ranges", "tz"}),
+    "free_slots": frozenset({"duration", "end", "granularity", "limit", "participants", "start"}),
+    "recurrence": frozenset({"count", "dates_only", "dtstart", "limit", "locale", "rrule", "rule", "start", "tz", "until"}),
+    "cron_next": frozenset({"cron", "expr", "n", "start", "tz"}),
+    "age": frozenset({"birth_date", "dob", "locale", "on", "value"}),
+    "fiscal": frozenset({"date", "fy_start_month", "locale", "region", "tz", "value"}),
+}
 
 #: A two-digit year at or below this is 20xx; above it is 19xx. Ten years ahead of the
 #: repo's present, so near-future dates read forwards and birthdays read backwards.
@@ -1057,9 +1081,23 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
     return ok(out, assumptions=assumptions)
 
 
+#: Keys an interval may carry. Its own `tz` is honoured; anything else is a mistake.
+_INTERVAL_KEYS = frozenset({"start", "end", "tz", "label"})
+
+
 def _range(r: Any, tz: Any, locale: Any, name: str) -> tuple[datetime, datetime, list[str]]:
     if not isinstance(r, dict) or "start" not in r or "end" not in r:
         raise ToolError(f"{name} must be {{'start': ..., 'end': ...}}")
+    unknown = sorted(set(r) - _INTERVAL_KEYS)
+    if unknown:
+        raise ToolError(
+            f"{name} does not take {', '.join(repr(u) for u in unknown)}",
+            details={"interval": name, "unknown": unknown, "accepted": sorted(_INTERVAL_KEYS)},
+            hint="An interval is {start, end} with an optional 'tz' and 'label'.",
+        )
+    # A per-interval `tz` used to be dropped, so two windows 12.5 hours apart were compared
+    # as wall clocks and reported as overlapping by 8 hours (#28 SS2a).
+    tz = r.get("tz", tz)
     s, _, a1 = parse_dt(r["start"], tz=tz, locale=locale, field=f"{name}.start")
     e, _, a2 = parse_dt(r["end"], tz=tz, locale=locale, field=f"{name}.end")
     if (s.tzinfo is None) != (e.tzinfo is None):
@@ -1547,6 +1585,7 @@ def datetime_tool(mode: str = "now", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("datetime", mode, p, MODE_PARAMS, RENAMED_PARAMS)
     return {
         "now": _mode_now,
         "convert_tz": _mode_convert_tz,
@@ -1918,6 +1957,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "age": [
+        {
+            "caption": "A parameter this mode does not read is refused, not dropped - the reference date is 'on', so 'ref_date' would have given the age as of today.",
+            "args": {"mode": "age", "dob": "2000-02-29", "ref_date": "2026-02-28"},
+        },
         {
             "caption": "An age on a fixed date.",
             "args": {"mode": "age", "dob": "1990-02-14", "on": "2025-08-26"},

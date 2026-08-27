@@ -46,6 +46,21 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **Unknown parameters are refused instead of silently dropped** (#28 §2a). Every tool kept the
+  keys it recognised and discarded the rest, so `datetime.age dob=… ref_date=…` returned the age
+  as of *today* (the parameter is `on`) and `math.plot_points start=… end=…` plotted the default
+  range — an answer computed from defaults after the caller's arguments were thrown away, with
+  nothing in the response to tell it from a right one. Each of the fourteen core tools now
+  declares `MODE_PARAMS`, what every one of its modes reads, and a call carrying anything else is
+  `invalid_input` naming the mode, listing what it accepts and suggesting the closest match.
+  `tests/test_mode_params.py` derives the same map from the source and fails if the two drift.
+  Retired names (`from`/`to`) now say what replaced them instead of being ignored. `overlap` also
+  honours a per-interval `tz`, which it used to drop — two windows 12½ hours apart were compared
+  as wall clocks and reported as overlapping by 8 hours.
+- **Mutually exclusive parameters say which one won** (#28 §2b): `numbers.round significant=2
+  decimals=5` returned 120 with no word about `decimals`, and `finance.emi months=12 years=5`
+  gave a one-year loan to a caller who described a five-year one. Both now record the choice in
+  `assumptions`.
 - **Eleven confidently wrong answers** (#28 §3.3–3.13). None of these failed; each returned
   `ok: true` and a value a caller would act on. `encode.json parse` reported a valid document
   as invalid when it arrived through MCP already decoded (`text` is typed `Any`, so

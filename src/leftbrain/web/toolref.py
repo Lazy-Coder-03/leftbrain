@@ -499,7 +499,9 @@ CONTRACT_NOTE = (
     '<div class="callout">Every call returns <code>{ok: true, result, assumptions[], warnings[]}</code>, '
     "or <code>{ok: false, error, message, retryable}</code> with an optional <code>needs</code> block when "
     "the input was ambiguous. Read <code>assumptions</code>: it says how an under-specified input was "
-    "interpreted. When <code>needs.options</code> is present, pick one and call again. "
+    "interpreted. When <code>needs.options</code> is present, pick one and call again. A parameter "
+    "a mode does not read is refused rather than dropped, so an answer is never computed from "
+    "defaults after your arguments were discarded. "
     "<code>retryable</code> says whether an identical retry could ever succeed — only "
     "<code>busy</code> is <code>true</code> by default.</div>"
 )
@@ -521,7 +523,7 @@ _PAGE_LEAD = (
     "Each example below shows the `tools/call` request first and the exact response underneath.  "
     "Responses are produced by running the real tool when this page is built, so they cannot drift "
     "from what the server returns.  A failure that never reaches the tool — a missing or mistyped "
-    "argument — is rejected against the input schema, and comes back in the same contract envelope "
+    "argument, or one this *mode* does not read — is rejected before the tool runs, and comes back in the same contract envelope "
     "as everything else: `error: \"invalid_input\"`, the offending parameters under `details`, and "
     "`needs.missing` when something required was left out."
 )

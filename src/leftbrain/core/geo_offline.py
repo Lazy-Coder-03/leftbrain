@@ -13,9 +13,23 @@ from functools import lru_cache
 from importlib.resources import files
 from typing import Any
 
-from ..contract import Ambiguous, ToolError, ok, tool
+from ..contract import Ambiguous, ToolError, check_params, ok, tool
 
 MODES = ("tz_for_place", "tz_for_coords", "distance", "country", "zone_info")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+#: Names that used to work. Kept only so the refusal can say what replaced them.
+RENAMED_PARAMS = {"from": "'origin'", "from_": "'origin'", "to": "'destination'"}
+
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "tz_for_place": frozenset({"all", "city", "place", "value"}),
+    "tz_for_coords": frozenset({"lat", "lng", "lon", "point"}),
+    "distance": frozenset({"a", "b", "destination", "origin"}),
+    "country": frozenset({"code", "country", "value"}),
+    "zone_info": frozenset({"value", "zone"}),
+}
 
 _CITY_ALIASES: dict[str, str] = {
     # India
@@ -337,6 +351,7 @@ def geo_offline(mode: str = "tz_for_place", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("geo_offline", mode, p, MODE_PARAMS, RENAMED_PARAMS)
     return {"tz_for_place": _tz_for_place, "tz_for_coords": _tz_for_coords, "distance": _distance, "country": _country, "zone_info": _zone_info}[mode](p)
 
 #: Worked examples for the reference page, one list per mode. Every one of them is

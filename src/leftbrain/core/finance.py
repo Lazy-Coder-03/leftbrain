@@ -5,10 +5,22 @@ from __future__ import annotations
 from decimal import Decimal, localcontext
 from typing import Any
 
-from ..contract import Ambiguous, ToolError, Unsupported, ok, tool
+from ..contract import Ambiguous, ToolError, Unsupported, check_params, exclusive, ok, tool
 from .numbers import _ROUND_MODES, _dec_str, parse_number
 
 MODES = ("emi", "compound", "cagr", "npv_irr", "gst", "percent")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "emi": frozenset({"decimals", "months", "principal", "rate", "rate_period", "rounding", "schedule", "years"}),
+    "compound": frozenset({"compounding", "contribution", "contribution_timing", "decimals", "months", "principal", "rate", "rate_period", "rounding", "years"}),
+    "cagr": frozenset({"end_value", "start_value", "years"}),
+    "npv_irr": frozenset({"cashflows", "decimals", "rate", "rounding"}),
+    "gst": frozenset({"amount", "amount_is", "decimals", "rate", "rounding", "supply"}),
+    "percent": frozenset({"a", "b", "decimals", "discounts", "op", "people", "percent", "price", "rounding", "tip", "total", "value"}),
+}
 
 MAX_MONTHS = 1200  # a century of monthly instalments
 MAX_CASHFLOWS = 10_000
@@ -84,6 +96,11 @@ def _term_months(p: dict[str, Any]) -> int:
 def _emi(p: dict[str, Any]) -> dict[str, Any]:
     principal = _num(p, "principal", positive=True)
     _, r, assumptions = _rate_per_period(p, 12)
+    # `months=12 years=5` gave a one-year loan to a caller who described a five-year one,
+    # with nothing in `assumptions` to say `years` had been dropped (#28 SS2b).
+    clash = exclusive(p, "months", "years")
+    if clash:
+        assumptions.append(clash)
     n = _term_months(p)
     decimals, rounding = _rounding(p)
     with localcontext() as ctx:
@@ -402,6 +419,7 @@ def finance(mode: str = "emi", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("finance", mode, p, MODE_PARAMS)
     return {"emi": _emi, "compound": _compound, "cagr": _cagr, "npv_irr": _npv_irr, "gst": _gst, "percent": _percent}[mode](p)
 
 

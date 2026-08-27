@@ -6,9 +6,24 @@ import difflib
 import re
 from typing import Any
 
-from ..contract import TooLarge, ToolError, Unsupported, ok, tool
+from ..contract import TooLarge, ToolError, Unsupported, check_params, ok, tool
 
 MODES = ("count", "regex_match", "regex_replace", "diff", "sort", "dedupe", "extract", "find", "similarity")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "count": frozenset({"case_sensitive", "needle", "overlapping", "substring", "text", "what"}),
+    "regex_match": frozenset({"flags", "limit", "pattern", "text"}),
+    "regex_replace": frozenset({"count", "flags", "pattern", "replacement", "text"}),
+    "diff": frozenset({"a", "b", "by", "granularity", "text"}),
+    "sort": frozenset({"case_insensitive", "items", "key", "natural", "order"}),
+    "dedupe": frozenset({"case_insensitive", "items", "key", "normalize_whitespace"}),
+    "extract": frozenset({"kinds", "text", "unique", "what"}),
+    "find": frozenset({"case_sensitive", "context", "needle", "query", "substring", "text"}),
+    "similarity": frozenset({"a", "b", "case_insensitive", "items", "limit", "normalize_whitespace", "text"}),
+}
 
 _FLAGS = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL, "x": re.VERBOSE, "u": re.UNICODE, "a": re.ASCII}
 _MAX_TEXT = 2_000_000
@@ -558,6 +573,7 @@ def text(mode: str = "count", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("text", mode, p, MODE_PARAMS)
     return {"count": _count, "regex_match": _regex_match, "regex_replace": _regex_replace, "diff": _diff, "sort": _sort, "dedupe": _dedupe, "extract": _extract, "find": _find, "similarity": _similarity}[mode](p)
 
 #: Shared fixture for the documented examples below.

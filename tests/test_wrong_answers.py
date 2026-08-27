@@ -109,8 +109,9 @@ def test_two_people_in_the_same_city_can_both_have_working_hours():
             {"tz": "Asia/Kolkata", "windows": [{"start": "09:00", "end": "18:00"}]},
             {"tz": "Asia/Kolkata", "windows": [{"start": "10:00", "end": "17:00"}]},
         ],
-        date="2026-09-01",
-        duration_minutes=60,
+        start="2026-09-01",
+        end="2026-09-01",
+        duration=60,
     )
     assert r["ok"], r.get("message")
 
@@ -122,8 +123,9 @@ def test_explicit_labels_are_still_honoured():
             {"tz": "Asia/Kolkata", "label": "Asha", "windows": [{"start": "09:00", "end": "18:00"}]},
             {"tz": "Asia/Kolkata", "label": "Ravi", "windows": [{"start": "10:00", "end": "17:00"}]},
         ],
-        date="2026-09-01",
-        duration_minutes=60,
+        start="2026-09-01",
+        end="2026-09-01",
+        duration=60,
     )
     assert r["ok"]
 

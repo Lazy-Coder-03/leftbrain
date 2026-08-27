@@ -43,6 +43,7 @@ Rules:
 
 from __future__ import annotations
 
+import difflib
 import functools
 import json
 import logging
@@ -62,6 +63,8 @@ __all__ = [
     "Unsupported",
     "debug_enabled",
     "fail",
+    "check_params",
+    "exclusive",
     "ok",
     "schema_rejection",
     "tool",
@@ -256,6 +259,60 @@ def _size_checked(out: Any, name: str) -> Any:
         details={"tool": name, "response_bytes": size, "limit_bytes": limit},
         hint="Narrow the input - fewer items, a shorter range, or a lower count.",
     )
+
+
+def check_params(
+    tool_name: str,
+    mode: str,
+    given: dict[str, Any],
+    accepted: dict[str, frozenset[str]],
+    renamed: dict[str, str] | None = None,
+) -> None:
+    """Refuse a parameter this mode does not read.
+
+    Every tool used to keep the keys it recognised and drop the rest, so a caller who wrote
+    `ref_date` where the mode wanted `on` got an answer computed from the default - with no
+    way to tell a wrong parameter name from a right answer (#28 SS2a).
+    """
+    known = accepted.get(mode)
+    if known is None:
+        return
+    unknown = sorted(k for k in given if k not in known and k != "mode")
+    if not unknown:
+        return
+    elsewhere = {k for other, names in accepted.items() if other != mode for k in names}
+    replacements = [(renamed or {})[u] for u in unknown if u in (renamed or {})]
+    note = f" - {' and '.join(dict.fromkeys(replacements))} " + ("are" if len(replacements) > 1 else "is") + " what this is called now" if replacements else ""
+    hints = []
+    for name in unknown:
+        close = difflib.get_close_matches(name, sorted(known), n=1, cutoff=0.7)
+        if close:
+            hints.append(f"{name} -> did you mean {close[0]}?")
+        elif name in elsewhere:
+            modes = sorted(m for m, names in accepted.items() if name in names)
+            hints.append(f"{name} is read by {tool_name} mode(s) {', '.join(modes)}, not by {mode}")
+        else:
+            hints.append(f"{name} is not read by any mode of {tool_name}")
+    raise ToolError(
+        f"{tool_name} mode '{mode}' does not take {', '.join(repr(u) for u in unknown)}{note}",
+        details={"tool": tool_name, "mode": mode, "unknown": unknown, "accepted": sorted(known)},
+        hint="; ".join(hints),
+    )
+
+
+def exclusive(given: dict[str, Any], *names: str, chosen: str | None = None) -> str | None:
+    """Note which of several mutually exclusive parameters won, or ``None`` if only one was given.
+
+    `numbers.round significant=2 decimals=5` returned 120 and said "2 significant figures"
+    with nothing about `decimals` having been dropped, so the caller could not tell their
+    two instructions had been read as one (#28 SS2b).
+    """
+    present = [n for n in names if given.get(n) is not None]
+    if len(present) < 2:
+        return None
+    winner = chosen or present[0]
+    losers = [n for n in present if n != winner]
+    return f"'{winner}' and {', '.join(repr(x) for x in losers)} cannot both apply; used '{winner}' and ignored {', '.join(repr(x) for x in losers)}"
 
 
 def tool(fn: Callable[..., Any]) -> Callable[..., dict[str, Any]]:

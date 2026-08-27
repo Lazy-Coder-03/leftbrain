@@ -10,9 +10,23 @@ import time
 import uuid as _uuid
 from typing import Any
 
-from ..contract import ToolError, ok, tool
+from ..contract import ToolError, check_params, ok, tool
 
 MODES = ("uuid", "int", "float", "pick", "shuffle", "token", "bool", "sample")
+
+#: What each mode reads. Anything else in a call is a caller's mistake, not a default
+#: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
+#: the same map from the code and fails when the two drift.
+MODE_PARAMS: dict[str, frozenset[str]] = {
+    "uuid": frozenset({"format", "n", "version"}),
+    "int": frozenset({"max", "min", "n", "seed", "unique"}),
+    "float": frozenset({"decimals", "max", "min", "n", "seed"}),
+    "pick": frozenset({"items", "n", "seed", "unique", "weights"}),
+    "shuffle": frozenset({"items", "seed"}),
+    "token": frozenset({"kind", "length", "n"}),
+    "bool": frozenset({"n", "p", "probability", "seed"}),
+    "sample": frozenset({"groups", "items", "k", "n", "seed"}),
+}
 
 _MAX_N = 10000
 
@@ -198,6 +212,7 @@ def random_tool(mode: str = "uuid", **params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
+    check_params("random", mode, p, MODE_PARAMS)
     _ = os  # keep import for potential entropy checks
     return {"uuid": _uuid_mode, "int": _int, "float": _float, "pick": _pick, "shuffle": _shuffle, "token": _token, "bool": _bool, "sample": _sample}[mode](p)
 
