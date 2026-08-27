@@ -46,36 +46,59 @@ Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/m
 ```
 :::
 
-## Claude Desktop, Claude on the web, and ChatGPT
+## Claude on the web
 
-The apps split into two groups, and the line between them is **where the config lives**.
+Which client can carry a key comes down to **where its configuration lives**.
 
 | client | how it connects | works today |
 | --- | --- | --- |
 | Claude Code | `--header` on the add command | ✅ |
 | Claude Desktop, Cursor, VS Code | a config file with `headers` | ✅ |
 | Claude on the **web** (claude.ai → Connectors) | a dialog with no header field | ❌ |
-| ChatGPT (Settings → Connectors → Create) | **OAuth / No Auth / Mixed** only | ❌ |
+| ChatGPT (Settings → Plugins → Create) | **OAuth / No Auth / Mixed** only — [see below](#chatgpt) | ❌ |
 
-An app that reads a config file can send `Authorization: Bearer lblz_…`, which is all leftbrain
+An app that reads a config file can send `Authorization: Bearer lblz_YOUR_KEY`, which is all leftbrain
 wants. An app configured through a *browser dialog* can only offer what the dialog offers, and
-neither Claude's web connector form nor ChatGPT's has a place to put a static key — they expect
-the server to speak OAuth, which leftbrain does not yet ([#34](/docs/tools)).
-
-### If you use Claude on the web
+neither Claude's web connector form nor ChatGPT's has a place to put a static key — both expect
+the server to speak OAuth, which leftbrain does not yet.
 
 **Use the desktop app for leftbrain.** It is the same account and the same conversations; only
 the connector lives locally, in `claude_desktop_config.json` as shown above. This is the shortest
 path by a wide margin and needs nothing from us.
 
-### If you need ChatGPT, or the web app specifically
+## ChatGPT
 
-Put something in front of leftbrain that holds the key, and point the connector at *that* with
+ChatGPT calls these **Plugins** now — the July 2026 rename of Connectors — and a custom one is a
+remote MCP server, which is exactly what leftbrain is. Streamable HTTP and SSE are both
+supported, so the transport is not the problem.
+
+**Two things gate it.**
+
+**1. Developer mode.** Custom plugins are behind it, on Plus, Pro, Team, Enterprise and Edu.
+Settings → Connectors → Advanced → **Developer mode**. On Enterprise and Edu an admin enables it
+at Workspace Settings → Permissions & Roles → *Create custom MCP connectors*. Then Settings →
+Plugins → **Create**, which asks for an icon, a name, a description, the server URL and the
+authentication.
+
+**2. Authentication, which is where leftbrain stops.** The dialog offers **OAuth**, **No Auth**
+and **Mixed** — there is no field for a key, and that is deliberate rather than an oversight.
+OpenAI's own documentation is explicit: ChatGPT *"does not support machine-to-machine OAuth
+grants such as client credentials, service accounts, or JWT bearer assertions, nor can it
+present custom API keys"*. An authenticated server is expected to implement OAuth 2.1 against
+the MCP authorization spec — Client ID Metadata Documents, dynamic client registration, PKCE.
+
+leftbrain authenticates with a bearer key and does not speak OAuth yet, so **there is no
+configuration of leftbrain and ChatGPT that works directly today.** Anyone who tells you to paste
+the key somewhere in that dialog is describing a field that does not exist.
+
+### What does work
+
+Put something in front of leftbrain that holds the key, and point the plugin at *that* with
 **No Auth**. A dozen lines on any edge platform:
 
 :::request
 ```js
-// Cloudflare Worker. LEFTBRAIN_KEY is a secret; it never reaches the client.
+// Cloudflare Worker. LEFTBRAIN_KEY is a secret; it never reaches ChatGPT.
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -91,19 +114,22 @@ export default {
 :::
 
 The trade is explicit: **the Worker's URL becomes the credential**, because anyone who has it can
-call leftbrain as you. So give it a long random hostname or path, put the key it carries on a
-tight scope from the [Keys page](/dashboard) — a connector rarely needs all eighteen tools — and
-revoke that key rather than the Worker if the URL leaks.
+call leftbrain as you. So give it a long random hostname or path, put a tightly scoped key behind
+it from the [Keys page](/dashboard) — a plugin rarely needs all eighteen tools, and scoping it is
+two clicks — and revoke that key rather than the Worker if the URL leaks.
 
-The same shape works on Vercel, Deno Deploy, Fly, or an nginx `proxy_set_header`. What it does
-not do is make the problem go away; it moves the secret somewhere a browser dialog can reach.
+The same shape works on Vercel, Deno Deploy, Fly, or an nginx `proxy_set_header`. It does not
+make the problem go away; it moves the secret somewhere a browser dialog can reach.
+
+Once connected, ChatGPT lists each tool separately and lets you toggle them per plugin, and
+**Refresh** re-reads the server after leftbrain adds a tool or changes a description.
 
 ### The real fix
 
-leftbrain speaking OAuth, so the connector dialogs can do what they are built for. That is
-[issue #34](/docs/tools) — the MCP SDK already ships the protocol surface, so it is one provider
-class plus token storage rather than an implementation from scratch. Until it lands, the table
-above is the honest state of things.
+leftbrain speaking OAuth 2.1 against the MCP authorization spec, so the dialog can do what it is
+built for. The MCP SDK already ships the protocol surface — metadata, `/authorize`, `/token`,
+dynamic client registration, PKCE — so it is one provider class and token storage rather than an
+implementation from scratch. Until then, the proxy above is the honest answer.
 
 ## Python (official `mcp` client)
 

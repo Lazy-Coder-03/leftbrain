@@ -8,11 +8,14 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
-- **Docs: connecting Claude Desktop, Claude on the web, and ChatGPT.** Which clients can carry a
-  bearer key today and which cannot, why (a config file can set a header; a browser connector
-  dialog cannot), and what to do about the two that cannot: use the desktop app for Claude, or
-  put a header-injecting proxy in front for ChatGPT — with a Cloudflare Worker to copy and the
-  trade it makes stated, since the proxy's URL becomes the credential.
+- **Docs: connecting Claude on the web, and a ChatGPT section.** Which clients can carry a bearer
+  key and which cannot, and why: a config file can set a header, a browser connector dialog
+  cannot. ChatGPT gets its own section covering the Plugins rename, the developer-mode
+  prerequisite and where the toggle lives per plan, and why no configuration works directly —
+  OpenAI's documentation states ChatGPT cannot present custom API keys, and expects OAuth 2.1
+  against the MCP authorization spec. Both blocked clients get something to do rather than a
+  shrug: the desktop app for Claude, a header-injecting proxy for ChatGPT, with a Cloudflare
+  Worker to copy and the trade stated — the proxy's URL becomes the credential.
 
 ### Changed
 
