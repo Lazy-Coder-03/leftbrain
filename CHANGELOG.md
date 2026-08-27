@@ -18,6 +18,23 @@ All notable changes to leftbrain are recorded here. The format follows
   `simulate` shows deuteranopia, protanopia and tritanopia (Viénot–Brettel–Mollon 1999);
   `grayscale` greys by rec709, rec601, lab, average or hsl with an optional ramp and strip.
   Bare triples such as `58, 26, 241` are refused with `needs.options` (rgb, hsl, hsv).
+- `convert` `fuel_economy`: `mpg_us` / `mpg_uk` / `km_per_l` / `l_per_100km` with exact
+  constants; a bare `mpg` is `ambiguous` (US or imperial gallon), and any conversion that crosses
+  L/100 km states the inverse relation in `assumptions`.
+- `convert` `cooking`: cups, tbsp, tsp, ml, fl oz ↔ g, kg, oz, lb. Mass ↔ volume needs
+  `ingredient`, looked up in a built-in density table (18 staples; the grams-per-cup used are
+  stated); a missing or unknown ingredient returns the table as `needs.options`. `cup` selects the
+  US (240 ml, default and declared), metric, UK or Australian (20 ml tablespoon) system.
+- `convert` `sizes`: `category=shoe` converts US men / US women / UK / EU / cm on a generic
+  adult chart, snapping to the nearest half size with a warning; `category=clothing` maps XS–XXL
+  to chest and waist cm bands for a chart chosen by `region` (`us` inch-based, `eu` EN 13402-3)
+  and `gender`, both required. Every result warns that sizes are approximate and names the chart.
+- `datetime` `free_slots`: common free slots for two or more participants in different time
+  zones, from weekly windows (`09:00`–`17:00` on `mon`…`fri`) or one-off local ranges, intersected
+  in UTC through `zoneinfo`. Each slot is shown in every participant's local time and in UTC,
+  `per_day` totals the overlap per date, a window spanning a DST change is expanded to its real
+  length with a note in `assumptions`, and no common time is `ok: true` with `slots: []` and a
+  warning naming who never overlaps.
 - `validate` `cidr`: membership (`network` + `value` → `contains`, for an address or a smaller
   block) and overlap (a list of networks → every pair with `equal` / `a_contains_b` /
   `b_contains_a` / `disjoint`), plus a block's size, usable hosts, bounds and masks. Host bits

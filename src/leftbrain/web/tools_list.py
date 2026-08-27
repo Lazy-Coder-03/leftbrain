@@ -11,7 +11,7 @@ TOOLS: list[tuple[str, str, str]] = [
     ("math", "Exact arithmetic & symbolic algebra (SymPy)", "eval · exact · simplify · expand · factor · solve …"),
     ("datetime", "Dates, durations, time zones, business days", "now · convert_tz · parse · add · diff · weekday …"),
     ("scale", "Scale numbers and recipes proportionally", "linear · inverse"),
-    ("convert", "Units and currencies with pint", "units · temperature · currency · auto"),
+    ("convert", "Units, currencies, fuel economy, cooking measures, sizes", "units · temperature · currency · fuel_economy · cooking · sizes · auto"),
     ("holidays", "Public holidays by country/region", "list · check · next · countries · subdivisions"),
     ("numbers", "Compare, round, format, allocate exactly", "compare · round · format · allocate · sequence · parse …"),
     ("finance", "EMI, compound growth, CAGR, NPV/IRR, GST", "emi · compound · cagr · npv_irr · gst · percent"),

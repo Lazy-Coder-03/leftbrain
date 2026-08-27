@@ -161,6 +161,9 @@ def datetime(
     on: str | None = None,
     fy_start_month: int | None = None,
     dates_only: bool | None = None,
+    participants: list[dict[str, Any]] | None = None,
+    duration: int | None = None,
+    granularity: int | None = None,
 ) -> dict[str, Any]:
     """Use for ANYTHING involving dates, times, timezones, durations, weekdays, deadlines,
     business days, recurring schedules, cron, ages or fiscal periods. Never compute these yourself.
@@ -174,11 +177,12 @@ def datetime(
     - weekday (value) | nth_weekday (year, month, weekday, n; n=-1 = last)
     - business_days (start, end, region, subdiv, weekend, extra_holidays)
     - overlap (a={start,end}, b={start,end}) | duration_sum (ranges=[{start,end}])
+    - free_slots (participants=[{tz, label, windows=[{start, end, days}]}], duration, granularity, start, end, limit) - common free slots for 2+ people in different zones, each in everyone's local time and UTC; DST-aware
     - recurrence (rule="every 2nd tuesday" or RRULE, start, count/until)
     - cron_next (expr="0 9 * * 1-5", tz, start, n)
     - age (dob, on) | fiscal (value, region or fy_start_month)
     """
-    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, end=end, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month, dates_only=dates_only))
+    params = _clean(dict(value=value, tz=tz, from_tz=from_tz, to_tz=to_tz, locale=locale, ref_date=ref_date, amount=amount, unit=unit, region=region, subdiv=subdiv, weekend=weekend, extra_holidays=extra_holidays, include_start=include_start, include_end=include_end, year=year, month=month, weekday=weekday, n=n, a=a, b=b, ranges=ranges, rule=rule, start=start, end=end, count=count, until=until, limit=limit, expr=expr, dob=dob, on=on, fy_start_month=fy_start_month, dates_only=dates_only, participants=participants, duration=duration, granularity=granularity))
     return datetimex.datetime_tool(mode, **params)
 
 
@@ -218,14 +222,23 @@ def convert(
     precision: int | None = None,
     decimals: int | None = None,
     date: str | None = None,
+    ingredient: str | None = None,
+    cup: str | None = None,
+    category: str | None = None,
+    region: str | None = None,
+    gender: str | None = None,
 ) -> dict[str, Any]:
-    """Use for ANY unit, temperature or currency conversion (km->mi, sqft->sqm, C->F, kWh->J,
-    GB->GiB, USD->INR). Ambiguous units (ton, gallon, oz, cup, KB) are refused with options
-    unless assume="common". Currency needs rate= or rates= (fetch via the external fx_rate tool).
+    """Use for ANY unit, temperature, currency, fuel-economy, cooking or size conversion (km->mi,
+    sqft->sqm, C->F, kWh->J, GB->GiB, USD->INR, mpg->L/100km, cups of flour->g, US 9->EU shoe).
+    Ambiguous units (ton, gallon, oz, cup, KB, mpg) are refused with options unless assume="common".
+    Currency needs rate= or rates= (fetch via the external fx_rate tool).
     mode: units (any physical or digital unit) | temperature (C/F/K, delta= for a difference) |
-    currency (rate or rates) | auto (pick one of the three from the arguments)
+    currency (rate or rates) | fuel_economy (mpg_us/mpg_uk/km_per_l/l_per_100km) |
+    cooking (cup/tbsp/tsp/ml/fl_oz <-> g/kg/oz_weight/lb, ingredient= for mass<->volume, cup=us|metric|uk|au) |
+    sizes (category=shoe: us_men/us_women/uk/eu/cm; category=clothing: alpha/chest_cm/waist_cm with region= and gender=) |
+    auto (pick units or currency from the arguments)
     """
-    return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals, date=date)))
+    return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals, date=date, ingredient=ingredient, cup=cup, category=category, region=region, gender=gender)))
 
 
 @server.tool(name="holidays")
