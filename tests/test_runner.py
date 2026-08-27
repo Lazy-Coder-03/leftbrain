@@ -114,3 +114,54 @@ def test_healthz_keeps_answering_while_a_runaway_request_is_in_flight(isolated, 
     assert r["error"] == "timeout"
     assert len(codes) > 10, f"only {len(codes)} health checks ran; the poller was starved"
     assert set(codes) == {200}, sorted(set(codes))
+
+
+# --- degrading honestly rather than refusing everything ---------------------
+
+
+def test_a_pool_that_cannot_start_is_reported_as_off_not_used(monkeypatch):
+    """`forkserver` re-imports `__main__` in the child, so an interpreter whose `__main__`
+    is not an importable file - `python -` reading a piped script, some embedded hosts -
+    kills every worker at startup. The pool is probed when it is built so the boot log tells
+    the truth, and calls run in-process rather than every one of them answering `busy`."""
+    monkeypatch.setenv("LEFTBRAIN_COMPUTE_ISOLATION", "1")
+    runner.configure()
+
+    class DeadPool:
+        def schedule(self, *a, **k):
+            raise RuntimeError("All workers expired")
+
+        def stop(self):
+            pass
+
+    monkeypatch.setattr(runner, "ProcessPool", DeadPool, raising=False)
+    monkeypatch.setattr(runner, "_get_pool", lambda: None)
+    r = runner.run_guarded("math", "eval", {"expr": "6*7"})
+    assert r["ok"] and r["result"]["value"] == "42"
+    assert r["compute_ms"] >= 0
+    runner.configure()
+
+
+def test_a_pool_that_breaks_mid_life_is_rebuilt_rather_than_refusing_for_ever(isolated, monkeypatch):
+    """The bug this test exists for: one broken pool made every later call `busy` for the
+    lifetime of the process."""
+    real = isolated._get_pool()
+    calls = {"n": 0}
+
+    class BrokenOnce:
+        def schedule(self, *a, **k):
+            calls["n"] += 1
+            raise RuntimeError("All workers expired")
+
+        def stop(self):
+            pass
+
+        def join(self, timeout=None):
+            pass
+
+    monkeypatch.setattr(isolated, "_pool", BrokenOnce())
+    r = isolated.run_guarded("math", "eval", {"expr": "6*7"})
+    assert calls["n"] == 1
+    assert r["ok"] and r["result"]["value"] == "42", r
+    assert r.get("error") != "busy"
+    assert real is not None
