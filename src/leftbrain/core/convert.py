@@ -10,7 +10,7 @@ from typing import Any
 import pint
 
 from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, check_params, fail, ok, tool
-from .numbers import _dec_str, parse_number
+from .numbers import _dec_str, parse_number, saturate_to_float
 
 MODES = ("units", "temperature", "currency", "fuel_economy", "cooking", "sizes", "auto")
 
@@ -188,6 +188,18 @@ def _norm_unit(u: Any, assume: str | None, field: str, assumptions: list[str]) -
 MAX_MAGNITUDE = Fraction(10) ** 300
 
 
+def _dec(f: Fraction) -> Decimal:
+    """A Fraction as a Decimal, with enough precision that 1e400 keeps its exponent."""
+    with localcontext() as ctx:
+        ctx.prec = 60
+        return Decimal(f.numerator) / Decimal(f.denominator)
+
+
+def _exact_str(f: Fraction) -> str:
+    """The exact value written out, for the cases a JSON number cannot hold."""
+    return f"{f.numerator}/{f.denominator}" if f.denominator != 1 else str(f.numerator)
+
+
 def _check_magnitude(value: Fraction) -> None:
     if abs(value) <= MAX_MAGNITUDE:
         return
@@ -243,9 +255,9 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
     _define_land(reg)
     assumptions: list[str] = []
     warnings: list[str] = []
+    out_exact: str | None = None
     assume = p.get("assume")
     val = _parse_value(p.get("value", 1))
-    _check_magnitude(val)
     src = _norm_unit(p.get("from_unit"), assume, "from_unit", assumptions)
     dst = _norm_unit(p.get("to_unit"), assume, "to_unit", assumptions)
     precision = int(p.get("precision", 10))
@@ -272,22 +284,36 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
         out_val = float(q.magnitude)
     else:
         try:
-            q = (val.numerator * u_src / val.denominator).to(u_dst)
+            # The factor is exact, so the answer is too: 1e400 km is 1e403 m and there is
+            # nothing approximate about it. Only `value`, which is a JSON number, has a
+            # range - so the exact result is kept and reported alongside it when the two
+            # cannot be the same.
+            q = (Fraction(1) * u_src).to(u_dst)
+            exact = val * Fraction(str(q.magnitude)) if not isinstance(q.magnitude, Fraction) else val * q.magnitude
         except pint.errors.DimensionalityError as e:
             raise ToolError(f"cannot convert {src} to {dst}: {e}") from None
-        out_val = float(q.magnitude)
+        out_val, note = saturate_to_float(_dec(exact), "result")
+        if note:
+            warnings.append(note)
+            out_exact = _exact_str(exact)
         if src in ("mile", "miles") or dst in ("mile", "miles"):
             assumptions.append("statute mile (1609.344 m)")
         if any(k in (src, dst) for k in ("kilobyte", "megabyte", "gigabyte", "terabyte", "petabyte")):
             assumptions.append("SI bytes (1 kB = 1000 B); use KiB/MiB/GiB for 1024-based")
         if any(k in (src, dst) for k in ("month", "year")):
             assumptions.append("month = 1/12 Julian year (30.4375 days); year = 365.25 days")
+    from_val, from_note = saturate_to_float(_dec(val), "input")
+    if from_note and from_note not in warnings:
+        warnings.append(from_note)
     out: dict[str, Any] = {
         "value": _sig(out_val, precision),
         "unit": str(u_dst),
         "display": f"{_fmt(out_val, precision)} {u_dst:~P}",
-        "from": {"value": float(val), "unit": str(u_src)},
+        "from": {"value": from_val, "unit": str(u_src)},
     }
+    if out_exact is not None:
+        # The answer a JSON number could not carry. Exact, so nothing is lost by reading it.
+        out["value_exact"] = out_exact
     if not is_temp:
         try:
             factor = (1 * u_src).to(u_dst).magnitude

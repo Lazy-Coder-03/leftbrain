@@ -170,3 +170,43 @@ def test_a_tolerance_that_cannot_be_met_is_said_so():
 def test_a_value_that_really_is_rational_is_exact_and_says_nothing_extra():
     r = math_tool("convert_form", expr="0.375", form="fraction")
     assert r["result"]["value"] == "3/8" and "approximate" not in r["result"]
+
+
+# --- extreme magnitudes: render what can be rendered, saturate only the rest -----
+
+
+def test_scientific_notation_parses_however_large():
+    """`Decimal("1e400")` is exact; the parser's suffix regex simply never let it try."""
+    from leftbrain.core.numbers import numbers
+
+    assert numbers("parse", value="1e400")["result"]["value"].startswith("1000000")
+    assert numbers("parse", value="-1e400")["result"]["value"].startswith("-1")
+    assert numbers("parse", value="1.5E-30")["ok"]
+
+
+def test_a_value_that_arrived_as_infinity_says_the_magnitude_was_already_lost():
+    """JSON has no infinity, so a client that wrote 1e400 hands the tool `inf`."""
+    from leftbrain.core.numbers import numbers
+
+    r = numbers("parse", value=float("inf"))
+    assert r["ok"] and r["result"]["value"] == "Infinity"
+    assert any("infinity" in a for a in r["assumptions"])
+
+
+def test_saturation_names_the_limit_it_hit():
+    from decimal import Decimal
+
+    from leftbrain.core.numbers import saturate_to_float
+
+    assert saturate_to_float(Decimal("1e400"))[0] == float("inf")
+    assert saturate_to_float(Decimal("-1e400"))[0] == float("-inf")
+    assert saturate_to_float(Decimal("1e-400")) == (0.0, saturate_to_float(Decimal("1e-400"))[1])
+    assert "smallest representable" in saturate_to_float(Decimal("1e-400"))[1]
+    assert saturate_to_float(Decimal("3.5")) == (3.5, None)
+
+
+def test_money_too_big_to_be_money_is_refused_not_crashed():
+    from leftbrain.core.finance import finance
+
+    r = finance("compound", principal=1e300, rate=5, rate_period="annual", years=100)
+    assert r["ok"] is False and r["error"] == "too_large" and "InvalidOperation" not in r["message"]

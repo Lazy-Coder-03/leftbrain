@@ -27,7 +27,6 @@ CASES = [
     ("compound over a million years", lambda: finance("compound", principal=1000, rate=5, rate_period="annual", years=1000000, compounding="daily")),
     ("scale to zero", lambda: scale(mode="inverse", from_qty=3, to_qty=0, entities=[{"name": "days", "qty": 5}])),
     ("add a billion years", lambda: datetime_tool("add", value="2026-01-01", amount=10**9, unit="years")),
-    ("convert an absurd magnitude", lambda: convert("units", value="1e400", from_unit="km", to_unit="m")),
     ("convert an infinite value", lambda: convert("units", value=float("inf"), from_unit="km", to_unit="mi")),
 ]
 
@@ -74,10 +73,26 @@ def test_an_infinite_value_is_refused_with_words():
     assert r["ok"] is False and "infinite" in r["message"]
 
 
-def test_an_absurd_magnitude_says_it_is_too_large():
+def test_an_absurd_magnitude_is_rendered_rather_than_refused():
+    """Changed deliberately: 1e400 km *is* 1e403 m, and the factor is exact. Only `value`,
+    a JSON number, has a range - so the exact answer is reported beside it and the loss is
+    named, rather than the whole call being refused for something that is representable."""
     r = convert("units", value="1e400", from_unit="km", to_unit="m")
-    assert r["error"] in ("invalid_input", "too_large")
-    assert "large" in r["message"] or "magnitude" in r["message"]
+    assert r["ok"]
+    assert r["result"]["value_exact"].startswith("1000000")
+    assert r["result"]["value"] == float("inf")
+    assert any("largest representable" in w for w in r["warnings"])
+
+
+def test_a_tiny_magnitude_is_reported_as_zero_and_says_why():
+    r = convert("units", value="1e-400", from_unit="km", to_unit="m")
+    assert r["ok"] and r["result"]["value"] == 0.0
+    assert r["result"]["value_exact"] and any("smallest representable" in w for w in r["warnings"])
+
+
+def test_an_ordinary_conversion_gains_no_extra_fields():
+    r = convert("units", value=5, from_unit="km", to_unit="m")
+    assert r["result"]["value"] == 5000.0 and "value_exact" not in r["result"] and not r["warnings"]
 
 
 # --- the ones that still work must keep working -----------------------------

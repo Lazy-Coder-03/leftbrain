@@ -54,7 +54,40 @@ _CURRENCY_SYMBOLS = {"₹": "INR", "$": "USD", "€": "EUR", "£": "GBP", "¥": 
 
 
 #: Characters a document uses where a keyboard would type `-`.
+#: A number written the way every language prints a large or small one.
+_SCIENTIFIC = re.compile(r"[+-]?\d+(?:\.\d+)?e[+-]?\d+")
+
 _DASHES = str.maketrans({"\u2212": "-", "\u2012": "-", "\u2013": "-", "\u2014": "-", "\u2015": "-", "\u2796": "-"})
+
+
+#: The largest and smallest magnitudes an IEEE double can hold. Past them a conversion that
+#: goes through `float` - which is what pint does - has no answer to give.
+FLOAT_MAX = Decimal("1.7976931348623157e308")
+FLOAT_MIN_SUBNORMAL = Decimal("5e-324")
+
+
+def saturate_to_float(d: Decimal, what: str = "value") -> tuple[float, str | None]:
+    """A float, and a note when the magnitude did not survive the conversion.
+
+    Past the top of the double range the honest answer is infinity, and below the bottom it
+    is zero - but either one handed back in silence is a wrong number wearing the shape of a
+    right one, so the note always accompanies it.
+    """
+    if not d.is_finite():
+        return float(d), f"the {what} is already infinite, so the result is too"
+    magnitude = abs(d)
+    if magnitude > FLOAT_MAX:
+        sign = "" if d > 0 else "-"
+        return float(f"{sign}inf"), (
+            f"the {what} is larger than the largest representable number (about 1.8e308), "
+            f"so it is reported as {sign}infinity and its magnitude is lost"
+        )
+    if magnitude != 0 and magnitude < FLOAT_MIN_SUBNORMAL:
+        return 0.0, (
+            f"the {what} is smaller than the smallest representable number (about 5e-324), "
+            f"so it is reported as zero and its precision is lost"
+        )
+    return float(d), None
 
 
 def parse_number(v: Any) -> tuple[Decimal, list[str]]:
@@ -65,6 +98,16 @@ def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     if isinstance(v, int):
         return Decimal(v), assumptions
     if isinstance(v, float):
+        # JSON has no infinity, so a client that wrote 1e400 hands us `inf`. Passing that
+        # on as a successful answer with nothing said is the silence this fixes.
+        if v != v:
+            raise ToolError("value is NaN, which is not a number this can work with")
+        if v in (float("inf"), float("-inf")):
+            sign = "" if v > 0 else "-"
+            return Decimal(f"{sign}Infinity"), assumptions + [
+                f"the value arrived as {sign}infinity: it was written larger than a JSON number "
+                f"can hold (about 1.8e308), so its magnitude is lost"
+            ]
         return Decimal(repr(v)), assumptions
     if isinstance(v, Decimal):
         return v, assumptions
@@ -88,6 +131,13 @@ def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     pct = s.endswith("%")
     if pct:
         s = s[:-1]
+    if _SCIENTIFIC.fullmatch(s):
+        # `Decimal` holds `1e400` exactly - the suffix regex below simply never let it try,
+        # so a number written the way every language prints large ones was "unparseable".
+        d = Decimal(s)
+        if neg:
+            d = -d
+        return (d / 100, assumptions + ["% read as /100"]) if pct else (d, assumptions)
     m = re.fullmatch(r"([+-]?[\d,.]+)([a-z]+)?", s)
     if not m:
         raise ToolError(f"cannot parse number {v!r}")
