@@ -16,7 +16,10 @@ All notable changes to leftbrain are recorded here. The format follows
   `forbidden` / `internal`: `too_large` (a pre-check refused it before any work started),
   `resource_exhausted` (a memory or CPU limit rather than the clock) and `busy` (saturated;
   nothing was computed). `contract.CODES` is the one list, and `TooLarge`, `ResourceExhausted`
-  and `Busy` are raisable from a tool.
+  and `Busy` are raisable from a tool. Only `busy` is retryable by default: `internal` is the
+  catch-all for an exception no mode anticipated, and most of those are a deterministic
+  consequence of the input, so a site that knows its own failure was transient passes
+  `retryable=True` at the raise instead.
 
 - **Layer-0 size caps: the enormous is refused before it is computed** (#28 §2e/§2f/§2g). Every
   one of these reached the engine before; `math.eval 9^9^9^9` took the hosted instance down for

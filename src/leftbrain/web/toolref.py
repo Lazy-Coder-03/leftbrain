@@ -500,8 +500,8 @@ CONTRACT_NOTE = (
     "or <code>{ok: false, error, message, retryable}</code> with an optional <code>needs</code> block when "
     "the input was ambiguous. Read <code>assumptions</code>: it says how an under-specified input was "
     "interpreted. When <code>needs.options</code> is present, pick one and call again. "
-    "<code>retryable</code> says whether an identical retry could ever succeed — it is <code>false</code> "
-    "for everything except <code>busy</code> and <code>internal</code>.</div>"
+    "<code>retryable</code> says whether an identical retry could ever succeed — only "
+    "<code>busy</code> is <code>true</code> by default.</div>"
 )
 
 NETWORK_NOTE = (
