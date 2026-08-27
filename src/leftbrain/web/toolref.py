@@ -31,6 +31,7 @@ from functools import lru_cache
 from typing import Any
 
 from ..core import collections_, datetimex, geo_offline, holidays_, mathx, random_
+from ..core import color as color_mod
 from ..core import convert as convert_mod
 from ..core import encode as encode_mod
 from ..core import finance as finance_mod
@@ -561,7 +562,7 @@ def index_markdown() -> str:
     parts = [
         "# Tools",
         "",
-        "Twelve tools, one shape. Every tool takes a `mode` and returns "
+        "Fourteen tools, one shape. Every tool takes a `mode` and returns "
         "`{ok, result, assumptions[], warnings[]}` on success, or `{ok: false, error, message}` "
         "— with a `needs` block — when the input was ambiguous and guessing would be dangerous.",
         "",
@@ -2984,6 +2985,188 @@ ENCODE = ToolDoc(
 )
 
 
+COLOR = ToolDoc(
+    name="color",
+    intro=(
+        "Colour is arithmetic, not opinion, and a model still guesses it — `#F13A1A` becomes "
+        "“rgb(240, 60, 30)”, a contrast ratio gets rounded to whatever sounds right, and a blend "
+        "is described rather than computed. This tool converts between hex, RGB, HSL, HSV, CMYK "
+        "and Lab, names the nearest CSS colour, scores WCAG contrast and proposes the fix, blends, "
+        "builds hue harmonies, snaps to a palette, simulates the three dichromacies, greys a "
+        "colour by five methods, and returns an actual PNG swatch so a multimodal agent can look "
+        "at the result instead of imagining it."
+    ),
+    when=(
+        "Any conversion between colour spaces — never write one from memory, and never guess whether `58, 26, 241` is RGB or HSL: it is refused until the scheme is named.",
+        "Naming a colour or describing it in words: the nearest of the 148 CSS names by Lab ΔE, and a description from a fixed wording table.",
+        "Checking text on a background for accessibility: the WCAG 2.x ratio, pass/fail per level and text size, and the smallest lightness change that passes.",
+        "Design work — blends, complementary or triadic sets, snapping a colour to a brand palette, seeing it as a colour-blind reader would, or getting a swatch to look at.",
+    ),
+    related=(
+        "[`numbers`](/docs/tools/numbers) for formatting the numbers a design token carries · "
+        "[`encode`](/docs/tools/encode) when the swatch must travel as bytes · "
+        "[`validate`](/docs/tools/validate) for checking the JSON a theme file is made of."
+    ),
+    examples=color_mod.EXAMPLES,
+    modes=(
+        Mode(
+            name="convert",
+            purpose="Every colour space from any one of them, alpha preserved.",
+            description=(
+                "Reads `value` as hex (`#F3A`, `#F13A1A`, `#F13A1A80`, with or without the `#`), "
+                "`rgb()`/`rgba()`, `hsl()`, `hsv()`/`hsb()`, `cmyk()` or a CSS colour name and "
+                "returns it as hex, RGB, HSL, HSV, naive CMYK (K = 1 − max(R, G, B), no ICC "
+                "profile — the response says so) and CIELAB (D65), each with a CSS-style string. "
+                "Alpha survives as `alpha` and in the hex and `rgba()` forms. `spaces` narrows "
+                "the output. Three bare numbers with no scheme are refused with `needs.options` "
+                "rather than read as RGB."
+            ),
+            params=(
+                Param("value", "The colour: hex, `rgb()`, `hsl()`, `hsv()`/`hsb()`, `cmyk()` or a CSS name.", required=True),
+                Param("spaces", "Which spaces to return: `hex`, `rgb`, `hsl`, `hsv` (or `hsb`), `cmyk`, `lab`.", default="all of them"),
+                Param("decimals", "Decimals on the HSL/HSV/CMYK numbers.", default="`0`"),
+            ),
+        ),
+        Mode(
+            name="describe",
+            purpose="The nearest CSS name and a description in fixed words.",
+            description=(
+                "Finds the closest of the 148 CSS Color Level 4 names by CIE76 ΔE in Lab and reports "
+                "the distance, whether it is an exact hit, and the runner-up; duplicate names for the "
+                "same colour (`gray`/`grey`, `aqua`/`cyan`) come back as `aliases`. The description "
+                "— “vivid red-orange, medium-light” — is read off fixed HSL bands: sixteen hue words "
+                "by degree, four saturation words and seven lightness words by percent, with greys, "
+                "black and white handled first. No model is involved, so the same colour always gets "
+                "the same words."
+            ),
+            params=(
+                Param("value", "The colour to describe.", required=True),
+            ),
+        ),
+        Mode(
+            name="swatch",
+            purpose="A real PNG of the colour, to look at.",
+            description=(
+                "Writes a solid square of the colour — or two colours side by side when `other` is "
+                "given — as a PNG with the standard library only, and returns it as `png_base64` "
+                "with `width`, `height`, `mime` and `bytes`. `size` is the side of each square in "
+                "pixels, 16 to 256; anything else is `invalid_input`. A translucent colour keeps its "
+                "alpha in the image."
+            ),
+            params=(
+                Param("value", "The colour.", required=True),
+                Param("other", "A second colour, drawn to the right of the first."),
+                Param("size", "Side of each square in pixels, 16–256.", default="`64`"),
+            ),
+        ),
+        Mode(
+            name="contrast",
+            purpose="WCAG 2.x contrast, pass/fail, and the fix.",
+            description=(
+                "Computes relative luminance per WCAG 2.x and the ratio (L1 + 0.05) / (L2 + 0.05) "
+                "between `value` (the text) and `other` (the background), then reports pass/fail for "
+                "AA and AAA at normal and large text sizes. `passes` is judged against normal text at "
+                "`level`. When it fails, the foreground's HSL lightness is stepped 1% at a time in "
+                "both directions and the first colour that passes — the smaller change, the higher "
+                "ratio on a tie — comes back as `suggestion`; when no lightness reaches the target on "
+                "that background, the response warns that the background has to change. Alpha is "
+                "ignored, with a warning."
+            ),
+            params=(
+                Param("value", "The foreground (text) colour.", required=True),
+                Param("other", "The background colour.", required=True),
+                Param("level", "Target level for `passes` and the suggestion: `AA` or `AAA`.", default="`AA`"),
+            ),
+        ),
+        Mode(
+            name="mix",
+            purpose="Blend two colours by a ratio.",
+            description=(
+                "Interpolates from `value` to `other`; `ratio` is the share of `other`, so `0` is "
+                "the first colour, `1` the second and `0.5` equal parts. `space: srgb` (the default, "
+                "stated in `assumptions`) mixes the gamma-encoded channels the way CSS and most "
+                "tools do; `space: lab` mixes in CIELAB for a perceptually even blend, clipping back "
+                "into the sRGB gamut with a warning when it has to. Alpha is mixed the same way."
+            ),
+            params=(
+                Param("value", "The first colour.", required=True),
+                Param("other", "The second colour.", required=True),
+                Param("ratio", "Share of `other`, 0 to 1.", default="`0.5`"),
+                Param("space", "`srgb` or `lab`.", default="`srgb`"),
+                Param("decimals", "Decimals on the HSL/HSV/CMYK numbers of the result.", default="`0`"),
+            ),
+        ),
+        Mode(
+            name="harmony",
+            purpose="Complementary, analogous, triadic and split-complementary sets.",
+            description=(
+                "Rotates the HSL hue and keeps saturation and lightness: `complementary` (+180°), "
+                "`analogous` (±30°), `triadic` (+120°, +240°) and `split_complementary` (+150°, "
+                "+210°), returned as hex with the hues used. Leave `kind` out to get every scheme at "
+                "once."
+            ),
+            params=(
+                Param("value", "The base colour.", required=True),
+                Param("kind", "`complementary`, `analogous`, `triadic` or `split_complementary`.", default="every scheme"),
+            ),
+        ),
+        Mode(
+            name="nearest",
+            purpose="Snap a colour to a palette.",
+            description=(
+                "Ranks every entry of `palette` — hex, any scheme or a CSS name — by CIE76 ΔE in Lab "
+                "from `value` and returns the winner with its distance and the runner-up. The same "
+                "code path as `describe`, with your brand or design-system colours in place of the "
+                "CSS names. Ties keep palette order."
+            ),
+            params=(
+                Param("value", "The colour to snap.", required=True),
+                Param("palette", "The candidate colours, as a list.", required=True),
+            ),
+        ),
+        Mode(
+            name="simulate",
+            purpose="The colour as a dichromat sees it.",
+            description=(
+                "Projects the colour through the Viénot, Brettel & Mollon (1999) matrices on "
+                "linearised sRGB for `deuteranopia`, `protanopia` and `tritanopia`, returning each as "
+                "hex and RGB with the ΔE from the original. `kind` picks one; left out, all three "
+                "come back and `assumptions` says so. `image: true` adds a strip — original, then "
+                "each simulation — as a PNG. Pair it with `contrast` to check that a colour pair "
+                "still separates for those readers."
+            ),
+            params=(
+                Param("value", "The colour.", required=True),
+                Param("kind", "`deuteranopia`, `protanopia`, `tritanopia` or `all`.", default="`all`"),
+                Param("image", "Also return a PNG strip of original and simulated.", default="`false`"),
+                Param("size", "Side of each square in the strip, 16–256.", default="`64`"),
+            ),
+        ),
+        Mode(
+            name="grayscale",
+            purpose="The grey a colour becomes, by a named method.",
+            description=(
+                "Reduces the colour to grey by `rec709` (luma, Y′ = 0.2126 R′ + 0.7152 G′ + "
+                "0.0722 B′ on gamma-encoded channels — what most image tools do, and the default, "
+                "stated in `assumptions`), `rec601` (0.299/0.587/0.114), `lab` (the grey with the "
+                "same L* lightness, perceptual), `average` (the mean of R, G, B) or `hsl` (HSL "
+                "lightness). The grey comes back as hex, 0–255 and a percentage; `method: all` "
+                "returns every one side by side. `ramp` adds an evenly spaced sRGB ramp of that many "
+                "steps from the colour to its grey, and `image: true` returns a PNG strip of the ramp "
+                "(or of colour and grey, or of colour and every grey with `all`)."
+            ),
+            params=(
+                Param("value", "The colour.", required=True),
+                Param("method", "`rec709`, `rec601`, `lab`, `average`, `hsl` or `all`.", default="`rec709`"),
+                Param("ramp", "Steps from the colour to its grey, 2–64; needs a single method."),
+                Param("image", "Also return a PNG strip.", default="`false`"),
+                Param("size", "Side of each square in the strip, 16–256.", default="`64`"),
+            ),
+        ),
+    ),
+)
+
+
 #: Every tool, in the order the site lists them.
 CATALOGUE: tuple[ToolDoc, ...] = (
     MATH,
@@ -2999,6 +3182,7 @@ CATALOGUE: tuple[ToolDoc, ...] = (
     RANDOM,
     GEO,
     ENCODE,
+    COLOR,
 )
 
 

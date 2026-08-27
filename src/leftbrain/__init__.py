@@ -13,6 +13,7 @@ Use them directly from Python, or run ``leftbrain`` as an MCP server.
 from .contract import Ambiguous, ToolError, fail, ok
 from .core import (
     collections_,
+    color,
     convert,
     datetimex,
     encode,
@@ -43,6 +44,7 @@ random_tool = random_.random_tool
 geo_tool = geo_offline.geo_offline
 encode_tool = encode.encode
 finance_tool = finance.finance
+color_tool = color.color
 
 TOOLS = {
     "math": math_tool,
@@ -58,6 +60,7 @@ TOOLS = {
     "geo_offline": geo_tool,
     "encode": encode_tool,
     "finance": finance_tool,
+    "color": color_tool,
 }
 
 __all__ = [
@@ -66,6 +69,7 @@ __all__ = [
     "TOOLS",
     "__version__",
     "collections_tool",
+    "color_tool",
     "convert_tool",
     "datetime_tool",
     "encode_tool",

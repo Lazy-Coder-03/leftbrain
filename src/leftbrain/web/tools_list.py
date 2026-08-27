@@ -1,4 +1,4 @@
-"""Shared tool metadata: (name, one-line description, modes) for each of the 13 tools.
+"""Shared tool metadata: (name, one-line description, modes) for each of the 14 tools.
 
 Used by both the landing page's tool grid and the generated docs "Tools" page.
 Lives in its own module so `docs.py` can import it without creating a circular
@@ -21,4 +21,5 @@ TOOLS: list[tuple[str, str, str]] = [
     ("random", "Seeded, reproducible randomness", "uuid · int · float · pick · shuffle · token …"),
     ("geo_offline", "Distance, bearing, bounding boxes", "tz_for_place · tz_for_coords · distance · country · zone_info"),
     ("encode", "Hashes, base64, URL, hex", "hash · hmac · checksum · base64 · hex · url · html …"),
+    ("color", "Convert, name, contrast, mix, harmonise, swatch", "convert · describe · swatch · contrast · mix · harmony · nearest …"),
 ]

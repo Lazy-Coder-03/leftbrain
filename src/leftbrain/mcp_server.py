@@ -28,6 +28,9 @@ from .core import (
     random_,
 )
 from .core import (
+    color as color_mod,
+)
+from .core import (
     convert as convert_mod,
 )
 from .core import (
@@ -525,6 +528,39 @@ def encode(
     base64 (action=encode|decode) | hex | url | html | jwt_decode (unverified claims) | json (parse|format|minify)
     """
     return encode_mod.encode(mode, **_clean(dict(text=text, algo=algo, key=key, expected=expected, action=action, urlsafe=urlsafe, token=token, data=data, indent=indent, bytes_base64=bytes_base64, bytes_hex=bytes_hex, encoding=encoding, key_base64=key_base64, strip_padding=strip_padding, plus=plus, safe=safe, quote=quote, sort_keys=sort_keys)))
+
+
+@server.tool(name="color")
+def color(
+    mode: str = "convert",
+    value: str | None = None,
+    spaces: str | list[str] | None = None,
+    other: str | None = None,
+    ratio: float | None = None,
+    space: str | None = None,
+    kind: str | None = None,
+    palette: list[str] | None = None,
+    size: int | None = None,
+    method: str | None = None,
+    ramp: int | None = None,
+    image: bool | None = None,
+    level: str | None = None,
+    decimals: int | None = None,
+) -> dict[str, Any]:
+    """Use for any colour question - conversions, the nearest name, WCAG contrast, blends, harmonies, colour-blind views, greys, a PNG swatch to look at. Colour is arithmetic; never guess it.
+    mode: convert (spaces) | describe | swatch (other, size) | contrast (other, level) | mix (other, ratio, space) |
+    harmony (kind) | nearest (palette) | simulate (kind, image, size) | grayscale (method, ramp, image, size)
+    - convert (value, spaces) - hex (3/4/6/8 digits), rgb, hsl, hsv/hsb, cmyk and Lab in every direction, alpha kept
+    - describe (value) - nearest of the 148 CSS colour names by Lab ΔE plus a fixed-wording description such as "vivid red-orange, medium-light"
+    - swatch (value, other, size) - a solid PNG of the colour, or two side by side, as Base64 (16 to 256 px)
+    - contrast (value, other, level) - WCAG 2.x ratio, AA/AAA for normal and large text, and the smallest lightness change that passes
+    - mix (value, other, ratio, space) - blend two colours in sRGB or Lab
+    - harmony (value, kind) - complementary, analogous, triadic or split_complementary by hue rotation
+    - nearest (value, palette) - snap to the closest colour of a palette by Lab ΔE, with the runner-up
+    - simulate (value, kind, image) - the colour under deuteranopia, protanopia or tritanopia
+    - grayscale (value, method, ramp, image) - the grey under rec709, rec601, lab, average or hsl, with an optional ramp
+    """
+    return color_mod.color(mode, **_clean(dict(value=value, spaces=spaces, other=other, ratio=ratio, space=space, kind=kind, palette=palette, size=size, method=method, ramp=ramp, image=image, level=level, decimals=decimals)))
 
 
 def main(argv: list[str] | None = None) -> None:

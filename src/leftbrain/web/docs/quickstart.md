@@ -16,7 +16,7 @@ Set up the leftbrain MCP server for me.
 leftbrain answers, exactly, the things language models get wrong: arithmetic, dates and time
 zones, unit and currency conversion, counting, sorting, validation, hashing, seeded randomness.
 
-  Endpoint   https://leftbrain.idlesync.in/mcp           - the 13 core tools
+  Endpoint   https://leftbrain.idlesync.in/mcp           - the 14 core tools
              https://leftbrain.idlesync.in/external/mcp  - weather, FX rates, geocoding, URL checks
   Transport  MCP Streamable HTTP
   Auth       header  Authorization: Bearer <key>
