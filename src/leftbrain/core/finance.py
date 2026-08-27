@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 from typing import Any
 
-from ..contract import Ambiguous, ToolError, Unsupported, check_params, exclusive, ok, tool
+from ..contract import (
+    Ambiguous,
+    TooLarge,
+    ToolError,
+    Unsupported,
+    check_params,
+    exclusive,
+    ok,
+    tool,
+)
 from .numbers import _ROUND_MODES, _dec_str, parse_number
 
 MODES = ("emi", "compound", "cagr", "npv_irr", "gst", "percent")
@@ -45,7 +54,18 @@ def _num(p: dict[str, Any], key: str, *, required: bool = True, positive: bool =
 
 
 def _money(d: Decimal, decimals: int, rounding: str) -> Decimal:
-    return d.quantize(Decimal(1).scaleb(-decimals), rounding=_ROUND_MODES[rounding])
+    try:
+        return d.quantize(Decimal(1).scaleb(-decimals), rounding=_ROUND_MODES[rounding])
+    except InvalidOperation:
+        # `quantize` refuses a value with more digits than the context allows, which is how
+        # a principal of 1e300 compounded for a century surfaced as `internal` plus a bare
+        # `InvalidOperation`. It is a number too big to be money, and says so.
+        raise TooLarge(
+            "the amount has more digits than a currency value can carry; it is past any "
+            "figure this is meant to compute with",
+            details={"digits": len(d.as_tuple().digits) + abs(int(d.as_tuple().exponent))},
+            hint="Scale the principal or shorten the term.",
+        ) from None
 
 
 def _rounding(p: dict[str, Any]) -> tuple[int, str]:

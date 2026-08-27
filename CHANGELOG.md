@@ -6,6 +6,20 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **Extreme magnitudes are rendered rather than lost or refused.** Four behaviours for one
+  class of input: `numbers.parse "1e400"` was `invalid_input` (`Decimal` holds it exactly —
+  the parser's suffix regex simply never let it try); the same value as a JSON *number*
+  arrived as `inf` and came back as a successful `"Infinity"` with nothing said;
+  `convert "1e-400"` leaked `OverflowError: int too large to convert to float`; and
+  `finance.compound principal=1e300` was `internal` plus a bare `InvalidOperation`.
+  Now: scientific notation parses however large, a value that arrived as infinity says its
+  magnitude was already lost before the tool saw it, and `convert` computes exactly at any
+  size — only `value`, which is a JSON number, saturates to `Infinity`/`0`, with the exact
+  answer in the new `value_exact` and the loss named in `warnings`. An ordinary conversion
+  gains neither field. An amount too big to be money is `too_large`, not a crash.
+
 ### Added
 
 - **`/docs/tools` answers a machine as well as a person.** `/docs/tools` and

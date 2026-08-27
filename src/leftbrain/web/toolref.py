@@ -1419,7 +1419,12 @@ CONVERT = ToolDoc(
                 "response includes the conversion `factor` — plus `factor_exact` when the factor is a "
                 "clean rational, so `1 mile = 1609.344 m` can be checked rather than trusted. "
                 "Assumptions that matter are surfaced: statute miles, SI vs binary bytes, the length "
-                "of a “month”."
+                "of a “month”.\n\n"
+                "The arithmetic is exact whatever the magnitude — `1e400 km` really is `1e403 m`. "
+                "Only `value` is a JSON number, and that has a range: past about 1.8e308 it reads "
+                "`Infinity`, below about 5e-324 it reads `0`, and in either case the exact answer is "
+                "in `value_exact` and the loss is named in `warnings`. An ordinary conversion carries "
+                "neither."
             ),
             params=(
                 Param("value", "The quantity to convert.", default="1"),
