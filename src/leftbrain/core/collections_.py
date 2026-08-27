@@ -62,11 +62,17 @@ def get_path(obj: Any, path: str | None) -> Any:
 
 
 def _hashable(v: Any, ci: bool = False) -> Any:
+    """A key that distinguishes values Python's own hashing conflates.
+
+    `True == 1` and `1.0 == 1` in Python, so a set of `[1, true]` collapsed to one entry
+    and `difference` reported `true` as being in both lists (#28 SS3.11). The type name
+    rides along so `1`, `1.0`, `"1"` and `true` stay four different things.
+    """
     if isinstance(v, str):
-        return v.casefold() if ci else v
+        return ("str", v.casefold() if ci else v)
     if isinstance(v, (dict, list)):
-        return json.dumps(v, sort_keys=True, default=str)
-    return v
+        return (type(v).__name__, json.dumps(v, sort_keys=True, default=str))
+    return (type(v).__name__, v)
 
 
 def _items(p: dict[str, Any], key: str = "items") -> list[Any]:
@@ -157,14 +163,18 @@ def _group_by(p: dict[str, Any]) -> dict[str, Any]:
     if not key:
         raise ToolError("'key' is required")
     groups: dict[Any, list[Any]] = defaultdict(list)
+    shown: dict[Any, Any] = {}  # the key as the caller wrote it, not the type-tagged form
     for x in items:
-        groups[_hashable(get_path(x, key))].append(x)
+        value = get_path(x, key)
+        k = _hashable(value)
+        shown.setdefault(k, value)
+        groups[k].append(x)
     agg_field, agg_ops = p.get("agg_field") or p.get("field"), p.get("agg") or ["count"]
     if isinstance(agg_ops, str):
         agg_ops = [agg_ops]
     out_groups = []
     for gk, members in groups.items():
-        entry: dict[str, Any] = {"key": gk, "count": len(members)}
+        entry: dict[str, Any] = {"key": shown[gk], "count": len(members)}
         if agg_field:
             entry["agg"] = _agg([get_path(m, agg_field) for m in members], agg_ops)
         if p.get("include_items", True) and len(items) <= 2000:
@@ -192,6 +202,16 @@ def _pick_fields(p: dict[str, Any]) -> dict[str, Any]:
     if isinstance(fields, str):
         fields = [fields]
     rename = p.get("rename") or {}
+    targets = [rename.get(f, f.split(".")[-1] if p.get("short_names") else f) for f in fields]
+    clashes = sorted({t for t in targets if targets.count(t) > 1})
+    if clashes:
+        # `{"a": "z", "b": "z"}` kept whichever field came last and dropped the other
+        # without a word (#28 SS3.7).
+        raise ToolError(
+            f"two or more fields would be written to the same name: {', '.join(repr(c) for c in clashes)}",
+            details={"colliding": clashes, "targets": targets},
+            hint="Give each field a distinct name in 'rename'.",
+        )
     out = []
     for x in items:
         row = {}
@@ -300,10 +320,25 @@ def _find_duplicates(p: dict[str, Any]) -> dict[str, Any]:
     key = p.get("key")
     ci = bool(p.get("case_insensitive", False))
     where: dict[Any, list[int]] = defaultdict(list)
+    missing = 0
     for i, x in enumerate(items):
-        where[_hashable(get_path(x, key) if key else x, ci)].append(i)
+        if key:
+            value = get_path(x, key)
+            if value is None and not (isinstance(x, dict) and key in x):
+                # A row that has no such key is not equal to every other row that lacks it.
+                # Grouping them made `key="nope"` report every row as a duplicate (#28 SS3.8).
+                missing += 1
+                continue
+        else:
+            value = x
+        where[_hashable(value, ci)].append(i)
     dupes = [{"value": items[idx[0]] if not key else get_path(items[idx[0]], key), "indices": idx, "count": len(idx)} for idx in where.values() if len(idx) > 1]
-    return ok({"duplicates": dupes, "duplicate_groups": len(dupes), "has_duplicates": bool(dupes), "counts": {str(k): len(v) for k, v in Counter({k: v for k, v in where.items()}).items()} if len(where) <= 200 else None})
+    warnings = [f"{missing} of {len(items)} rows have no '{key}' and were left out of the comparison"] if missing else []
+    return ok(
+        {"duplicates": dupes, "duplicate_groups": len(dupes), "has_duplicates": bool(dupes), "compared": len(items) - missing, "skipped_missing_key": missing,
+         "counts": {str(k[1]): len(v) for k, v in Counter({k: v for k, v in where.items()}).items()} if len(where) <= 200 else None},
+        warnings=warnings,
+    )
 
 
 def _sort_by(p: dict[str, Any]) -> dict[str, Any]:
@@ -997,6 +1032,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "pick_fields": [
+        {
+            "caption": "Two fields renamed onto the same key would destroy one of them, so it is refused.",
+            "args": {"mode": "pick_fields", "items": [{"a": 1, "b": 2}], "fields": ["a", "b"], "rename": {"a": "z", "b": "z"}},
+        },
         {
             "caption": "Flattening a nested field into a table-shaped row.",
             "args": {"mode": "pick_fields", "items": _EX_ORDERS, "fields": ["id", "rep.name", "amount"], "short_names": True},

@@ -241,7 +241,7 @@ _UNICODE_MAP = {
     "–": "-",
     "²": "^2",
     "³": "^3",
-    "√": "sqrt",
+    "√": "sqrt",  # bare `√2` is bracketed by _preprocess; see _ROOT_BARE
     "π": "pi",
     "∞": "oo",
     "≤": "<=",
@@ -267,10 +267,18 @@ _ARC = re.compile(r"\barc(sin|cos|tan|cot|sec|csc)\b")
 _MOD_INFIX = re.compile(r"(\([^()]*\)|[\w.]+)\s+mod\s+(\([^()]*\)|[\w.]+)")
 
 
+#: `√` followed by a number or an identifier, rather than by a bracket.
+_ROOT_BARE = re.compile(r"√\s*(\d+(?:\.\d+)?|[A-Za-z_]\w*)")
+
+
 def _preprocess(src: str) -> tuple[str, list[str]]:
     """Normalise human/LLM-written math into parser-friendly text."""
     assumptions: list[str] = []
     s = src.strip()
+    # `√` becomes `sqrt`, and implicit multiplication then reads `sqrt2` as one symbol -
+    # so `√2 × π ÷ 3` produced a symbol called sqrt2 (#28 SS3.10). Bracket the operand while
+    # the sign is still there and unambiguous.
+    s = _ROOT_BARE.sub(r"sqrt(\1)", s)
     for k, v in _UNICODE_MAP.items():
         s = s.replace(k, v)
     s = _ARC.sub(r"a\1", s)

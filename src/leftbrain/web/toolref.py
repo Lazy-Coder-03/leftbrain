@@ -951,7 +951,10 @@ DATETIME = ToolDoc(
                 "(`14 Aug 2025`, `Aug 14, 2025`) and relative phrases (`tomorrow`, `next friday 5pm`, "
                 "`3 weeks ago`, `end of month`). Relative phrases resolve against `ref_date` when given, "
                 "otherwise against now. Numeric dates like `03/04/2025` are refused unless `locale` says "
-                "which order to read, and the refusal spells out both readings as ISO dates."
+                "which order to read, and the refusal spells out both readings as ISO dates. A "
+                "two-digit year uses a stated pivot — `49` and below is 20xx, `50` and above is 19xx — "
+                "and the century chosen is recorded in `assumptions`, because for a date of birth "
+                "guessing it silently is a hundred years wrong."
             ),
             params=(
                 Param("value", "The date to parse.", required=True),
@@ -1080,7 +1083,9 @@ DATETIME = ToolDoc(
                 "range like `2026-09-01T09:00`–`2026-09-01T12:00` — lays every window on that person's "
                 "own calendar through `zoneinfo`, intersects them all in UTC, and returns the slots that "
                 "fit `duration`, earliest UTC first. Every slot is shown in each participant's local time "
-                "and in UTC, `per_day` totals the overlap per UTC date, and a window that spans a DST "
+                "and in UTC, `per_day` totals the overlap per UTC date. Two participants in the same "
+                "zone are numbered apart (`Asia/Kolkata #1`, `#2`) rather than refused — two "
+                "colleagues in one city with different hours is the ordinary case. A window that spans a DST "
                 "change is expanded to its real length with a note in `assumptions`. No common time is "
                 "still `ok: true` with `slots: []` and a warning naming the participants who never overlap."
             ),
@@ -1114,7 +1119,9 @@ DATETIME = ToolDoc(
             description=(
                 "Takes an RFC 5545 RRULE, or a plain-English phrase it converts to one — `every weekday`, "
                 "`every other tuesday`, `every 2nd tuesday`, `every 15th of month`, `month end` — and "
-                "lists the occurrences from `start`. Bound it with `count` or `until`. Output stops at "
+                "lists the occurrences from `start`. A sub-daily frequency (`SECONDLY`, `MINUTELY`, "
+                "`HOURLY`) keeps its times — `dates_only` defaults to false for those, since four "
+                "copies of the same date is not an answer. Bound it with `count` or `until`. Output stops at "
                 "`limit` whatever `count` says — a `count` of 1 000 000 returns 100 — and then "
                 "`truncated` is `true` and `warnings` says so. The RRULE actually used is echoed back."
             ),
@@ -1800,7 +1807,10 @@ FINANCE = ToolDoc(
                 "entry per period after it. With `rate`, returns the NPV at that rate per period. The IRR "
                 "is always attempted: the rate at which NPV is zero, found by bisection between −99.99% "
                 "and 1000% — deterministic, no starting guess, no dependence on a spreadsheet's solver. "
-                "Flows that never change sign have no IRR and say so."
+                "Flows that never change sign have no IRR and say so. `sign_changes` is reported, and "
+                "when there is more than one the response warns: by Descartes' rule there may be that "
+                "many IRRs, and the one found is whichever bisection reached first — compare on NPV "
+                "at your cost of capital instead."
             ),
             params=(
                 Param("cashflows", "Amounts per period, time 0 first.", required=True),
@@ -2092,7 +2102,9 @@ COLLECTIONS = ToolDoc(
                 "Compares two lists and always returns the full picture — `only_in_a`, `only_in_b`, "
                 "`in_both`, counts, and whether the two are equal as sets — regardless of which `op` "
                 "you asked for. `op` additionally puts one specific result in `result`. Objects are "
-                "compared structurally, or on one field via `key`. Duplicates inside a list are "
+                "compared structurally, or on one field via `key`, and always by type as well as value: "
+                "Python treats `True == 1`, so `[1, true]` used to collapse to one element. "
+                "Duplicates inside a list are "
                 "collapsed, and that is stated in `assumptions`. Either side may be CSV text, read as "
                 "records; how each was read is stated with an `a:`/`b:` prefix."
             ),
@@ -2149,7 +2161,8 @@ COLLECTIONS = ToolDoc(
             description=(
                 "Builds a narrower record from each input, pulling values with dotted paths. Missing "
                 "paths become `null` rather than raising. `rename` maps a path to an output name, and "
-                "`short_names` uses the last path segment as the key."
+                "`short_names` uses the last path segment as the key. Two fields that would land on "
+                "the same output name are refused — one of them used to be silently dropped."
             ),
             params=(
                 Param("items", "The records, or CSV text.", required=True),
@@ -2214,7 +2227,10 @@ COLLECTIONS = ToolDoc(
             description=(
                 "Reports every value that occurs more than once, with all of its indices and its count "
                 "— so a duplicate can be located, not just detected. `key` looks at one field of each "
-                "record; `case_insensitive` folds case on strings."
+                "record; `case_insensitive` folds case on strings. A record that has no such key is "
+                "left out of the comparison and counted in `skipped_missing_key`: rows that all lack "
+                "a field are not duplicates of one another. Values keep their type, so `1`, `1.0`, "
+                "`\"1\"` and `true` are four different values rather than one."
             ),
             params=(
                 Param("items", "The list to inspect, or CSV text.", required=True),
@@ -3010,8 +3026,12 @@ ENCODE = ToolDoc(
             description=(
                 "`action: parse` validates a JSON string and, when it fails, returns the message with "
                 "the exact line, column and character offset — as a successful call, because “this "
-                "JSON is invalid, here” is the answer. `format` and `minify` go the other way, turning "
-                "a value into indented or compact text, optionally with sorted keys."
+                "JSON is invalid, here” is the answer. A value that arrives already decoded (an MCP "
+                "client may hand a JSON-looking string over as an object) is re-encoded rather than "
+                "stringified with Python's repr. `format` and `minify` go the other way, turning "
+                "a value into indented or compact text, optionally with sorted keys — always as valid "
+                "JSON, so a value containing `Infinity` or `NaN`, which JSON cannot spell, is refused "
+                "rather than written as text no strict parser will read back."
             ),
             params=(
                 Param("action", "What to do.", default="`parse`"),

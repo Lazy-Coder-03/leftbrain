@@ -187,10 +187,26 @@ def _jwt_decode(p: dict[str, Any]) -> dict[str, Any]:
     return ok(out, warnings=["signature NOT verified; claims are untrusted"])
 
 
+def _count_nonfinite(value: Any) -> int:
+    """How many Infinity/NaN values are in here. JSON has no way to spell either."""
+    if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+        return 1
+    if isinstance(value, dict):
+        return sum(_count_nonfinite(v) for v in value.values())
+    if isinstance(value, (list, tuple)):
+        return sum(_count_nonfinite(v) for v in value)
+    return 0
+
+
 def _json_mode(p: dict[str, Any]) -> dict[str, Any]:
     action = (p.get("action") or "parse").lower()
     if action == "parse":
         s = p.get("text") if "text" in p else p.get("value")
+        if isinstance(s, (dict, list)):
+            # Through MCP `text` is typed Any, so a JSON-looking string arrives already
+            # parsed and `str()` turned it into Python's repr - `{'a': 1}` - which is not
+            # JSON, so the tool reported the caller's valid document as invalid (#28 SS3.3).
+            s = json.dumps(s)
         try:
             data = json.loads(str(s))
         except json.JSONDecodeError as e:
@@ -199,7 +215,21 @@ def _json_mode(p: dict[str, Any]) -> dict[str, Any]:
     if action in ("stringify", "format", "minify"):
         data = p.get("data") if "data" in p else p.get("value")
         indent = None if action == "minify" else int(p.get("indent", 2))
-        return ok({"text": json.dumps(data, indent=indent, sort_keys=bool(p.get("sort_keys", False)), ensure_ascii=False, separators=(",", ":") if indent is None else None)})
+        # `Infinity` and `NaN` are Python's spelling, not JSON's: json.dumps writes them
+        # happily and every strict parser downstream rejects the result (#28 SS3.4).
+        nonfinite = _count_nonfinite(data)
+        if nonfinite:
+            raise ToolError(
+                f"{nonfinite} value(s) are Infinity or NaN, which JSON cannot spell; writing them "
+                f"produces text no strict parser will read back",
+                details={"nonfinite": nonfinite},
+                hint="Replace them with null, or with a string, before stringifying.",
+            )
+        try:
+            text = json.dumps(data, indent=indent, sort_keys=bool(p.get("sort_keys", False)), ensure_ascii=False, allow_nan=False, separators=(",", ":") if indent is None else None)
+        except (ValueError, TypeError) as e:
+            raise ToolError(f"this value cannot be written as JSON: {e}") from None
+        return ok({"text": text})
     raise ToolError("action must be parse, format or minify")
 
 
@@ -378,6 +408,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "json": [
+        {
+            "caption": "Infinity and NaN are Python's spelling, not JSON's; writing them produces text no strict parser will read back.",
+            "args": {"mode": "json", "action": "stringify", "data": {"ratio": 1e999}},
+        },
         {
             "caption": "Valid JSON, parsed.",
             "args": {"mode": "json", "action": "parse", "text": "{\"a\": 1, \"b\": [2, 3]}"},

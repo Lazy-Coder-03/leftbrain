@@ -46,6 +46,9 @@ MODES = (
     "fiscal",
 )
 
+#: A two-digit year at or below this is 20xx; above it is 19xx. Ten years ahead of the
+#: repo's present, so near-future dates read forwards and birthdays read backwards.
+TWO_DIGIT_YEAR_PIVOT = 49
 #: Zones a single `now` or `convert_tz` call may report on. 500 of them is a 110 KB
 #: response for one instant (#28 SS2e).
 MAX_TZ_TARGETS = 50
@@ -432,6 +435,17 @@ def parse_dt(
                     assumptions.append("read as MM/DD (second field > 12)")
             else:
                 assumptions.append(f"read as {'DD/MM' if dayfirst else 'MM/DD'} per locale {locale}")
+            raw_year = m.group(4)
+            if len(raw_year) == 2:
+                # dateutil's own pivot silently made `01/02/50` 2050. For a date of birth
+                # that is a century out, and nothing in the response said a century had
+                # been chosen at all (#28 SS3.5).
+                century = 2000 if int(raw_year) <= TWO_DIGIT_YEAR_PIVOT else 1900
+                s = s.replace(raw_year, str(century + int(raw_year)), 1)
+                assumptions.append(
+                    f"two-digit year '{raw_year}' given the century {century}, so {century + int(raw_year)} "
+                    f"(pivot: <= {TWO_DIGIT_YEAR_PIVOT:02d} is 20xx, above it is 19xx); write four digits to be sure"
+                )
         date_only = not re.search(r"\d:\d|T\d|\d\s*(am|pm)\b|noon|midnight|\d{2}\d{2}Z", s, re.I) and not (
             re.fullmatch(r"\d{8}T?\d{0,6}", s)
         )
@@ -1295,7 +1309,23 @@ def _mode_free_slots(p: dict[str, Any]) -> dict[str, Any]:
     people = [_participant(part, i, start - timedelta(days=1), end + timedelta(days=1)) for i, part in enumerate(participants)]
     labels = [echo["label"] for echo, _, _, _ in people]
     if len(set(labels)) != len(labels):
-        raise ToolError(f"participant labels must be distinct: {labels}")
+        given = {i for i, part in enumerate(participants) if isinstance(part, dict) and part.get("label")}
+        clashing = sorted({lb for lb in labels if labels.count(lb) > 1})
+        if any(labels[i] in clashing for i in given):
+            raise ToolError(
+                f"two participants were given the same label: {', '.join(repr(c) for c in clashing)}",
+                details={"labels": labels},
+                hint="Give each participant a distinct 'label'.",
+            )
+        # Two colleagues in one city with different hours is the most ordinary case there is;
+        # the clash is in the label we defaulted for them, so we number them (#28 SS3.9).
+        seen: dict[str, int] = {}
+        for echo, *_ in people:
+            base = echo["label"]
+            seen[base] = seen.get(base, 0) + 1
+            if labels.count(base) > 1:
+                echo["label"] = f"{base} #{seen[base]}"
+        labels = [echo["label"] for echo, _, _, _ in people]
     for _, _, _, a in people:
         assumptions += [x for x in a if x not in assumptions]
     clipped = [_intersect(iv, [(range_start, range_end)]) for _, _, iv, _ in people]
@@ -1387,11 +1417,15 @@ def _mode_recurrence(p: dict[str, Any]) -> dict[str, Any]:
         rule_obj = rrulestr(rr_text, dtstart=start)
     except (ValueError, KeyError) as e:
         raise ToolError(f"invalid RRULE {rr!r}: {e}") from None
+    # `FREQ=MINUTELY` under the default `dates_only` returned N copies of the same date.
+    # A sub-daily rule is about times, so it keeps them unless asked otherwise (#28 SS3.6).
+    sub_daily = any(f"FREQ={f}" in rr_text.upper() for f in ("SECONDLY", "MINUTELY", "HOURLY"))
+    dates_only = p.get("dates_only", not sub_daily)
     dates = []
     for i, d in enumerate(rule_obj):
         if i >= limit:
             break
-        dates.append(_info(d, False)["iso"] if not p.get("dates_only", True) else d.date().isoformat())
+        dates.append(_info(d, False)["iso"] if not dates_only else d.date().isoformat())
     # A `count` larger than `limit` used to silence the warning entirely, so 1 000 000
     # occurrences came back as 100 with nothing said about it (#28 SS2f).
     truncated = len(dates) >= limit and not (count and int(count) <= limit) and not (until and len(dates) < limit)

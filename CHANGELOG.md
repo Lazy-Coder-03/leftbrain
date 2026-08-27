@@ -46,6 +46,23 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **Eleven confidently wrong answers** (#28 §3.3–3.13). None of these failed; each returned
+  `ok: true` and a value a caller would act on. `encode.json parse` reported a valid document
+  as invalid when it arrived through MCP already decoded (`text` is typed `Any`, so
+  `{"a": 1}` became Python's `{'a': 1}` repr); `encode.json stringify` emitted literal
+  `Infinity` and `NaN`, which no strict JSON parser accepts, and now refuses;
+  `datetime.parse` turned `01/02/50` into 2050 with no note — there is now a stated pivot
+  (49 and below is 20xx) recorded in `assumptions`, because for a date of birth a silent
+  century is a hundred years wrong; `datetime.recurrence` with `FREQ=MINUTELY` returned four
+  copies of the same date, and a sub-daily frequency now keeps its times;
+  `collections.pick_fields` silently destroyed a field when two renames collided;
+  `collections.find_duplicates` with a key no record has reported every row as a duplicate of
+  every other; `datetime.free_slots` refused two participants in the same timezone, which is
+  two colleagues in one city, and now numbers them apart; `math.eval √2` produced a symbol
+  called `sqrt2` because the sign only bound inside brackets; `collections.set_ops` conflated
+  `1` and `true` (Python hashes them the same), and now compares by type as well as value;
+  `finance.npv_irr` reported one IRR for a cashflow with three sign changes and now reports
+  `sign_changes` and warns that Descartes' rule allows several.
 - **Ranges that were never checked, and approximations that should have been refusals**
   (#28 §2c/§2d). Every one of these returned `ok: true` with a confident number:
   `geo_offline` accepted `lat=91` (returning `Arctic/Longyearbyen`, and a 10 118 km distance);

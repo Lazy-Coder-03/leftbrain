@@ -273,7 +273,19 @@ def _npv_irr(p: dict[str, Any]) -> dict[str, Any]:
         if irr is None:
             raise ToolError("no internal rate of return between -99.99% and 1000% per period")
         out["irr_percent"] = _dec_str((irr * 100).quantize(Decimal("1e-4")))
-    return ok(out, assumptions=assumptions)
+    # Descartes' rule of signs: a cashflow that changes sign k times can have up to k IRRs,
+    # and the one found is whichever the search reached first. Reporting it alone made a
+    # multi-root problem look like a single answer (#28 SS3.12).
+    changes = sum(1 for a, b in zip(flows, flows[1:], strict=False) if a and b and (a > 0) != (b > 0))
+    out["sign_changes"] = changes
+    warnings = []
+    if changes > 1:
+        warnings.append(
+            f"the cashflows change sign {changes} times, so by Descartes' rule there may be up to "
+            f"{changes} IRRs; the one reported is the first the search found, and IRR is not a "
+            f"reliable comparison here - use NPV at your cost of capital"
+        )
+    return ok(out, assumptions=assumptions, warnings=warnings)
 
 
 def _gst(p: dict[str, Any]) -> dict[str, Any]:
