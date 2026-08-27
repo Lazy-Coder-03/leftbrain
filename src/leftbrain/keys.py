@@ -314,7 +314,8 @@ class KeyStore:
             self.db.run("DELETE FROM keys WHERE key_hash=?", (row["key_hash"],))
         return True
 
-    def set_limits(self, prefix: str, *, daily_quota: int | None = None, rpm: int | None = None) -> bool:
+    @staticmethod
+    def _limit_sets(daily_quota: int | None, rpm: int | None) -> tuple[list[str], list[Any]]:
         sets: list[str] = []
         args: list[Any] = []
         if daily_quota is not None:
@@ -323,11 +324,26 @@ class KeyStore:
         if rpm is not None:
             sets.append("rpm=?")
             args.append(rpm)
+        return sets, args
+
+    def set_limits(self, prefix: str, *, daily_quota: int | None = None, rpm: int | None = None) -> bool:
+        sets, args = self._limit_sets(daily_quota, rpm)
         if not sets:
             return False
-        args.append(prefix)
         with self._lock:
-            return self.db.run(f"UPDATE keys SET {', '.join(sets)} WHERE prefix=?", tuple(args)) > 0
+            return self.db.run(f"UPDATE keys SET {', '.join(sets)} WHERE prefix=?", (*args, prefix)) > 0
+
+    def set_limits_all(self, *, daily_quota: int | None = None, rpm: int | None = None, from_daily: int | None = None) -> int:
+        """Change limits on every key at once — or, with ``from_daily``, only on keys currently at that quota, so a default that moved can be migrated without touching keys set by hand. Returns how many rows changed."""
+        sets, args = self._limit_sets(daily_quota, rpm)
+        if not sets:
+            return 0
+        where = ""
+        if from_daily is not None:
+            where = " WHERE daily_quota=?"
+            args.append(from_daily)
+        with self._lock:
+            return self.db.run(f"UPDATE keys SET {', '.join(sets)}{where}", tuple(args))
 
     def set_expiry(self, prefix: str, lifetime_days: int | None) -> bool:
         """Expire the key ``lifetime_days`` from now, or never (None). Works on an expired key too."""
@@ -453,11 +469,13 @@ def main(argv: list[str] | None = None) -> None:
     for name in ("disable", "enable", "revoke"):
         s = sub.add_parser(name)
         s.add_argument("prefix")
-    st = sub.add_parser("set", help="change limits")
-    st.add_argument("prefix")
+    st = sub.add_parser("set", help="change limits on one key, or on every key with --all")
+    st.add_argument("prefix", nargs="?")
+    st.add_argument("--all", action="store_true", help="every key (or every key at --from-daily) instead of one prefix")
+    st.add_argument("--from-daily", type=int, metavar="N", help="with --all: only keys whose daily quota is currently N, e.g. an old default")
     st.add_argument("--daily", type=int)
     st.add_argument("--rpm", type=int)
-    st.add_argument("--expires", type=parse_lifetime, default=argparse.SUPPRESS, metavar="90d|never", help="new expiry counted from now, or never")
+    st.add_argument("--expires", type=parse_lifetime, default=argparse.SUPPRESS, metavar="90d|never", help="new expiry counted from now, or never (one key only)")
     u = sub.add_parser("usage")
     u.add_argument("prefix", nargs="?")
     u.add_argument("--days", type=int, default=7)
@@ -478,7 +496,18 @@ def main(argv: list[str] | None = None) -> None:
         print("ok" if store.set_disabled(args.prefix, args.cmd == "disable") else "no such key")
     elif args.cmd == "revoke":
         print("revoked" if store.revoke(args.prefix) else "no such key")
+    elif args.cmd == "set" and args.all:
+        if args.prefix or hasattr(args, "expires"):
+            ap.error("--all takes no prefix and no --expires; expiry is set per key")
+        if args.daily is None and args.rpm is None:
+            ap.error("--all needs --daily and/or --rpm")
+        n = store.set_limits_all(daily_quota=args.daily, rpm=args.rpm, from_daily=args.from_daily)
+        print(f"updated {n} key{'' if n == 1 else 's'}")
     elif args.cmd == "set":
+        if not args.prefix:
+            ap.error("give a key prefix, or --all")
+        if args.from_daily is not None:
+            ap.error("--from-daily only applies with --all")
         changed = store.set_limits(args.prefix, daily_quota=args.daily, rpm=args.rpm)
         if hasattr(args, "expires"):
             changed = store.set_expiry(args.prefix, args.expires) or changed

@@ -12,6 +12,9 @@ All notable changes to leftbrain are recorded here. The format follows
   the shared instant as `utc` plus one full per-zone entry under `zones`, each carrying its
   `label` back. `convert_tz` accepts the same `{tz, label}` entries in `to_tz`. One round-trip
   for "what time is it in each of our offices right now"; the single-`tz` form is unchanged.
+- `leftbrain-keys set --all --daily N [--rpm N] [--from-daily N]` changes limits on every key —
+  or, with `--from-daily`, only on keys still at an old default — so a moved default can be
+  migrated without a database shell or touching keys set by hand. Prints how many keys changed.
 - **`finance` tool** (13th core tool): `emi` (instalment, totals and amortisation schedule that
   reconciles to zero), `compound` (future value with optional per-period contributions and the
   effective annual rate), `cagr`, `npv_irr` (IRR by bisection), `gst` (inclusive/exclusive split

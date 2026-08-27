@@ -184,6 +184,7 @@ leftbrain-keys disable lblz_xxxxxxxx
 leftbrain-keys enable lblz_xxxxxxxx
 leftbrain-keys revoke lblz_xxxxxxxx
 leftbrain-keys set lblz_xxxxxxxx --daily 20000 --rpm 120 --expires 30d   # --expires counts from now; also revives an expired key
+leftbrain-keys set --all --daily 1000 --from-daily 5000                  # migrate every key still on an old default; drop --from-daily to hit every key
 leftbrain-keys usage --days 7
 leftbrain-keys stats
 ```
