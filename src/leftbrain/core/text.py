@@ -6,7 +6,7 @@ import difflib
 import re
 from typing import Any
 
-from ..contract import TooLarge, ToolError, ok, tool
+from ..contract import TooLarge, ToolError, Unsupported, ok, tool
 
 MODES = ("count", "regex_match", "regex_replace", "diff", "sort", "dedupe", "extract", "find", "similarity")
 
@@ -32,6 +32,210 @@ def _text(p: dict[str, Any], key: str = "text") -> str:
     return t
 
 
+# --------------------------------------------------------------------------- #
+# Catastrophic backtracking (#28 SS1)
+#
+# `(a+)+$` over `"a"*40 + "b"` makes stdlib `re` try every way of splitting the a's
+# between the inner and outer quantifier - 2^40 of them. It cannot be interrupted: `sre`
+# is a C loop that never reaches a bytecode boundary, so no signal and no async exception
+# is delivered until it finishes, which it does not. The one place to act is before the
+# pattern is compiled, so the shapes that cause it are recognised and refused.
+#
+# RE2 was the plan (issue SS1 step 4) and was measured instead of adopted: it defines `\w`,
+# `\d` and `\b` as ASCII, so `\w+` over "hello" returns ['h', 'llo'] where `re` returns
+# ['hello']. Swapping the engine underneath callers would silently change answers on
+# ordinary patterns over non-ASCII text, which is the one thing this project must not do.
+# --------------------------------------------------------------------------- #
+
+_UNBOUNDED = ("*", "+")
+
+
+def _groups(pattern: str) -> list[tuple[int, str]]:
+    """(closing index, body) for every group, skipping escapes and character classes."""
+    out: list[tuple[int, str]] = []
+    stack: list[int] = []
+    i, n, in_class = 0, len(pattern), False
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "(":
+            stack.append(i)
+        elif ch == ")" and stack:
+            start = stack.pop()
+            out.append((i, pattern[start + 1 : i]))
+        i += 1
+    return out
+
+
+def _open_ended(quantifier: str) -> bool:
+    """`{2,}` is unbounded; `{2,4}` is not."""
+    inner = quantifier[1:-1]
+    return "," in inner and inner.split(",")[1].strip() == ""
+
+
+def _quantifier_after(pattern: str, close: int) -> str | None:
+    """The unbounded quantifier applied to the group closing at `close`, if there is one."""
+    rest = pattern[close + 1 :]
+    if not rest:
+        return None
+    if rest[0] in _UNBOUNDED:
+        return rest[0]
+    if rest.startswith("{"):
+        end = rest.find("}")
+        if end > 0 and _open_ended(rest[: end + 1]):
+            return rest[: end + 1]
+    return None
+
+
+def _body(raw: str) -> str:
+    """The pattern inside a group, with `?:`, `?P<name>` and inline flags removed."""
+    if not raw.startswith("?"):
+        return raw
+    if raw.startswith("?P<"):
+        end = raw.find(">")
+        return raw[end + 1 :] if end > 0 else raw
+    end = raw.find(":")
+    return raw[end + 1 :] if end > 0 else raw
+
+
+def _branches(body: str) -> list[str]:
+    """Top-level alternatives, so `a|(b|c)` is two branches rather than three."""
+    out: list[str] = []
+    cur: list[str] = []
+    depth, i, n, in_class = 0, 0, len(body), False
+    while i < n:
+        ch = body[i]
+        if ch == "\\":
+            cur.append(body[i : i + 2])
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+        elif ch == "[":
+            in_class = True
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "|" and depth == 0:
+            out.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    out.append("".join(cur))
+    return out
+
+
+def _has_unbounded(body: str) -> bool:
+    i, n, in_class = 0, len(body), False
+    while i < n:
+        ch = body[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch in _UNBOUNDED:
+            return True
+        elif ch == "{":
+            end = body.find("}", i)
+            if end > 0 and _open_ended(body[i : end + 1]):
+                return True
+        i += 1
+    return False
+
+
+def _atoms(branch: str) -> int:
+    """Roughly how many things are concatenated, so `a?` is one and `ab?` is two."""
+    count, i, n, in_class = 0, 0, len(branch), False
+    while i < n:
+        ch = branch[i]
+        if ch == "\\":
+            count += 1
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+                count += 1
+            i += 1
+            continue
+        if ch == "[":
+            in_class = True
+        elif ch == "{":
+            end = branch.find("}", i)
+            i = end if end > 0 else i
+        elif ch not in "*+?()":
+            count += 1
+        i += 1
+    return count
+
+
+def _nullable(branch: str) -> bool:
+    """True when the branch can match nothing - the classic way a quantifier runs away."""
+    if not branch:
+        return True
+    return branch[-1] in ("*", "?") and len(_branches(branch)) == 1 and _atoms(branch) == 1
+
+
+def redos_risk(pattern: str) -> str | None:
+    """Why `pattern` can backtrack exponentially, or ``None`` when it cannot.
+
+    Three shapes, each of which gives the engine two ways to consume the same characters:
+    a quantified group that is itself unbounded, one that can match nothing, and a
+    quantified alternation whose branches overlap.
+    """
+    for close, raw in _groups(pattern):
+        quantifier = _quantifier_after(pattern, close)
+        if quantifier is None:
+            continue
+        body = _body(raw)
+        shown = f"({body}){quantifier}"
+        branches = _branches(body)
+        if len(branches) == 1:
+            if _has_unbounded(body):
+                return f"{shown} applies a quantifier to a group that is already unbounded"
+            if _nullable(body):
+                return f"{shown} applies a quantifier to a group that can match nothing"
+            continue
+        if any(_nullable(b) for b in branches):
+            return f"{shown} quantifies an alternation with a branch that can match nothing"
+        for i, a in enumerate(branches):
+            for b in branches[i + 1 :]:
+                if a and b and (a.startswith(b) or b.startswith(a)):
+                    return f"{shown} quantifies an alternation whose branches overlap ({a!r} and {b!r})"
+    return None
+
+
+def check_pattern(pattern: str, *, where: str = "pattern") -> None:
+    """Refuse a pattern that would backtrack exponentially. Raises; returns nothing."""
+    risk = redos_risk(pattern)
+    if risk is None:
+        return
+    raise Unsupported(
+        f"{where} {pattern!r} can backtrack exponentially, so it is refused rather than run: {risk}",
+        details={"pattern": pattern, "reason": risk},
+        hint="Rewrite the inner quantifier away - `(a+)+` is `a+`, `(a|aa)+` is `a+` - or match a bounded number of times.",
+    )
+
+
 def _compile(pattern: Any, flags: Any) -> re.Pattern[str]:
     if not pattern:
         raise ToolError("'pattern' is required")
@@ -40,6 +244,7 @@ def _compile(pattern: Any, flags: Any) -> re.Pattern[str]:
         if ch.lower() not in _FLAGS:
             raise ToolError(f"unknown regex flag {ch!r}")
         f |= _FLAGS[ch.lower()]
+    check_pattern(str(pattern))
     try:
         return re.compile(str(pattern), f)
     except re.error as e:
@@ -397,6 +602,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "regex_match": [
+        {
+            "caption": "A pattern that backtracks exponentially is refused before it runs - this one would never return.",
+            "args": {"mode": "regex_match", "text": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaab", "pattern": "(a+)+$"},
+        },
         {
             "caption": "Every four-digit run in a line.",
             "args": {"mode": "regex_match", "text": "Order 1234 shipped 2025-08-26 to PIN 560001", "pattern": "\\d{4}"},

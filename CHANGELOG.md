@@ -46,6 +46,15 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **A regular expression can no longer freeze the process** (#28 §1): `text.regex_match` with
+  `(a+)+$` over `"a"*40 + "b"` never returned, and neither did `(a|aa)+` in `regex_replace` or a
+  `pattern` inside a `validate.json_schema` schema. Once stdlib `re` starts backtracking nothing
+  can stop it — `sre` is a C loop that never reaches a bytecode boundary, so no timeout, signal
+  or thread kill is delivered until it finishes. The three shapes that cause it (a quantified
+  group that is itself unbounded, one that can match nothing, and a quantified alternation whose
+  branches overlap) are now recognised and refused with `unsupported` before the pattern is
+  compiled, naming the shape and how to rewrite it. `validate.regex` judges rather than runs, so
+  it keeps answering `valid: true` and reports the new `backtracking_risk` field with a warning.
 - **Silent truncation now says so** (#28 §2f): `text.regex_match`'s `count` is the total number
   of matches rather than the number returned — an agent reading `count` off a truncated response
   got the limit and believed it was the answer. `returned` and `truncated` are new fields.

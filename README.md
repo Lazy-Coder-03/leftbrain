@@ -108,6 +108,14 @@ sits a 256 KB ceiling on any successful response (`LEFTBRAIN_MAX_RESPONSE_BYTES`
 *is* trimmed rather than refused, the response says so: `truncated: true` and a line in
 `warnings`, with the untrimmed total still reported.
 
+Caller-supplied regular expressions get the same treatment. A pattern that can backtrack
+exponentially — `(a+)+$`, `(a|aa)+`, `(a*)*` — is refused with `unsupported` before it is
+compiled, in `text.regex_match`, `text.regex_replace` and any `pattern` inside a
+`validate.json_schema` schema. Once stdlib `re` starts on one, nothing can stop it: it is a C
+loop that never reaches a bytecode boundary, so no timeout, signal or thread kill is delivered
+until it finishes, which it does not. `validate.regex` is the exception — it judges a pattern
+rather than running it, so it reports `backtracking_risk` and stays `valid: true`.
+
 ## Install
 
 ```bash
