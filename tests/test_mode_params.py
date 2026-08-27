@@ -71,7 +71,7 @@ def calls_of(fn, known):
     return {n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in known}
 
 def derive(path):
-    tree = ast.parse(pathlib.Path(path).read_text())
+    tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
     fns = {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
     direct = {name: reads_of(fn) for name, fn in fns.items()}
     calls = {name: calls_of(fn, set(fns)) for name, fn in fns.items()}
@@ -89,7 +89,7 @@ def derive(path):
 
 
 def mode_funcs(path):
-    tree = ast.parse(pathlib.Path(path).read_text())
+    tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
     found = {}
     for node in ast.walk(tree):
         if not isinstance(node, ast.Dict):
