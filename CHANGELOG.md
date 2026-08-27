@@ -6,19 +6,7 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
-### Fixed
-
-- **Extreme magnitudes are rendered rather than lost or refused.** Four behaviours for one
-  class of input: `numbers.parse "1e400"` was `invalid_input` (`Decimal` holds it exactly —
-  the parser's suffix regex simply never let it try); the same value as a JSON *number*
-  arrived as `inf` and came back as a successful `"Infinity"` with nothing said;
-  `convert "1e-400"` leaked `OverflowError: int too large to convert to float`; and
-  `finance.compound principal=1e300` was `internal` plus a bare `InvalidOperation`.
-  Now: scientific notation parses however large, a value that arrived as infinity says its
-  magnitude was already lost before the tool saw it, and `convert` computes exactly at any
-  size — only `value`, which is a JSON number, saturates to `Infinity`/`0`, with the exact
-  answer in the new `value_exact` and the loss named in `warnings`. An ordinary conversion
-  gains neither field. An amount too big to be money is `too_large`, not a crash.
+## [0.3.0] - 2026-08-27
 
 ### Added
 
@@ -30,10 +18,6 @@ All notable changes to leftbrain are recorded here. The format follows
   required flag, and the example arguments. No key: discovery has to work before you have one.
   `tools/list` over `/mcp` remains the authenticated, scope-aware route. `/` advertises the new
   endpoint as `tools`.
-
-## [0.3.0] - 2026-08-27
-
-### Added
 
 - **Every response says what it cost** (#28 §6): a `meta` block with `tool`, `mode`,
   `latency_ms` (wall time in the server), `compute_ms` (time in the engine), `version`,
@@ -94,6 +78,18 @@ All notable changes to leftbrain are recorded here. The format follows
     this only catches what slipped past one.
 
 ### Fixed
+
+- **Extreme magnitudes are rendered rather than lost or refused.** Four behaviours for one
+  class of input: `numbers.parse "1e400"` was `invalid_input` (`Decimal` holds it exactly —
+  the parser's suffix regex simply never let it try); the same value as a JSON *number*
+  arrived as `inf` and came back as a successful `"Infinity"` with nothing said;
+  `convert "1e-400"` leaked `OverflowError: int too large to convert to float`; and
+  `finance.compound principal=1e300` was `internal` plus a bare `InvalidOperation`.
+  Now: scientific notation parses however large, a value that arrived as infinity says its
+  magnitude was already lost before the tool saw it, and `convert` computes exactly at any
+  size — only `value`, which is a JSON number, saturates to `Infinity`/`0`, with the exact
+  answer in the new `value_exact` and the loss named in `warnings`. An ordinary conversion
+  gains neither field. An amount too big to be money is `too_large`, not a crash.
 
 - **The small list** (#28 §3.13): sixteen findings that were each wrong or silent rather than
   dangerous. `random.sample` with more groups than items left some empty and said nothing;
