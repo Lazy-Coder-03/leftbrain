@@ -67,6 +67,26 @@ def test_numbers():
     assert lb.numbers_tool("to_words", value=1000000)["result"]["words"] == "one million"
 
 
+def test_numbers_semver():
+    # the SemVer 2.0 §11 precedence example, shuffled
+    order = ["1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-rc.1", "1.0.0"]
+    r = lb.numbers_tool("semver", values=list(reversed(order)))["result"]
+    assert [v["input"] for v in r["ascending"]] == order and r["max"]["input"] == "1.0.0"
+    # the case that started this: dotted versions are not decimals
+    r = lb.numbers_tool("semver", a="1.9", b="1.10")
+    assert r["ok"] and r["result"]["relation"] == "a < b" and r["result"]["max"]["input"] == "1.10"
+    assert r["result"]["max"]["normalized"] == "1.10.0" and any("1.10" in x and "1.10.0" in x for x in r["assumptions"])
+    parsed = r["result"]["ascending"][1]
+    assert (parsed["major"], parsed["minor"], parsed["patch"], parsed["prerelease"], parsed["build"]) == (1, 10, 0, None, None)
+    # a leading v is tolerated; build metadata never affects ordering and says so
+    r = lb.numbers_tool("semver", values=["v2.0.0+build.7", "2.0.0+build.9", "2.0.0-rc.1"])
+    assert r["ok"] and r["result"]["ordering"].startswith("2.0.0-rc.1 <") and "=" in r["result"]["ordering"]
+    assert r["result"]["ascending"][1]["build"] in ("build.7", "build.9") and any("build metadata" in x for x in r["assumptions"])
+    assert lb.numbers_tool("semver", values=["1.0.0", "1.0.0"])["result"]["all_equal"] is True
+    assert lb.numbers_tool("semver", values=["1.2.3", "one.two"])["error"] == "invalid_input"
+    assert lb.numbers_tool("semver", values=["1.2.3"])["error"] == "invalid_input"
+
+
 # --- text ------------------------------------------------------------------
 
 def test_text():
@@ -78,6 +98,22 @@ def test_text():
     assert ex["emails"] == ["x@y.io"] and ex["gstin"] == ["27AAPFU0939F1ZV"]
     assert lb.text_tool("regex_replace", pattern=r"\d+", text="a1b22", replacement="#")["result"]["text"] == "a#b#"
     assert lb.text_tool("regex_match", pattern="[", text="x")["error"] == "invalid_input"
+
+
+def test_text_similarity():
+    r = lb.text_tool("similarity", a="kitten", b="sitting")["result"]
+    assert r["levenshtein"] == 3 and r["ratio"] == 0.5714 and r["equal"] is False
+    assert lb.text_tool("similarity", a="Delhi", b="delhi")["result"]["equal"] is True  # case folded by default
+    assert lb.text_tool("similarity", a="Delhi", b="delhi", case_insensitive=False)["result"]["levenshtein"] == 1
+    assert lb.text_tool("similarity", a="", b="")["result"] == {"levenshtein": 0, "ratio": 1.0, "equal": True, "max_len": 0}
+    m = lb.text_tool("similarity", text="Bengaluru", items=["Mumbai", "Bangalore", " bengaluru", "Bengal"], limit=2)["result"]
+    assert m["best"]["value"] == " bengaluru" and m["best"]["index"] == 2 and m["best"]["ratio"] == 1.0
+    # "Bangalore" and "Bengal" are both 3 edits away (ratio 0.6667); the tie breaks by position
+    assert [x["value"] for x in m["ranked"]] == [" bengaluru", "Bangalore"] and m["candidates"] == 4
+    assert m["ranked"][1]["ratio"] == 0.6667 and m["ranked"][1]["levenshtein"] == 3
+    assert lb.text_tool("similarity", text="x", items=[])["error"] == "invalid_input"
+    assert lb.text_tool("similarity", a="only one side")["error"] == "invalid_input"
+    assert lb.text_tool("similarity", a="a" * 6000, b="b")["error"] == "invalid_input"  # bounded: O(n·m)
 
 
 # --- collections -----------------------------------------------------------

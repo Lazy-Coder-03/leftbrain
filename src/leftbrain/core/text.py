@@ -8,7 +8,7 @@ from typing import Any
 
 from ..contract import ToolError, ok, tool
 
-MODES = ("count", "regex_match", "regex_replace", "diff", "sort", "dedupe", "extract", "find")
+MODES = ("count", "regex_match", "regex_replace", "diff", "sort", "dedupe", "extract", "find", "similarity")
 
 _FLAGS = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL, "x": re.VERBOSE, "u": re.UNICODE, "a": re.ASCII}
 _MAX_TEXT = 2_000_000
@@ -261,13 +261,70 @@ def _find(p: dict[str, Any]) -> dict[str, Any]:
     return ok({"count": len(hits), "found": bool(hits), "hits": hits}, assumptions=[f"case-{'sensitive' if cs else 'insensitive'}"])
 
 
+_MAX_SIMILARITY_LEN = 5000
+
+
+def levenshtein(a: str, b: str) -> int:
+    """Edit distance by codepoint, two-row dynamic programming."""
+    if a == b:
+        return 0
+    if len(a) < len(b):
+        a, b = b, a
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i]
+        for j, cb in enumerate(b, 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb)))
+        prev = cur
+    return prev[-1]
+
+
+def _sim_pair(a: str, b: str) -> dict[str, Any]:
+    d = levenshtein(a, b)
+    longest = max(len(a), len(b))
+    return {"levenshtein": d, "ratio": round(1 - d / longest, 4) if longest else 1.0, "equal": d == 0, "max_len": longest}
+
+
+def _similarity(p: dict[str, Any]) -> dict[str, Any]:
+    ci = p.get("case_insensitive", True)
+    ws = p.get("normalize_whitespace", True)
+
+    def norm(s: Any) -> str:
+        s = str(s)
+        s = " ".join(s.split()) if ws else s
+        return s.casefold() if ci else s
+
+    assumptions = [f"case-{'in' if ci else ''}sensitive", "whitespace normalised" if ws else "exact whitespace"]
+    items = p.get("items")
+    if items is not None:
+        if not isinstance(items, list) or not items:
+            raise ToolError("'items' must be a non-empty list of candidates")
+        query = p.get("text") if "text" in p else p.get("a")
+        if query is None:
+            raise ToolError("'text' (the input to match) is required with 'items'")
+        q = norm(query)
+        if len(q) > _MAX_SIMILARITY_LEN or any(len(norm(x)) > _MAX_SIMILARITY_LEN for x in items):
+            raise ToolError(f"strings longer than {_MAX_SIMILARITY_LEN} characters are not compared")
+        scored = [{"index": i, "value": x, **_sim_pair(q, norm(x))} for i, x in enumerate(items)]
+        ranked = sorted(scored, key=lambda r: (-r["ratio"], r["levenshtein"], r["index"]))
+        limit = int(p.get("limit", 5))
+        return ok({"best": ranked[0], "ranked": ranked[:limit], "candidates": len(items)}, assumptions=assumptions)
+    a, b = p.get("a"), p.get("b")
+    if a is None or b is None:
+        raise ToolError("similarity needs 'a' and 'b', or 'text' and 'items'")
+    a, b = norm(a), norm(b)
+    if len(a) > _MAX_SIMILARITY_LEN or len(b) > _MAX_SIMILARITY_LEN:
+        raise ToolError(f"strings longer than {_MAX_SIMILARITY_LEN} characters are not compared")
+    return ok(_sim_pair(a, b), assumptions=assumptions)
+
+
 @tool
 def text(mode: str = "count", **params: Any) -> dict[str, Any]:
-    """Text utilities. Modes: count, regex_match, regex_replace, diff, sort, dedupe, extract, find."""
+    """Text utilities. Modes: count, regex_match, regex_replace, diff, sort, dedupe, extract, find, similarity."""
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
-    return {"count": _count, "regex_match": _regex_match, "regex_replace": _regex_replace, "diff": _diff, "sort": _sort, "dedupe": _dedupe, "extract": _extract, "find": _find}[mode](p)
+    return {"count": _count, "regex_match": _regex_match, "regex_replace": _regex_replace, "diff": _diff, "sort": _sort, "dedupe": _dedupe, "extract": _extract, "find": _find, "similarity": _similarity}[mode](p)
 
 #: Shared fixture for the documented examples below.
 _EX_LOG_A = "2025-08-26 09:00 INFO started\n2025-08-26 09:05 WARN retrying\n2025-08-26 09:06 INFO ready"
@@ -430,6 +487,24 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "`text` is required.",
             "args": {"mode": "find", "substring": "abc"},
+        },
+    ],
+    "similarity": [
+        {
+            "caption": "Edit distance and a 0–1 ratio between two strings.",
+            "args": {"mode": "similarity", "a": "kitten", "b": "sitting"},
+        },
+        {
+            "caption": "Mapping what a user typed onto a menu: the best match, and the runners-up.",
+            "args": {"mode": "similarity", "text": "bengaluru", "items": ["Mumbai", "Bangalore", "Bengaluru", "Bengal", "Chennai"], "limit": 3},
+        },
+        {
+            "caption": "Case is folded by default; switch it off to count the case change.",
+            "args": {"mode": "similarity", "a": "Delhi", "b": "delhi", "case_insensitive": False},
+        },
+        {
+            "caption": "One side only.",
+            "args": {"mode": "similarity", "a": "kitten"},
         },
     ],
 }

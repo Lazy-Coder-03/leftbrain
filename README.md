@@ -33,9 +33,9 @@ Design rules:
 | `scale` | – | 4 → 7 servings, price per kg → per 250 g, 3 workers × 5 days → 12 workers (`mode=inverse`), with every dependent quantity |
 | `convert` | units, temperature, currency | km→mi, sqft→sqm, °C→°F (absolute or delta), GB→GiB, USD→INR (needs a rate) |
 | `holidays` | list, check, next, countries, subdivisions | public holidays for 150+ countries and their states |
-| `numbers` | compare, round, format, allocate, sequence, parse, to_words | `9.11` vs `9.9`, half-up vs banker's rounding, `₹1,23,45,678.50`, splitting ₹100 three ways with no lost paisa, "One lakh twenty-three thousand… only" |
+| `numbers` | compare, round, format, allocate, sequence, parse, to_words, semver | `9.11` vs `9.9`, half-up vs banker's rounding, `₹1,23,45,678.50`, splitting ₹100 three ways with no lost paisa, "One lakh twenty-three thousand… only", `1.10` > `1.9` |
 | `finance` | emi, compound, cagr, npv_irr, gst, percent | ₹10L at 8.5% for 20 years → ₹8,678.23 with the schedule that reconciles to zero, SIP future value, CAGR, NPV/IRR by bisection, ₹1,180 inclusive → ₹1,000 + ₹90 CGST + ₹90 SGST, 20% then 10% off is 28% not 30% |
-| `text` | count, regex_match, regex_replace, diff, sort, dedupe, extract, find | character/word/occurrence counts, running a regex, exact diffs, natural sort, extracting emails/phones/GSTINs |
+| `text` | count, regex_match, regex_replace, diff, sort, dedupe, extract, find, similarity | character/word/occurrence counts, running a regex, exact diffs, natural sort, extracting emails/phones/GSTINs, edit distance and best-match from a list |
 | `collections` | set_ops, group_by, aggregate, pick_fields, flatten, unflatten, paginate, find_duplicates, sort_by, chunk | what's in list A but not B, group-by with sums, multi-key sorts — past the ~20-item cliff |
 | `validate` | json_schema, assert, id, email, url, phone, ip, sql_parse, regex | rule checks over JSON (`{path, op, value}` → pass/fail + score), Luhn/IBAN/GSTIN/PAN/Aadhaar/ISBN/EAN/VIN checksums, `DELETE` without `WHERE` |
 | `random` | uuid, int, float, pick, shuffle, token, bool, sample | real randomness: UUID v4/v7, seeded ints, secure tokens/OTPs, A/B buckets |
