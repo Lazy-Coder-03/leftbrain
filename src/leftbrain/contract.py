@@ -238,10 +238,12 @@ def tool(fn: Callable[..., Any]) -> Callable[..., dict[str, Any]]:
             return fail("invalid_input", f"{type(e).__name__}: {e}")
         except Exception as e:
             # The trace names server files; it belongs in the log, not in every caller's response.
-            log.exception("%s raised %s", getattr(fn, "__name__", "tool"), type(e).__name__)
+            # Three frames, not the whole stack: a RecursionError otherwise logs thousands.
+            trace = traceback.format_exc(limit=3)
+            log.error("%s raised %s\n%s", getattr(fn, "__name__", "tool"), type(e).__name__, trace)
             out = fail("internal", f"{type(e).__name__}: {e}")
             if debug_enabled():
-                out["trace"] = traceback.format_exc(limit=3)
+                out["trace"] = trace
             return out
 
     return wrapper

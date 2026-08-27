@@ -130,6 +130,21 @@ def test_an_internal_error_is_logged_server_side(caplog):
     assert "RuntimeError" in caplog.text
 
 
+def test_the_logged_trace_is_bounded(caplog):
+    """A RecursionError would otherwise log thousands of identical frames."""
+
+    @tool
+    def recurses():
+        def down(n):
+            return down(n + 1)
+
+        down(0)
+
+    with caplog.at_level("ERROR", logger="leftbrain"):
+        assert recurses()["error"] == "internal"
+    assert len(caplog.text) < 4000 and caplog.text.count("in down") <= 3
+
+
 # --- a call that never reaches the tool --------------------------------------
 
 _MISSING = [
