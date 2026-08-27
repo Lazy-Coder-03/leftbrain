@@ -19,7 +19,7 @@ from typing import Any
 
 from ..contract import ToolError, ok, tool
 
-MODES = ("compare", "round", "format", "allocate", "sequence", "parse", "to_words")
+MODES = ("compare", "round", "format", "allocate", "sequence", "parse", "to_words", "semver")
 
 _SUFFIX = {"k": 3, "thousand": 3, "m": 6, "mn": 6, "million": 6, "b": 9, "bn": 9, "billion": 9, "t": 12, "tn": 12, "trillion": 12, "l": 5, "lac": 5, "lakh": 5, "lakhs": 5, "cr": 7, "crore": 7, "crores": 7}
 _CURRENCY_SYMBOLS = {"₹": "INR", "$": "USD", "€": "EUR", "£": "GBP", "¥": "JPY", "rs": "INR", "rs.": "INR", "inr": "INR", "usd": "USD"}
@@ -126,6 +126,70 @@ def _compare(p: dict[str, Any]) -> dict[str, Any]:
         out["difference"] = _dec_str(b - a)
         if a != 0:
             out["percent_change_a_to_b"] = _dec_str(((b - a) / a * 100).quantize(Decimal("0.0001")))
+    return ok(out, assumptions=assumptions)
+
+
+_SEMVER_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?(?:\+([0-9A-Za-z.-]+))?$")
+
+
+def parse_semver(v: Any) -> tuple[dict[str, Any], list[str]]:
+    """``"v1.10"`` -> the parsed fields and the assumptions made (missing minor/patch read as 0)."""
+    s = str(v).strip()
+    m = _SEMVER_RE.match(s)
+    if not m:
+        raise ToolError(f"{s!r} is not a version (expected MAJOR.MINOR.PATCH with optional -prerelease and +build)")
+    major, minor, patch, pre, build = m.groups()
+    assumptions = []
+    if minor is None or patch is None:
+        assumptions.append(f"{s} read as {major}.{minor or 0}.{patch or 0}")
+    if pre is not None and any(not part or (part.isdigit() and part != "0" and part.startswith("0")) for part in pre.split(".")):
+        raise ToolError(f"{s!r}: pre-release identifiers must be non-empty and numeric ones must not have leading zeros")
+    fields = {"major": int(major), "minor": int(minor or 0), "patch": int(patch or 0), "prerelease": pre, "build": build}
+    fields["normalized"] = f"{fields['major']}.{fields['minor']}.{fields['patch']}" + (f"-{pre}" if pre else "") + (f"+{build}" if build else "")
+    return fields, assumptions
+
+
+def _semver_key(f: dict[str, Any]) -> tuple[Any, ...]:
+    """SemVer 2.0 §11: numeric parts, then a release outranks any pre-release, then pre-release identifiers left to right — numerics numerically, others in ASCII order, numeric before alphanumeric, a shorter prefix first. Build metadata is not part of precedence."""
+    pre = f["prerelease"]
+    if pre is None:
+        return (f["major"], f["minor"], f["patch"], 1, ())
+    ids = tuple((0, int(x), "") if x.isdigit() else (1, 0, x) for x in pre.split("."))
+    return (f["major"], f["minor"], f["patch"], 0, ids)
+
+
+def _semver(p: dict[str, Any]) -> dict[str, Any]:
+    vals = p.get("values")
+    if vals is None and p.get("a") is not None and p.get("b") is not None:
+        vals = [p["a"], p["b"]]
+    if not isinstance(vals, list) or len(vals) < 2:
+        raise ToolError("semver needs 'values' (list of 2+ version strings) or 'a' and 'b'")
+    parsed = []
+    assumptions: list[str] = []
+    for v in vals:
+        f, a = parse_semver(v)
+        parsed.append((f, v))
+        assumptions += [x for x in a if x not in assumptions]
+    if any(f["build"] for f, _ in parsed):
+        assumptions.append("build metadata (+…) is ignored when ordering, as SemVer 2.0 requires")
+    order = sorted(parsed, key=lambda t: _semver_key(t[0]))
+    ascending = [{"input": v, **f} for f, v in order]
+    chain = []
+    for i, (f, v) in enumerate(order):
+        if i:
+            chain.append("=" if _semver_key(f) == _semver_key(order[i - 1][0]) else "<")
+        chain.append(str(v))
+    out: dict[str, Any] = {
+        "ascending": ascending,
+        "descending": list(reversed(ascending)),
+        "max": ascending[-1],
+        "min": ascending[0],
+        "ordering": " ".join(chain),
+        "all_equal": all(_semver_key(f) == _semver_key(order[0][0]) for f, _ in order),
+    }
+    if len(parsed) == 2:
+        ka, kb = _semver_key(parsed[0][0]), _semver_key(parsed[1][0])
+        out["relation"] = "a < b" if ka < kb else ("a > b" if ka > kb else "a = b")
     return ok(out, assumptions=assumptions)
 
 
@@ -467,11 +531,11 @@ def _parse(p: dict[str, Any]) -> dict[str, Any]:
 
 @tool
 def numbers(mode: str = "compare", **params: Any) -> dict[str, Any]:
-    """Number utilities. Modes: compare, round, format, allocate, sequence, parse, to_words."""
+    """Number utilities. Modes: compare, round, format, allocate, sequence, parse, to_words, semver."""
     if mode not in MODES:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
-    return {"compare": _compare, "round": _round, "format": _format, "allocate": _allocate, "sequence": _sequence, "parse": _parse, "to_words": _to_words}[mode](p)
+    return {"compare": _compare, "round": _round, "format": _format, "allocate": _allocate, "sequence": _sequence, "parse": _parse, "to_words": _to_words, "semver": _semver}[mode](p)
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
 #: executed when /docs/tools/numbers is built and sorted by the result into
@@ -679,6 +743,24 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "An unparseable value.",
             "args": {"mode": "to_words", "value": "a lot"},
+        },
+    ],
+    "semver": [
+        {
+            "caption": "Versions are not decimals: 1.10 comes after 1.9.",
+            "args": {"mode": "semver", "a": "1.9", "b": "1.10"},
+        },
+        {
+            "caption": "Pre-releases ordered by the SemVer 2.0 rules — numeric identifiers numerically, a release above every pre-release.",
+            "args": {"mode": "semver", "values": ["1.0.0", "1.0.0-rc.1", "1.0.0-beta.11", "1.0.0-beta.2", "1.0.0-alpha"]},
+        },
+        {
+            "caption": "Build metadata is carried through but never decides the order.",
+            "args": {"mode": "semver", "values": ["v2.1.0+build.7", "2.1.0+build.9", "2.0.9"]},
+        },
+        {
+            "caption": "Something that is not a version.",
+            "args": {"mode": "semver", "values": ["1.2.3", "latest"]},
         },
     ],
 }
