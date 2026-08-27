@@ -19,6 +19,7 @@ import jsonschema
 
 from ..contract import TooLarge, ToolError, Unsupported, ok, tool
 from .collections_ import get_path
+from .text import check_pattern, redos_risk
 
 MODES = ("json_schema", "assert", "id", "email", "url", "phone", "ip", "sql_parse", "regex", "cidr")
 
@@ -46,10 +47,33 @@ def _schema_depth(node: Any) -> int:
     return deepest
 
 
+#: Schema keywords whose value is a regular expression jsonschema hands to stdlib `re`.
+_PATTERN_KEYS = ("pattern", "patternProperties")
+
+
+def _check_schema_patterns(node: Any) -> None:
+    """Refuse a schema carrying a runaway pattern; jsonschema runs them on stdlib `re`."""
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, dict):
+            for key, value in current.items():
+                if key == "pattern" and isinstance(value, str):
+                    check_pattern(value, where="schema pattern")
+                elif key == "patternProperties" and isinstance(value, dict):
+                    for name in value:
+                        check_pattern(str(name), where="schema patternProperties key")
+                if isinstance(value, (dict, list)):
+                    stack.append(value)
+        elif isinstance(current, list):
+            stack.extend(x for x in current if isinstance(x, (dict, list)))
+
+
 def _json_schema(p: dict[str, Any]) -> dict[str, Any]:
     schema, data = p.get("schema"), p.get("data")
     if schema is None:
         raise ToolError("'schema' is required")
+    _check_schema_patterns(schema)
     depth = _schema_depth(schema)
     if depth > MAX_SCHEMA_DEPTH:
         raise TooLarge(
@@ -752,7 +776,13 @@ def _regex(p: dict[str, Any]) -> dict[str, Any]:
         rx = re.compile(str(pat))
     except re.error as e:
         return ok({"valid": False, "reason": str(e), "position": e.pos})
-    return ok({"valid": True, "groups": rx.groups, "named_groups": list(rx.groupindex)})
+    # This mode exists to judge a pattern, so a runaway one is reported rather than refused -
+    # unlike `text.regex_match`, nothing here runs it against a subject (#28 SS1).
+    risk = redos_risk(str(pat))
+    return ok(
+        {"valid": True, "groups": rx.groups, "named_groups": list(rx.groupindex), "backtracking_risk": risk},
+        warnings=[f"this pattern can backtrack exponentially: {risk}"] if risk else [],
+    )
 
 
 @tool
@@ -958,6 +988,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "regex": [
+        {
+            "caption": "The same pattern `text.regex_match` refuses: here it is judged, not run, so it is valid with a warning.",
+            "args": {"mode": "regex", "pattern": "(a+)+$"},
+        },
         {
             "caption": "A valid pattern with named groups.",
             "args": {"mode": "regex", "pattern": "(?P<year>\\d{4})-(?P<month>\\d{2})"},

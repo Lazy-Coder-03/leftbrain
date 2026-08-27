@@ -1905,7 +1905,10 @@ TEXT = ToolDoc(
                 "positional groups and named groups, plus whether the pattern matched the whole string. "
                 "Flags are given as letters: `i`, `m`, `s`, `x`, `u`, `a`. `count` is the total number of "
                 "matches in the text, not the number listed: when there are more than `limit`, "
-                "`returned` says how many came back, `truncated` is `true` and `warnings` says so."
+                "`returned` says how many came back, `truncated` is `true` and `warnings` says so. "
+                "A pattern that can backtrack exponentially — `(a+)+$`, `(a|aa)+` — is refused with "
+                "`unsupported` before it runs, because once stdlib `re` starts on one nothing can "
+                "stop it."
             ),
             params=(
                 Param("text", "The text to search.", required=True),
@@ -1922,7 +1925,8 @@ TEXT = ToolDoc(
                 "changed at all — the part a blind `sub()` never tells you. Backreferences (`\\1`) and "
                 "named references work in the replacement; `count` limits how many are replaced. A "
                 "replacement that would produce more than 200 000 characters is refused with "
-                "`too_large` rather than returned."
+                "`too_large` rather than returned, and a pattern that can backtrack exponentially "
+                "is refused with `unsupported`."
             ),
             params=(
                 Param("text", "The text to transform.", required=True),
@@ -2404,7 +2408,9 @@ VALIDATE = ToolDoc(
                 "failed and the message — a failing document is a successful call (`ok: true`, "
                 "`valid: false`), because “the document is invalid” is an answer, not an error. A "
                 "schema that is itself malformed *is* an error, as is one that nests more than 50 levels "
-                "deep or refers to itself (`{\"$ref\": \"#\"}`), which no validator can terminate on."
+                "deep or refers to itself (`{\"$ref\": \"#\"}`), which no validator can terminate on. "
+                "A `pattern` or `patternProperties` key that can backtrack exponentially is refused "
+                "too: jsonschema runs them on the same stdlib engine `text` does."
             ),
             params=(
                 Param("schema", "The JSON Schema.", required=True),
@@ -2557,7 +2563,10 @@ VALIDATE = ToolDoc(
                 "Compiles a regular expression and reports its group count and named groups, or why it "
                 "failed and at which character. Use it to validate a user-supplied pattern before "
                 "handing it to [`text`](/docs/tools/text). A pattern that does not compile is "
-                "`valid: false`, not an error."
+                "`valid: false`, not an error. This mode judges a pattern rather than running it, "
+                "so one that can backtrack exponentially is still `valid: true` — with "
+                "`backtracking_risk` naming the shape and a warning saying so. The same pattern "
+                "handed to `text.regex_match` is refused outright."
             ),
             params=(
                 Param("pattern", "The regular expression to compile.", required=True),
