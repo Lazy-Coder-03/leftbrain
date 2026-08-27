@@ -1909,9 +1909,12 @@ TEXT = ToolDoc(
             description=(
                 "With `what: all` (the default) returns every count at once: characters, characters "
                 "without spaces, letters, digits, words, unique words, lines, non-empty lines, "
-                "sentences, paragraphs, UTF-8 bytes and a rough token estimate. Ask for one statistic "
-                "by name, or use `what: occurrences` with a `substring` to count and locate a specific "
-                "string, optionally overlapping."
+                "sentences, paragraphs, UTF-8 bytes, a rough token estimate, and `graphemes` — what a "
+                "reader actually sees, so a ZWJ family emoji is one character rather than five. Text "
+                "containing bidi controls or zero-width characters is flagged in `warnings`: they are "
+                "invisible, they count towards length, and they are how a filename is made to read "
+                "backwards. Ask for one statistic by name, or use `what: occurrences` with a "
+                "`substring` to count and locate a specific string, optionally overlapping."
             ),
             params=(
                 Param("text", "The text to measure.", required=True),
@@ -1983,7 +1986,8 @@ TEXT = ToolDoc(
                 "Sorts a list with natural ordering by default, so `file2` comes before `file10`, and "
                 "case-insensitively, so `Apple` and `apple` sit together. Mixed types are ordered "
                 "deterministically — numbers, then strings, then nulls — and `changed` tells you "
-                "whether the input was already sorted."
+                "whether the input was already sorted. Ordering is by code point with no locale "
+                "collation, so `éclair` sorts after `Zebra`; that is stated in `assumptions`."
             ),
             params=(
                 Param("items", "The list to sort.", required=True),
@@ -2148,7 +2152,7 @@ COLLECTIONS = ToolDoc(
             purpose="Aggregate one field across every record.",
             description=(
                 "The whole-list version of `group_by`'s aggregates: `count`, `count_distinct`, `sum`, "
-                "`avg`, `min`, `max`, `first`, `last`, `list`. Numeric aggregates are computed as "
+                "`avg`, `median`, `min`, `max`, `first`, `last`, `list`. Numeric aggregates are computed as "
                 "decimals and returned as strings; non-numeric values are ignored for them and that is "
                 "stated in `assumptions`. Omit `field` to aggregate the items themselves. For every "
                 "numeric field at once, see `summarize`."
@@ -2517,8 +2521,11 @@ VALIDATE = ToolDoc(
             description=(
                 "Parses a URL into scheme, host, port, path, query and fragment, notes whether the host "
                 "is an IP literal, extracts the TLD and reports whether the scheme is secure. Accepted "
-                "schemes are `http`, `https`, `ftp`, `ftps`, `mailto`, `tel` and `file`. Like `email`, "
-                "this is syntax only and never returns `ok: false`."
+                "schemes are `http`, `https`, `ftp`, `ftps`, `mailto`, `tel` and `file`. Two things a "
+                "syntax check can still tell you are warned about: credentials before the `@` "
+                "(`https://user:pass@evil.example.com` reads as though it points at `user`), and a "
+                "punycode or non-ASCII host, which can imitate another name. Like `email`, this is "
+                "syntax only and never returns `ok: false`."
             ),
             params=(
                 Param("value", "The URL to check.", required=True),
@@ -2551,7 +2558,8 @@ VALIDATE = ToolDoc(
                 "Parses an IPv4 or IPv6 address and reports whether it is private, loopback, "
                 "multicast, globally routable or reserved, along with its compressed and exploded "
                 "forms. A value containing `/` is read as a network and returns its size and first and "
-                "last addresses. Never returns `ok: false`."
+                "last addresses. A link-local address may carry a zone id (`fe80::1%eth0`, RFC 4007), "
+                "which is reported as `zone`. Never returns `ok: false`."
             ),
             params=(
                 Param("value", "An IP address or CIDR network.", required=True),
@@ -2586,7 +2594,8 @@ VALIDATE = ToolDoc(
                 "Parses SQL with sqlglot and reports, per statement: the statement type, whether it "
                 "writes, which tables it reads and writes, the columns referenced, whether it has a "
                 "`WHERE` and a `LIMIT`, and a normalised form. `UPDATE`/`DELETE` without a `WHERE` and "
-                "any `DROP`/`TRUNCATE` are raised in `warnings`. Syntactically invalid SQL is a "
+                "any `DROP`/`TRUNCATE` are raised in `warnings`. A trailing comment or a stray semicolon "
+                "is not counted as a statement. Syntactically invalid SQL is a "
                 "successful call reporting `valid: false` — that is the answer you wanted."
             ),
             params=(
@@ -2755,7 +2764,8 @@ RANDOM = ToolDoc(
                 "With `k`, draws a sample of that size without replacement. With `groups` — a count or "
                 "a list of names — shuffles and deals the items round-robin into buckets whose sizes "
                 "differ by at most one, which is what an A/B split should do. Seed it and the "
-                "assignment is reproducible for anyone auditing the experiment."
+                "assignment is reproducible for anyone auditing the experiment. Asking for more "
+                "groups than there are items leaves some empty, and says so in `warnings`."
             ),
             params=(
                 Param("items", "The population.", required=True),
@@ -2960,7 +2970,8 @@ ENCODE = ToolDoc(
                 "Encodes or decodes Base64. `urlsafe` switches the alphabet to `-_`, and "
                 "`strip_padding` removes trailing `=`. Decoding re-adds missing padding, detects the "
                 "URL-safe alphabet automatically, and — when the decoded bytes are not valid UTF-8 — "
-                "returns hex with a warning rather than mangling them."
+                "returns hex with a warning rather than mangling them. Decoding standard-alphabet "
+                "text (`+`, `/`) under `urlsafe: true` is refused rather than quietly decoded anyway."
             ),
             params=(
                 Param("action", "Direction.", default="`encode`"),

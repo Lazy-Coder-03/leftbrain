@@ -563,6 +563,25 @@ def _url_ok(s: Any) -> bool:
     return u.scheme in ("http", "https", "ftp", "ftps", "mailto", "tel", "file") and (bool(u.netloc) or u.scheme in ("mailto", "tel", "file"))
 
 
+def _idn_note(host: str | None) -> str | None:
+    """Whether this host is punycode or non-ASCII, either of which can imitate another.
+
+    `аpple.com` with a Cyrillic а and `xn--80ak6aa92e.com` are the same host, and neither
+    is `apple.com`. Both used to validate silently (#28 SS3.13).
+    """
+    if not host:
+        return None
+    if host.isascii():
+        if any(label.startswith("xn--") for label in host.split(".")):
+            try:
+                unicode_form = host.encode().decode("idna")
+            except (UnicodeError, ValueError):
+                unicode_form = host
+            return f"punycode host: {host} is {unicode_form}, which may be a look-alike of another name"
+        return None
+    return f"non-ASCII host: {host} may be a look-alike of a similar ASCII name (check it character by character)"
+
+
 def _url(p: dict[str, Any]) -> dict[str, Any]:
     s = str(p.get("value") or "").strip()
     try:
@@ -584,7 +603,15 @@ def _url(p: dict[str, Any]) -> dict[str, Any]:
                 out["reason"] = "host has no TLD"
     if not valid and "reason" not in out:
         out["reason"] = "missing scheme or host (e.g. https://example.com)"
-    return ok(out, assumptions=["syntax check only; reachability not verified"])
+    warnings: list[str] = []
+    if u.username or u.password:
+        # `https://user:pass@evil.example.com` reads as though it points at `user` (#28 SS3.13).
+        out["has_credentials"] = True
+        warnings.append("this URL embeds credentials before the '@'; the host is everything after it")
+    out["idn"] = _idn_note(host)
+    if out["idn"]:
+        warnings.append(out["idn"])
+    return ok(out, assumptions=["syntax check only; reachability not verified"], warnings=warnings)
 
 
 _PHONE_RULES: dict[str, tuple[str, int, str]] = {
@@ -661,7 +688,15 @@ def _ip(p: dict[str, Any]) -> dict[str, Any]:
         if "/" in s:
             net = ipaddress.ip_network(s, strict=False)
             return ok({"valid": True, "kind": "network", "version": net.version, "network": str(net), "num_addresses": net.num_addresses, "first": str(net[0]), "last": str(net[-1]), "private": net.is_private})
-        ip = ipaddress.ip_address(s)
+        # `fe80::1%eth0` is what a link-local address looks like in practice; Python's
+        # ip_address rejects the zone, so it is split off and reported (#28 SS3.13).
+        bare, _, zone = s.partition("%")
+        ip = ipaddress.ip_address(bare)
+        if zone:
+            if ip.version != 6 or not ip.is_link_local:
+                return ok({"valid": False, "value": s, "reason": "a zone id (%…) belongs only on a link-local IPv6 address"})
+            return ok({"valid": True, "kind": "address", "version": 6, "zone": zone, "private": ip.is_private, "loopback": ip.is_loopback, "multicast": ip.is_multicast, "global": ip.is_global, "reserved": ip.is_reserved, "compressed": ip.compressed, "exploded": ip.exploded},
+                      assumptions=[f"zone id '{zone}' names the interface, not the address (RFC 4007)"])
         return ok({"valid": True, "kind": "address", "version": ip.version, "private": ip.is_private, "loopback": ip.is_loopback, "multicast": ip.is_multicast, "global": ip.is_global, "reserved": ip.is_reserved, "compressed": ip.compressed, "exploded": ip.exploded})
     except ValueError as e:
         return ok({"valid": False, "value": s, "reason": str(e)})
@@ -741,7 +776,9 @@ def _sql_parse(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("'sql' is required")
     dialect = p.get("dialect")
     try:
-        statements = sqlglot.parse(sql, read=dialect)
+        # sqlglot yields a None for a trailing comment or a stray semicolon, which was
+        # counted as a third statement in `SELECT 1; DROP TABLE users; --` (#28 SS3.13).
+        statements = [st for st in sqlglot.parse(sql, read=dialect) if st is not None and st.sql().strip()]
     except sqlglot.errors.ParseError as e:
         return ok({"valid": False, "errors": [str(err.get("description", e)) for err in getattr(e, "errors", [])] or [str(e)], "statement_count": 0, "read_only": None})
     out_stmts = []
@@ -915,6 +952,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "url": [
+        {
+            "caption": "Credentials before the '@' and a look-alike host are the two things a syntax check can still warn about.",
+            "args": {"mode": "url", "value": "https://user:pass@xn--80ak6aa92e.com/x"},
+        },
         {
             "caption": "A full URL, decomposed.",
             "args": {"mode": "url", "value": "https://leftbrain.dev:8443/docs/tools?q=math#eval"},

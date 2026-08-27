@@ -666,7 +666,9 @@ def _phrase_to_rrule(phrase: str) -> str | None:
         return "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
     if s in ("every weekend", "weekends"):
         return "FREQ=WEEKLY;BYDAY=SA,SU"
-    m = re.fullmatch(r"every (?:(\d+|other) weeks? on )?((?:[a-z]+(?:,| and |, and | )?)+)", s)
+    # `every other tuesday` is what people write; the grammar only took `every other week
+    # on tuesday`, so the short form was refused outright (#28 SS3.13).
+    m = re.fullmatch(r"every (?:(\d+|other) (?:weeks? on )?)?((?:[a-z]+(?:,| and |, and | )?)+)", s)
     if m:
         days = [d for d in re.split(r",|\band\b|\s", m.group(2)) if d]
         if all(d[:3] in _WD_ABBR for d in days):

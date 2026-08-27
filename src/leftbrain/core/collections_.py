@@ -91,7 +91,9 @@ def _hashable(v: Any, ci: bool = False) -> Any:
     rides along so `1`, `1.0`, `"1"` and `true` stay four different things.
     """
     if isinstance(v, str):
-        return ("str", v.casefold() if ci else v)
+        # `case_insensitive` is asked for when the data is untidy, and untidy data has
+        # stray spaces: "a@x.com " and "A@x.com" are the same address (#28 SS3.13).
+        return ("str", v.strip().casefold() if ci else v)
     if isinstance(v, (dict, list)):
         return (type(v).__name__, json.dumps(v, sort_keys=True, default=str))
     return (type(v).__name__, v)
@@ -168,6 +170,14 @@ def _agg(values: list[Any], ops: list[str]) -> dict[str, Any]:
                 out["min"] = str(min(nums))
             else:
                 out["max"] = str(max(nums))
+        elif op == "median":
+            # `math.stats` has had a median all along; this mode did not (#28 SS3.13).
+            if not nums:
+                out["median"] = None
+                continue
+            ordered = sorted(nums)
+            mid = len(ordered) // 2
+            out["median"] = str(ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2)
         elif op == "first":
             out["first"] = values[0] if values else None
         elif op == "last":
