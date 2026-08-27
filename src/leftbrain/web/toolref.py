@@ -562,7 +562,7 @@ def index_markdown() -> str:
     parts = [
         "# Tools",
         "",
-        "Twelve tools, one shape. Every tool takes a `mode` and returns "
+        "Fourteen tools, one shape. Every tool takes a `mode` and returns "
         "`{ok, result, assumptions[], warnings[]}` on success, or `{ok: false, error, message}` "
         "— with a `needs` block — when the input was ambiguous and guessing would be dangerous.",
         "",
