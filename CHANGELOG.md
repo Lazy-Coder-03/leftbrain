@@ -6,6 +6,16 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The per-key tool scope is a tree.** It was a three-column grid of blocks whose columns ran
+  to different heights, so a tool's modes wrapped into a shape unrelated to the tool above it.
+  Each tool is now one full-width row with a disclosure triangle, a `picked/total` count, and
+  its modes as collapsible children under a guide line. A tool with some but not all of its
+  modes shows an indeterminate checkbox; unticking the last mode turns the tool off and
+  ticking one turns it back on. The header offers **All**, **None** and **Expand all**. Counts
+  are rendered by the server, so the scope is readable with JavaScript off.
+
 ### Fixed
 
 - **The loading skeleton now covers every page.** `site.js` looked for `.doc`, then `<main>`,

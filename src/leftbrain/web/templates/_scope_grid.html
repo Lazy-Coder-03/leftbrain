@@ -1,10 +1,34 @@
-{# The tool grid: one box per tool, its modes indented beneath. Everything ticked when `scope_of` is none. #}
+{# The tool scope, as a tree: one row per tool, its modes as collapsible children.
+   Everything ticked when `scope_of` is none. #}
 <input type="hidden" name="scope_form" value="1">
-<div class="scope" data-scope-grid>
+<div class="scope" data-scope-grid role="tree" aria-label="Tools this key may call">
+  <div class="tools-head">
+    <span class="hint" data-scope-count></span>
+    <span class="grow">
+      <button type="button" class="linklike" data-all>All</button>
+      <button type="button" class="linklike" data-none>None</button>
+      <button type="button" class="linklike" data-expand>Expand all</button>
+    </span>
+  </div>
   {% for tool, modes in catalogue.items() %}{% set on = scope_of is none or tool in scope_of.tools %}
-  <div class="scope-tool">
-    <label><input type="checkbox" name="scope" value="{{ tool }}" data-tool="{{ tool }}"{% if on %} checked{% endif %}> <span>{{ tool }}</span></label>
-    {% if modes %}<div class="scope-modes">{% for m in modes %}<label><input type="checkbox" name="scope" value="{{ tool }}:{{ m }}" data-of="{{ tool }}"{% if on and (scope_of is none or scope_of.tools[tool] is none or m in scope_of.tools[tool]) %} checked{% endif %}{% if not on %} disabled{% endif %}> {{ m }}</label>{% endfor %}</div>{% endif %}
+  {%- set picked = [] -%}
+  {%- for m in modes -%}{%- if on and (scope_of is none or scope_of.tools[tool] is none or m in scope_of.tools[tool]) -%}{{ picked.append(m) or "" }}{%- endif -%}{%- endfor -%}
+  <div class="node{% if not modes %} leaf{% endif %}" data-node role="treeitem" aria-expanded="false">
+    <div class="row">
+      {% if modes %}<button type="button" class="twisty" data-twisty aria-label="Show {{ tool }} modes" tabindex="-1">
+        <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M4 2.5 8 6l-4 3.5z" fill="currentColor"/></svg>
+      </button>{% else %}<span class="twisty spacer" aria-hidden="true"></span>{% endif %}
+      <label class="name">
+        <input type="checkbox" name="scope" value="{{ tool }}" data-tool="{{ tool }}"{% if on %} checked{% endif %}>
+        <span>{{ tool }}</span>
+      </label>
+      {% if modes %}<span class="count" data-count>{{ picked|length }}/{{ modes|length }}</span>{% endif %}
+    </div>
+    {% if modes %}
+    <div class="kids" role="group">
+      {% for m in modes %}<label class="mode"><input type="checkbox" name="scope" value="{{ tool }}:{{ m }}" data-of="{{ tool }}"{% if m in picked %} checked{% endif %}{% if not on %} disabled{% endif %}> <span>{{ m }}</span></label>{% endfor %}
+    </div>
+    {% endif %}
   </div>
   {% endfor %}
 </div>
