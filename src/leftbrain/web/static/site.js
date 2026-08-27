@@ -3,7 +3,7 @@
   function skeleton(n) { var h = '<div class="skel-lines">'; for (var i = 0; i < n; i++) h += '<i></i>'; return h + '</div>'; }
   // Server-rendered pages: show a skeleton the instant a same-origin navigation or form submit starts.
   function startLoading(target) {
-    // `.doc` first: the docs pages dim only the article and keep the sidebar readable.
+    // `.doc` first: the docs pages replace only the article and keep the sidebar readable.
     // `#page` is the wrapper every template has, so no page falls through to <body> and
     // prepends a skeleton above the nav.
     var doc = document.querySelector('.doc') || document.getElementById('page');
@@ -28,7 +28,7 @@
   });
   window.addEventListener('pageshow', function () { // back/forward cache restores the page mid-skeleton
     document.querySelectorAll('.is-loading').forEach(function (el) { el.classList.remove('is-loading'); });
-    document.querySelectorAll('.doc > .skel-lines').forEach(function (el) { el.remove(); });
+    document.querySelectorAll('.doc > .skel-lines, #page > .skel-lines').forEach(function (el) { el.remove(); });
     document.querySelectorAll('.is-busy').forEach(function (el) { el.classList.remove('is-busy'); });
   });
   var $ = function (s, r) { return (r || document).querySelector(s); };
