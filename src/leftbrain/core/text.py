@@ -6,12 +6,19 @@ import difflib
 import re
 from typing import Any
 
-from ..contract import ToolError, ok, tool
+from ..contract import TooLarge, ToolError, ok, tool
 
 MODES = ("count", "regex_match", "regex_replace", "diff", "sort", "dedupe", "extract", "find", "similarity")
 
 _FLAGS = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL, "x": re.VERBOSE, "u": re.UNICODE, "a": re.ASCII}
 _MAX_TEXT = 2_000_000
+#: Characters a replacement may produce. `a`*10000 -> `x`*1000 each is 10 MB (#28 SS2e).
+MAX_OUTPUT_CHARS = 200_000
+#: Lines, words or characters per side that `diff` will compare. difflib is quadratic:
+#: 100 000 lines never returns, and 30 000 words is worse still (#28 SS1).
+MAX_DIFF_UNITS = 10_000
+#: Matches `regex_match` will scan for before it stops counting.
+MAX_MATCH_SCAN = 1_000_000
 
 
 def _text(p: dict[str, Any], key: str = "text") -> str:
@@ -90,11 +97,20 @@ def _regex_match(p: dict[str, Any]) -> dict[str, Any]:
     rx = _compile(p.get("pattern"), p.get("flags"))
     limit = int(p.get("limit", 1000))
     matches = []
+    total = 0
     for m in rx.finditer(t):
-        matches.append({"match": m.group(0), "start": m.start(), "end": m.end(), "groups": list(m.groups()), "named": m.groupdict()})
-        if len(matches) >= limit:
+        total += 1
+        if len(matches) < limit:
+            matches.append({"match": m.group(0), "start": m.start(), "end": m.end(), "groups": list(m.groups()), "named": m.groupdict()})
+        if total >= MAX_MATCH_SCAN:
             break
-    return ok({"count": len(matches), "matches": matches, "any": bool(matches), "full_match": rx.fullmatch(t) is not None}, warnings=[f"truncated to {limit} matches"] if len(matches) >= limit else [])
+    # `count` is the total, not the number returned: an agent reading `count` off a
+    # truncated response used to get the limit and believe it was the answer (#28 SS2f).
+    truncated = total > len(matches)
+    return ok(
+        {"count": total, "returned": len(matches), "truncated": truncated, "matches": matches, "any": bool(matches), "full_match": rx.fullmatch(t) is not None},
+        warnings=[f"{total:,} matches found; the list is truncated to the first {limit:,} (raise 'limit' to see more)"] if truncated else [],
+    )
 
 
 def _regex_replace(p: dict[str, Any]) -> dict[str, Any]:
@@ -108,6 +124,12 @@ def _regex_replace(p: dict[str, Any]) -> dict[str, Any]:
         out, n = rx.subn(str(repl), t, count=count)
     except re.error as e:
         raise ToolError(f"bad replacement: {e}") from None
+    if len(out) > MAX_OUTPUT_CHARS:
+        raise TooLarge(
+            f"the replacement produces {len(out):,} characters; the limit is {MAX_OUTPUT_CHARS:,}",
+            details={"output_chars": len(out), "limit_chars": MAX_OUTPUT_CHARS, "replacements": n},
+            hint="Shorten 'replacement', or replace over a smaller piece of text.",
+        )
     return ok({"text": out, "replacements": n, "changed": n > 0})
 
 
@@ -122,6 +144,13 @@ def _diff(p: dict[str, Any]) -> dict[str, Any]:
         al, bl = list(a), list(b)
     else:
         raise ToolError("granularity must be line, word or char")
+    biggest = max(len(al), len(bl))
+    if biggest > MAX_DIFF_UNITS:
+        raise TooLarge(
+            f"{biggest:,} {mode}s to compare; the limit is {MAX_DIFF_UNITS:,}",
+            details={mode + "s": biggest, "limit": MAX_DIFF_UNITS, "granularity": mode},
+            hint="Diff a smaller section, or use granularity='line' on shorter input.",
+        )
     sm = difflib.SequenceMatcher(None, al, bl, autojunk=False)
     ops = []
     added = removed = 0

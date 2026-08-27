@@ -26,7 +26,7 @@ from dateutil import parser as duparser
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 
-from ..contract import Ambiguous, ToolError, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, ok, tool
 
 MODES = (
     "now",
@@ -45,6 +45,13 @@ MODES = (
     "age",
     "fiscal",
 )
+
+#: Zones a single `now` or `convert_tz` call may report on. 500 of them is a 110 KB
+#: response for one instant (#28 SS2e).
+MAX_TZ_TARGETS = 50
+#: Days `business_days` will walk. A century is 36 525 iterations and a holiday list
+#: to match; the answer is a number, so the range is bounded rather than trimmed.
+MAX_BUSINESS_DAY_SPAN = 3660
 
 # --------------------------------------------------------------------------- #
 # Timezones
@@ -647,6 +654,12 @@ def _tz_targets(spec: Any, field: str) -> list[tuple[Any, str | None]]:
         spec = [spec]
     if not spec:
         raise ToolError(f"{field} is an empty list; give at least one zone")
+    if len(spec) > MAX_TZ_TARGETS:
+        raise TooLarge(
+            f"{len(spec):,} zones in {field}; the most that can be reported at once is {MAX_TZ_TARGETS}",
+            details={field: len(spec), "limit": MAX_TZ_TARGETS},
+            hint=f"Ask for at most {MAX_TZ_TARGETS} zones per call.",
+        )
     out: list[tuple[Any, str | None]] = []
     for entry in spec:
         if isinstance(entry, dict):
@@ -933,6 +946,14 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
     d2, _, a2 = parse_dt(b_raw, tz=p.get("tz"), locale=p.get("locale"), field="end")
     assumptions = a1 + [x for x in a2 if x not in a1]
     lo, hi = sorted([d1.date(), d2.date()])
+    span = (hi - lo).days
+    if span > MAX_BUSINESS_DAY_SPAN:
+        raise TooLarge(
+            f"the range spans {span:,} days; the most this mode counts is {MAX_BUSINESS_DAY_SPAN:,} "
+            f"(about {MAX_BUSINESS_DAY_SPAN // 365} years)",
+            details={"days": span, "limit_days": MAX_BUSINESS_DAY_SPAN, "start": lo.isoformat(), "end": hi.isoformat()},
+            hint="Count one year at a time and add the results.",
+        )
     include_start = p.get("include_start", True)
     include_end = p.get("include_end", True)
     weekend = _weekend(p.get("weekend"))
@@ -1322,8 +1343,11 @@ def _mode_recurrence(p: dict[str, Any]) -> dict[str, Any]:
         if i >= limit:
             break
         dates.append(_info(d, False)["iso"] if not p.get("dates_only", True) else d.date().isoformat())
-    warnings = [] if (until or count or len(dates) < limit) else [f"truncated to {limit} occurrences; pass count/until"]
-    return ok({"rrule": rr_text, "occurrences": dates, "count": len(dates)}, assumptions=a, warnings=warnings)
+    # A `count` larger than `limit` used to silence the warning entirely, so 1 000 000
+    # occurrences came back as 100 with nothing said about it (#28 SS2f).
+    truncated = len(dates) >= limit and not (count and int(count) <= limit) and not (until and len(dates) < limit)
+    warnings = [f"truncated to {limit} occurrences; raise 'limit' (max 1000) or narrow the rule"] if truncated else []
+    return ok({"rrule": rr_text, "occurrences": dates, "count": len(dates), "truncated": truncated}, assumptions=a, warnings=warnings)
 
 
 def _mode_cron_next(p: dict[str, Any]) -> dict[str, Any]:
@@ -1660,6 +1684,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
     ],
     "business_days": [
         {
+            "caption": "A century is refused; the range is capped at about ten years.",
+            "args": {"mode": "business_days", "start": "2026-08-01", "end": "2126-08-01", "region": "IN"},
+        },
+        {
             "caption": "Working days in an Indian August, with the Independence Day holiday named.",
             "args": {"mode": "business_days", "start": "2025-08-11", "end": "2025-08-22", "region": "IN"},
         },
@@ -1755,6 +1783,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         },
     ],
     "recurrence": [
+        {
+            "caption": "A `count` past the output limit still stops at `limit` - and now says so, instead of returning 100 dates as though they were all of them.",
+            "args": {"mode": "recurrence", "rule": "FREQ=DAILY", "start": "2026-08-27", "count": 1000000},
+        },
         {
             "caption": "A phrase turned into an RRULE and expanded.",
             "args": {"mode": "recurrence", "rule": "every 2nd tuesday", "start": "2025-01-01", "count": 5},

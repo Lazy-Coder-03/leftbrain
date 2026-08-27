@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 import jsonschema
 
-from ..contract import ToolError, Unsupported, ok, tool
+from ..contract import TooLarge, ToolError, Unsupported, ok, tool
 from .collections_ import get_path
 
 MODES = ("json_schema", "assert", "id", "email", "url", "phone", "ip", "sql_parse", "regex", "cidr")
@@ -27,10 +27,36 @@ MODES = ("json_schema", "assert", "id", "email", "url", "phone", "ip", "sql_pars
 # --------------------------------------------------------------------------- #
 
 
+#: Nesting a schema may have. jsonschema descends recursively, so 200-deep `allOf`
+#: exhausts the C stack and used to surface as `internal` plus a traceback (#28 SS1).
+MAX_SCHEMA_DEPTH = 50
+
+
+def _schema_depth(node: Any) -> int:
+    """Deepest nesting in a schema, measured iteratively so the check cannot itself recurse."""
+    deepest, stack = 0, [(node, 1)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > deepest:
+            deepest = depth
+            if deepest > MAX_SCHEMA_DEPTH:
+                return deepest
+        children = current.values() if isinstance(current, dict) else (current if isinstance(current, list) else ())
+        stack.extend((child, depth + 1) for child in children if isinstance(child, (dict, list)))
+    return deepest
+
+
 def _json_schema(p: dict[str, Any]) -> dict[str, Any]:
     schema, data = p.get("schema"), p.get("data")
     if schema is None:
         raise ToolError("'schema' is required")
+    depth = _schema_depth(schema)
+    if depth > MAX_SCHEMA_DEPTH:
+        raise TooLarge(
+            f"the schema nests {depth} levels deep; the limit is {MAX_SCHEMA_DEPTH}",
+            details={"depth": depth, "limit": MAX_SCHEMA_DEPTH},
+            hint="Flatten the schema, or name the repeated part in $defs and $ref it once.",
+        )
     try:
         cls = jsonschema.validators.validator_for(schema)
         cls.check_schema(schema)
@@ -38,7 +64,15 @@ def _json_schema(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"invalid schema: {e.message}") from None
     v = cls(schema, format_checker=jsonschema.FormatChecker())
     errors = []
-    for err in sorted(v.iter_errors(data), key=lambda e: list(e.absolute_path)):
+    try:
+        found = sorted(v.iter_errors(data), key=lambda e: list(e.absolute_path))
+    except RecursionError:
+        # A $ref cycle ({"$ref": "#"}) is an input the caller can fix, not a crash.
+        raise ToolError(
+            "the schema refers to itself ($ref cycle), so validating it never terminates",
+            hint="Give the recursive branch a base case, or validate against a non-recursive schema.",
+        ) from None
+    for err in found:
         path = "$" + "".join(f"[{x}]" if isinstance(x, int) else f".{x}" for x in err.absolute_path)
         errors.append({"path": path, "message": err.message, "validator": err.validator, "schema_path": "/".join(str(x) for x in err.absolute_schema_path)})
     return ok({"valid": not errors, "errors": errors, "error_count": len(errors)})
@@ -742,6 +776,10 @@ _EX_LEAVE_SCHEMA = {"type": "object", "required": ["employee", "leave"], "proper
 #: current instant with "volatile": True.
 EXAMPLES: dict[str, list[dict[str, Any]]] = {
     "json_schema": [
+        {
+            "caption": "A schema that refers to itself: validating it never terminates, so it is refused as input rather than crashing.",
+            "args": {"mode": "json_schema", "schema": {"$ref": "#"}, "data": 1},
+        },
         {
             "caption": "A document that fails two constraints, each located by path.",
             "args": {"mode": "json_schema", "schema": _EX_LEAVE_SCHEMA, "data": _EX_LEAVE_DOC},

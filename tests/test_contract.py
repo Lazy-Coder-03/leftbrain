@@ -17,6 +17,7 @@ from leftbrain.contract import (
     Unsupported,
     debug_enabled,
     fail,
+    ok,
     schema_rejection,
     tool,
 )
@@ -143,6 +144,33 @@ def test_the_logged_trace_is_bounded(caplog):
     with caplog.at_level("ERROR", logger="leftbrain"):
         assert recurses()["error"] == "internal"
     assert len(caplog.text) < 4000 and caplog.text.count("in down") <= 3
+
+
+# --- the global response ceiling ---------------------------------------------
+
+
+@tool
+def _returns(payload):
+    return ok(payload)
+
+
+def test_a_result_too_big_to_send_becomes_too_large(monkeypatch):
+    monkeypatch.setenv("LEFTBRAIN_MAX_RESPONSE_BYTES", "2048")
+    r = _returns({"rows": ["x" * 100] * 100})
+    assert r["ok"] is False and r["error"] == "too_large" and r["retryable"] is False
+    assert r["details"]["response_bytes"] > r["details"]["limit_bytes"] == 2048
+    assert r["details"]["tool"] == "_returns"
+
+
+def test_a_result_that_fits_is_returned_unchanged(monkeypatch):
+    monkeypatch.setenv("LEFTBRAIN_MAX_RESPONSE_BYTES", "2048")
+    assert _returns({"rows": [1, 2, 3]})["result"] == {"rows": [1, 2, 3]}
+
+
+def test_a_failure_is_never_measured(monkeypatch):
+    """Refusing a refusal for being long would leave the caller with nothing to read."""
+    monkeypatch.setenv("LEFTBRAIN_MAX_RESPONSE_BYTES", "10")
+    assert fail("invalid_input", "a message comfortably over ten bytes")["error"] == "invalid_input"
 
 
 # --- a call that never reaches the tool --------------------------------------

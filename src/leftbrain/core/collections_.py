@@ -11,13 +11,15 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..contract import Ambiguous, ToolError, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, ok, tool
 from .numbers import _dec_str, parse_number
 
 MODES = ("set_ops", "group_by", "pick_fields", "flatten", "unflatten", "paginate", "find_duplicates", "sort_by", "aggregate", "chunk", "filter", "pivot", "running", "outliers", "summarize", "to_csv")
 
 #: Above this many rows a CSV or record table is refused rather than answered slowly or partially.
 MAX_ROWS = 5000
+#: Distinct values of 'pivot_columns' that may become columns.
+MAX_PIVOT_COLUMNS = 200
 #: Row-shaped results of the table modes echo at most this many rows (`to_csv` is exempt: the rows are the answer).
 ECHO_ROWS = 500
 
@@ -753,6 +755,14 @@ def _pivot(t: Table, p: dict[str, Any]) -> dict[str, Any]:
         if t.types[column] != "number" and agg != "count":
             raise ToolError(f"field '{column}' is {t.types[column]}, not numeric; only count applies")
     decimals = _dec_note(p, a)
+    distinct = len({_label(r[across]) for r in t.rows})
+    if distinct > MAX_PIVOT_COLUMNS:
+        raise TooLarge(
+            f"'{across}' has {distinct:,} distinct values, so the table would have that many columns; "
+            f"the limit is {MAX_PIVOT_COLUMNS:,}",
+            details={"pivot_columns": across, "distinct": distinct, "limit": MAX_PIVOT_COLUMNS},
+            hint="Group the field into fewer buckets first, or pivot on a lower-cardinality field.",
+        )
     cells: dict[tuple[Any, ...], dict[str, list[Any]]] = {}
     labels: dict[str, Any] = {}
     for r in t.rows:
