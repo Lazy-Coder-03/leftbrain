@@ -504,7 +504,8 @@ CONTRACT_NOTE = (
     "defaults after your arguments were discarded. <code>math</code>, <code>text</code>, "
     "<code>validate</code>, <code>collections</code> and <code>numbers</code> run in a worker "
     "process with a 15-second ceiling; a call that reaches it comes back as <code>timeout</code> "
-    "with <code>retryable: false</code>. "
+    "with <code>retryable: false</code>. Every response also carries <code>meta</code> — what the "
+    "call cost, the version, and what the key has left. "
     "<code>retryable</code> says whether an identical retry could ever succeed — only "
     "<code>busy</code> is <code>true</code> by default.</div>"
 )

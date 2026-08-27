@@ -242,7 +242,12 @@ def test_scoped_key_over_http(tmp_path, json_response):
 
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="math", arguments={"expr": "1+1"}))
         assert denied["isError"] is False
-        assert denied["structuredContent"] == {"ok": False, "error": "forbidden", "message": "this key may not call math; allowed: numbers, holidays (list, check), weather", "retryable": False}
+        contract_only = {k: v for k, v in denied["structuredContent"].items() if k != "meta"}
+        assert contract_only == {"ok": False, "error": "forbidden", "message": "this key may not call math; allowed: numbers, holidays (list, check), weather", "retryable": False}
+        # every response now carries what it cost, and what the key has left (#28 §6)
+        meta = denied["structuredContent"]["meta"]
+        assert meta["tool"] == "math" and meta["version"] and isinstance(meta["latency_ms"], int)
+        assert meta["quota"]["daily_quota"] == 1000 and meta["request_id"]
         assert json.loads(denied["content"][0]["text"])["error"] == "forbidden"
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="holidays", arguments={"mode": "next", "region": "IN"}))
         assert denied["structuredContent"]["error"] == "forbidden" and "mode 'next'" in denied["structuredContent"]["message"]

@@ -8,6 +8,14 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Added
 
+- **Every response says what it cost** (#28 §6): a `meta` block with `tool`, `mode`,
+  `latency_ms` (wall time in the server), `compute_ms` (time in the engine), `version`,
+  `truncated` — lifted out of the result so a caller reading a list knows it is not the whole
+  list — plus `request_id` and `quota` when the server has them. `X-Request-Id` and
+  `X-Leftbrain-Latency-Ms` carry the first two as headers; a caller-supplied `X-Request-Id` is
+  kept so one id spans both sides of a trace. `meta` never affects `ok`, and `compute_ms` is
+  the regression alarm for the compute ceiling: a response whose `compute_ms` exceeds its own
+  deadline is a timeout that did not fire.
 - **A 15-second ceiling enforced by killing the work** (#28 §1 step 3). `math`, `text`,
   `validate`, `collections` and `numbers` calls now run in a worker process that can be
   terminated, because a thread cannot be: `int.__pow__`, `sre` and `difflib` are C loops that

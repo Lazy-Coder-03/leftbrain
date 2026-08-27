@@ -181,6 +181,15 @@ def _call(tool: str, mode: str, params: dict[str, Any]) -> dict[str, Any]:
     return leftbrain.TOOLS[tool](mode, **params)
 
 
+def _timed(fn: Any, mode: str, params: dict[str, Any]) -> dict[str, Any]:
+    """Run in this process, still reporting what it cost (#28 SS6)."""
+    started = time.monotonic()
+    out = fn(mode, **params)
+    if isinstance(out, dict):
+        out["compute_ms"] = round((time.monotonic() - started) * 1000)
+    return out
+
+
 def run_guarded(tool: str, mode: str, params: dict[str, Any], *, timeout: float | None = None) -> dict[str, Any]:
     """Run one tool call under a deadline that is enforced by killing the worker.
 
@@ -191,10 +200,10 @@ def run_guarded(tool: str, mode: str, params: dict[str, Any], *, timeout: float 
     import leftbrain
 
     if not settings.enabled:
-        return leftbrain.TOOLS[tool](mode, **params)
+        return _timed(leftbrain.TOOLS[tool], mode, params)
     pool = _get_pool()
     if pool is None:
-        return leftbrain.TOOLS[tool](mode, **params)
+        return _timed(leftbrain.TOOLS[tool], mode, params)
     deadline = settings.timeout if timeout is None else min(float(timeout), settings.timeout)
     started = time.monotonic()
     try:
@@ -208,7 +217,10 @@ def run_guarded(tool: str, mode: str, params: dict[str, Any], *, timeout: float 
             hint="Retry in a moment.",
         )
     try:
-        return future.result(timeout=deadline + settings.queue_timeout)
+        out = future.result(timeout=deadline + settings.queue_timeout)
+        if isinstance(out, dict):
+            out["compute_ms"] = round((time.monotonic() - started) * 1000)
+        return out
     except FutureTimeout:
         future.cancel()
         elapsed = round(time.monotonic() - started, 2)
