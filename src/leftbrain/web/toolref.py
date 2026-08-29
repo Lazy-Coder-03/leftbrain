@@ -765,9 +765,13 @@ MATH = ToolDoc(
             description=(
                 "The default entry point. Parses and evaluates an arithmetic or symbolic expression, "
                 "simplifying symbolic results and expanding numeric ones. Human notation is understood: "
-                "`15% of 200`, `12^2`, `×`, `÷`, `√`, `π`, `∞`, `3∠45` for a phasor, `°` for degrees. "
+                "`15% of 200`, `12^2`, `×`, `÷`, `√`, `π`, `∞`, `3∠45` for a phasor, `°` for degrees, "
+                "and `8,45,000` or `845,000` for grouped digits (inside a call, commas still separate "
+                "arguments). A decimal literal is the rational it prints as, so `0.1 + 0.2 - 0.3` is `0`. "
                 "The result carries `exact`, `decimal`, `latex` and — for rationals — `numerator` and "
-                "`denominator`; complex results add modulus and argument."
+                "`denominator`; complex results add modulus and argument. When the exact form would "
+                "run to more digits than can be returned, as `(1 + 1/10^6)^(10^6)` does, only the "
+                "decimal is returned and `warnings` says so."
             ),
             params=(
                 Param("expr", "The expression to evaluate.", required=True),
@@ -783,7 +787,8 @@ MATH = ToolDoc(
             description=(
                 "Same parsing as `eval`, but the result is forced through `nsimplify` and the decimal "
                 "form is dropped. Use it when a decimal would be a lie — recovering `3/10` from "
-                "`0.1 + 0.2`, or keeping a radical as a radical."
+                "`0.1 + 0.2`, or keeping a radical as a radical. An exact form too big to return is "
+                "refused as `too_large` before it is built; `eval` with `precision` gives the decimal."
             ),
             params=(
                 Param("expr", "The expression to evaluate.", required=True),
@@ -810,8 +815,11 @@ MATH = ToolDoc(
             name="expand",
             purpose="Multiply out products and powers.",
             description=(
-                "Distributes products over sums and expands integer powers. The inverse of `factor`; "
-                "use it to get a polynomial in standard form before comparing two expressions."
+                "Distributes products over sums, expands integer powers, and applies the trigonometric "
+                "sum and multiple-angle identities (`sin(2x)` becomes `2 sin(x) cos(x)`). The inverse of "
+                "`factor`; use it to get a polynomial in standard form before comparing two expressions. "
+                "A logarithm of a product is left alone, since `log(ab) = log(a) + log(b)` needs positive "
+                "arguments, and `assumptions` says so; an expression that was already expanded says that too."
             ),
             params=(
                 Param("expr", "The expression to expand.", required=True),
@@ -821,10 +829,13 @@ MATH = ToolDoc(
         ),
         Mode(
             name="factor",
-            purpose="Factorise a polynomial over the rationals.",
+            purpose="Factorise a polynomial over the rationals, or an integer into primes.",
             description=(
                 "Factors a polynomial into irreducible factors over the rationals. Returns the factored "
-                "form in `value` and LaTeX; if nothing factors, the input comes back unchanged."
+                "form in `value` and LaTeX; if nothing factors, the input comes back unchanged and "
+                "`assumptions` says it is irreducible. A bare integer is factorised into primes: "
+                "`12` gives `2**2*3` with the exponents in `factors`. It takes an expression, not an "
+                "equation — `x^2 - 5x + 6`, without the `= 0`."
             ),
             params=(
                 Param("expr", "The expression to factor.", required=True),
@@ -842,7 +853,10 @@ MATH = ToolDoc(
                 "and returns `needs.options`. `domain` narrows the search to real, integer or positive "
                 "solutions — with no domain, variables are complex. When no closed form exists — a "
                 "degree-40 polynomial, say — the roots are found numerically instead, said so in "
-                "`assumptions`; “no solutions found” was the one answer that could not be true."
+                "`assumptions`; “no solutions found” was the one answer that could not be true. "
+                "An equation with no solutions in the domain is still `ok`, with an empty list and a "
+                "line in `assumptions` saying how many roots exist elsewhere: `x^2 + 1 = 0` over the "
+                "reals reports its two complex roots and how to see them."
             ),
             params=(
                 Param("equations", "The equations. A single string is accepted.", default="—"),
@@ -920,7 +934,8 @@ MATH = ToolDoc(
             purpose="Solve an ordinary differential equation.",
             description=(
                 "Solves an ODE written in ordinary notation: primes (`y'`, `y''`) and `dy/dx` are both "
-                "understood. `func` names the unknown function and its independent variable. Initial "
+                "understood, with or without a `*` after a coefficient (`y'' + 4y' + 4y = 0`). `func` "
+                "names the unknown function and its independent variable. Initial "
                 "conditions go in `ics` keyed by `y(0)` / `y'(0)`. The response includes SymPy's "
                 "classification of the equation."
             ),

@@ -16,6 +16,7 @@ import math as _pymath
 import re
 import sys
 import threading
+import tokenize
 from collections.abc import Callable
 from fractions import Fraction
 from typing import Any
@@ -27,6 +28,7 @@ from sympy.parsing.sympy_parser import (
     implicit_application,
     implicit_multiplication,
     parse_expr,
+    rationalize,
     standard_transformations,
 )
 
@@ -92,10 +94,15 @@ MAX_NUMERIC_DEGREE = 200
 # --------------------------------------------------------------------------- #
 
 _TRANSFORMS = standard_transformations + (
+    # A decimal literal is the rational it prints as: 0.1 is 1/10, not the binary float
+    # 0.1000000000000000055…, so `0.1 + 0.2 - 0.3` is 0 and not 5.55e-17 (#52 §1).
+    rationalize,
     convert_xor,
     implicit_multiplication,
     implicit_application,
 )
+#: What an unevaluated parse spells its tree with; only the numeric fallback needs them.
+_UNEVALUATED_NAMES = {"Add": sp.Add, "Mul": sp.Mul, "Pow": sp.Pow}
 
 _DEG = sp.pi / 180
 
@@ -297,11 +304,50 @@ _ROOT_BARE = re.compile(r"√\s*(\d+(?:\.\d+)?|[A-Za-z_]\w*)")
 #: `0^0` written any of the ways the parser accepts.
 _ZERO_POWER_ZERO = re.compile(r"(?<![\d.])0\s*(?:\^|\*\*)\s*0(?![\d.])")
 
+#: A digit run with grouping commas: `845,000`, `1,000,000`, or Indian `8,45,000` (two-digit
+#: groups after the first, three at the end). The last group must be exactly three digits, so
+#: `3,14` is not one.
+_GROUPED = re.compile(r"(?<![\w.])\d{1,3}(?:,\d{2,3})*,\d{3}(?!\d)")
+#: An identifier directly before `(` - the bracket opens a call's argument list.
+_CALL_BEFORE = re.compile(r"[A-Za-z_]\w*\s*$")
+#: A bare `=` or `==`; `<=`, `>=` and `!=` are comparisons and pass.
+_EQUALS = re.compile(r"(?<![<>!])={1,2}(?!=)")
+
+
+def _strip_grouping_commas(s: str) -> tuple[str, list[str]]:
+    """Read `8,45,000` as one number.
+
+    Python's parser reads a comma as a tuple separator, so `17.5% of 8,45,000` came back as
+    five numbers with no warning (#52 §2). A grouping-shaped run outside any call becomes
+    one number; inside a call's brackets the comma keeps separating arguments, since
+    `max(10,200)` is what it looks like.
+    """
+    if "," not in s:
+        return s, []
+    stack: list[int] = []
+    opener: list[int | None] = []
+    for i, ch in enumerate(s):
+        opener.append(stack[-1] if stack else None)
+        if ch in "([{":
+            stack.append(i)
+        elif ch in ")]}" and stack:
+            stack.pop()
+    seen: list[str] = []
+
+    def sub(m: re.Match[str]) -> str:
+        o = opener[m.start()]
+        if o is not None and (s[o] != "(" or _CALL_BEFORE.search(s[:o])):
+            return m.group(0)
+        seen.append(m.group(0))
+        return m.group(0).replace(",", "")
+
+    out = _GROUPED.sub(sub, s)
+    return out, ([f"commas in {', '.join(seen)} read as digit grouping"] if seen else [])
+
 
 def _preprocess(src: str) -> tuple[str, list[str]]:
     """Normalise human/LLM-written math into parser-friendly text."""
-    assumptions: list[str] = []
-    s = src.strip()
+    s, assumptions = _strip_grouping_commas(src.strip())
     # `√` becomes `sqrt`, and implicit multiplication then reads `sqrt2` as one symbol -
     # so `√2 × π ÷ 3` produced a symbol called sqrt2 (#28 SS3.10). Bracket the operand while
     # the sign is still there and unambiguous.
@@ -431,6 +477,59 @@ def _size_of(node: ast.AST) -> float | None:
     return None
 
 
+def _shape_of(node: ast.AST) -> tuple[float, float] | None:
+    """Estimated digits in the (numerator, denominator) of the exact rational ``node`` is.
+
+    The magnitude estimate above is blind to this: `(1+1/10^6)^10^6` is about 2.7, and
+    also a six-million-digit integer over another, which took the hosted server to its
+    deadline to build and could never have been printed (#52 §3). ``None`` when the node
+    is not a literal rational.
+    """
+    if isinstance(node, ast.Constant):
+        v = node.value
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            return None
+        if isinstance(v, int):
+            return _digits(v), 0.0
+        try:
+            f = Fraction(repr(v))
+        except (ValueError, OverflowError):  # inf, nan
+            return None
+        return _digits(f.numerator), _digits(f.denominator)
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return _shape_of(node.operand)
+    if isinstance(node, ast.BinOp):
+        a, b = _shape_of(node.left), _shape_of(node.right)
+        if a is None or b is None:
+            return None
+        op = type(node.op)
+        if op in (ast.Add, ast.Sub):
+            return max(a[0] + b[1], b[0] + a[1]) + 1, a[1] + b[1]
+        if op is ast.Mult:
+            return a[0] + b[0], a[1] + b[1]
+        if op is ast.Div:
+            return a[0] + b[1], a[1] + b[0]
+        if op is ast.Pow:
+            e = _value_of(node.right)
+            if e is None or not float(e).is_integer():
+                return None
+            num, den = (a[1], a[0]) if e < 0 else a
+            return abs(e) * num, abs(e) * den
+    return None
+
+
+class _ExactTooLarge(TooLarge):
+    """The value fits, but its exact rational form would not."""
+
+    def __init__(self, digits: float):
+        self.digits = int(digits)
+        super().__init__(
+            f"the exact form would have about {self.digits:,} digits, more than the {MAX_RESULT_DIGITS:,} that can be returned",
+            details={"estimated_exact_digits": self.digits, "limit_digits": MAX_RESULT_DIGITS},
+            hint="Use mode='eval' with precision=N for a decimal answer, or reduce the exponent.",
+        )
+
+
 def _check_result_size(s: str) -> None:
     """Refuse an expression whose answer could not be returned, before evaluating it."""
     try:
@@ -439,17 +538,19 @@ def _check_result_size(s: str) -> None:
         return  # not Python-shaped (implicit multiplication, factorials); SymPy will judge it
     try:
         digits = _size_of(tree.body)
+        shape = _shape_of(tree.body)
     except RecursionError:
         return
-    if digits is None or digits <= MAX_RESULT_DIGITS:
-        return
-    estimated = f"more than 10^{_UNBOUNDED_EXPONENT_DIGITS}" if digits == _ASTRONOMICAL else int(digits)
-    raise TooLarge(
-        f"the result would have {estimated if isinstance(estimated, str) else format(estimated, ',')} digits; "
-        f"the most that can be returned is {MAX_RESULT_DIGITS:,}",
-        details={"estimated_digits": estimated, "limit_digits": MAX_RESULT_DIGITS},
-        hint="Reduce the exponent, or evaluate a smaller sub-expression.",
-    )
+    if digits is not None and digits > MAX_RESULT_DIGITS:
+        estimated = f"more than 10^{_UNBOUNDED_EXPONENT_DIGITS}" if digits == _ASTRONOMICAL else int(digits)
+        raise TooLarge(
+            f"the result would have {estimated if isinstance(estimated, str) else format(estimated, ',')} digits; "
+            f"the most that can be returned is {MAX_RESULT_DIGITS:,}",
+            details={"estimated_digits": estimated, "limit_digits": MAX_RESULT_DIGITS},
+            hint="Reduce the exponent, or evaluate a smaller sub-expression.",
+        )
+    if shape is not None and max(shape) > MAX_RESULT_DIGITS:
+        raise _ExactTooLarge(max(shape))
 
 
 def _bounded(raw: Any, field: str, cap: int, unit: str) -> int:
@@ -469,13 +570,14 @@ def _bounded(raw: Any, field: str, cap: int, unit: str) -> int:
     return n
 
 
-def _check_safe(s: str) -> None:
+def _check_safe(s: str, *, size: bool = True) -> None:
     if len(s) > MAX_EXPR_LEN:
         raise ToolError(f"expression too long (> {MAX_EXPR_LEN} chars)")
     m = _FORBIDDEN.search(s)
     if m:
         raise ToolError(f"disallowed token in expression: {m.group(0)!r}")
-    _check_result_size(s)
+    if size:
+        _check_result_size(s)
 
 
 def _parse(
@@ -483,11 +585,27 @@ def _parse(
     *,
     angle: str | None = None,
     local: dict[str, Any] | None = None,
+    numeric: bool = False,
 ) -> tuple[Any, list[str]]:
+    """Parse ``src`` into a SymPy object.
+
+    ``numeric`` leaves the tree unevaluated, for a caller that will take ``N()`` of it
+    because the exact form is too big to build (#52 §3).
+    """
     if not isinstance(src, str) or not src.strip():
         raise ToolError("expression is empty")
     s, assumptions = _preprocess(src)
-    _check_safe(s)
+    if (m := _EQUALS.search(s)) is not None:
+        # `factor` a minute after `solve` on the same polynomial is an easy slip; CPython's
+        # `invalid syntax (<string>, line 1)` said nothing useful about it (#52 §8).
+        raise ToolError(
+            f"{src!r} is an equation, but this takes an expression: drop the '{s[m.start():].strip()}' part",
+            hint="To solve it, use mode='solve' with equations=[...].",
+        )
+    if numeric:
+        _check_safe(s, size=False)  # the size was judged by the evaluated parse that sent us here
+    else:
+        _check_safe(s)
     unknown = sorted({m.group(1) for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", s) if m.group(1) not in _SAFE_NAMES and m.group(1) not in (local or {})})
     if unknown:
         raise ToolError(f"unknown function(s): {', '.join(unknown)}")
@@ -495,14 +613,25 @@ def _parse(
         expr = parse_expr(
             s,
             local_dict=dict(local or {}),
-            global_dict=dict(_SAFE_NAMES),
+            global_dict={**_SAFE_NAMES, **(_UNEVALUATED_NAMES if numeric else {})},
             transformations=_TRANSFORMS,
+            evaluate=not numeric,
         )
-    except (SyntaxError, TypeError, ValueError, AttributeError, sp.SympifyError) as e:
+    except SyntaxError as e:
+        raise ToolError(f"could not parse {src!r}: {e.msg}") from None  # not str(e): that carries `(<string>, line 1)`
+    except tokenize.TokenError as e:
+        why = "unbalanced brackets or an unfinished expression" if "EOF" in str(e.args[0]) else str(e.args[0])
+        raise ToolError(f"could not parse {src!r}: {why}") from None
+    except (TypeError, ValueError, AttributeError, sp.SympifyError) as e:
         raise ToolError(f"could not parse {src!r}: {e}") from None
     except Exception as e:  # tokenizer errors etc.
         raise ToolError(f"could not parse {src!r}: {type(e).__name__}: {e}") from None
 
+    if isinstance(expr, (tuple, list, sp.Tuple)):
+        raise ToolError(
+            f"{src!r} is {len(expr)} comma-separated values, not one expression",
+            hint="A comma is read as a list separator. Write a decimal with a point (3.14); digits grouped in threes (3,140 or 1,20,000) are read as one number.",
+        )
     if isinstance(expr, sp.Basic):
         undef = [f for f in expr.atoms(AppliedUndef)]
         if undef and not (local and any(str(f.func) in local for f in undef)):
@@ -718,7 +847,26 @@ def _check_defined(expr: Any, src: str) -> None:
 
 
 def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle"))
+    precision = p.get("precision", 15)
+    try:
+        expr, assumptions = _parse(p["expr"], angle=p.get("angle"))
+    except _ExactTooLarge as e:
+        if exact_only:
+            raise
+        # The caller asked for `precision` digits, not six million: take the tree
+        # unevaluated and go straight to a decimal (#52 §3).
+        expr, assumptions = _parse(p["expr"], angle=p.get("angle"), numeric=True)
+        value = sp.N(expr, precision)
+        _check_defined(value, p["expr"])
+        d = _describe(value, precision)
+        for k in ("exact", "fraction", "numerator", "denominator", "integer"):
+            d.pop(k, None)
+        d["approximate"] = True
+        return ok(
+            d,
+            assumptions=assumptions,
+            warnings=[f"the exact form would have about {e.digits:,} digits, so only the decimal is returned"],
+        )
     subs: dict[str, Any] = {}
     if p.get("vars"):
         for k, v in p["vars"].items():
@@ -733,15 +881,64 @@ def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
         # SymPy returns 1, which is the usual convention and not the only one: the limit
         # of x^y at the origin depends on the path. Say which was used (#28 SS2c).
         assumptions.append("0^0 taken as 1, the combinatorial convention; as a limit it is indeterminate")
-    d = _describe(expr, p.get("precision", 15))
+    d = _describe(expr, precision)
     if exact_only:
         d.pop("decimal", None)
     return ok(d, assumptions=assumptions)
 
 
-def _mode_transform(p: dict[str, Any], fn: Callable[[Any], Any]) -> dict[str, Any]:
+def _factor_integer(n: sp.Integer, precision: int) -> dict[str, Any]:
+    """`factor 12` is `2**2 * 3`. SymPy's factor() hands an integer straight back, and nothing
+    else in leftbrain factorises one (#52 §7)."""
+    if abs(n) <= 1:
+        return ok(_describe(n, precision), assumptions=[f"{n} has no prime factors"])
+    primes = sp.factorint(abs(n))
+    # spelled by hand: SymPy's printer reorders an unevaluated product (-360 came out -5*2**3*3**2)
+    sign = "-" if n < 0 else ""
+    value = sign + "*".join(f"{q}**{e}" if e > 1 else str(q) for q, e in sorted(primes.items()))
+    latex = sign + r" \cdot ".join(f"{q}^{{{e}}}" if e > 1 else str(q) for q, e in sorted(primes.items()))
+    return ok(
+        {
+            "value": value,
+            "latex": latex,
+            "type": "factorization",
+            "integer": int(n),
+            "factors": {str(q): int(e) for q, e in sorted(primes.items())},
+            "prime": len(primes) == 1 and next(iter(primes.values())) == 1 and n > 0,
+        }
+    )
+
+
+def _mode_transform(p: dict[str, Any], *, mode: str) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
-    return ok(_describe(fn(expr), p.get("precision", 15)), assumptions=assumptions)
+    precision = p.get("precision", 15)
+    if mode == "expand":
+        # SymPy's default is trig=False, so sin(2x) came back untouched while exp(x+y)
+        # split - both are "a function of a sum", and the identity holds unconditionally (#52 §6).
+        res = sp.expand(expr, trig=True)
+    elif mode == "factor":
+        if isinstance(expr, sp.Integer):
+            return _factor_integer(expr, precision)
+        res = sp.factor(expr)
+    else:
+        res = sp.simplify(expr)
+    # A result that equals the input is easy to misread as "this mode does not do that";
+    # say which it is (#52 §6).
+    held: list[str] = []
+    if mode == "expand" and isinstance(res, sp.Basic):
+        held = sorted(str(lg) for lg in res.atoms(sp.log) if isinstance(lg.args[0], (sp.Mul, sp.Pow)) and lg.free_symbols)
+    if isinstance(res, sp.Basic) and res == expr:
+        if mode == "expand":
+            if not held:
+                assumptions.append("already fully expanded")
+        elif mode == "factor":
+            polynomial = bool(expr.free_symbols) and expr.is_polynomial(*expr.free_symbols)
+            assumptions.append("irreducible over the rationals: no factorisation with rational coefficients exists" if polynomial else "no factorisation found")
+        else:
+            assumptions.append("already in simplest form, as far as simplify() can tell")
+    if held:
+        assumptions.append(f"{', '.join(held)} left as is: log(a*b) = log(a) + log(b) only holds for positive a, b, and no sign is known")
+    return ok(_describe(res, precision), assumptions=assumptions)
 
 
 def _split_eq(s: str) -> Any:
@@ -784,6 +981,7 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
                 field="vars",
                 options=[str(s) for s in syms],
             )
+    plain_eqs, plain_syms = list(eqs), list(syms)  # before the domain is imposed; see _no_solutions
     if domain == "real":
         real_syms = {s: sp.Symbol(str(s), real=True) for s in syms}
         eqs = [e.subs(real_syms) for e in eqs]
@@ -805,6 +1003,11 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("domain must be one of complex, real, integer, positive")
 
     precision = p.get("precision", 15)
+    if any(e is sp.false for e in eqs):
+        # Imposing the domain settled it at once: with x real, SymPy knows x^2 + 1 is
+        # positive and `Eq(x^2 + 1, 0)` is simply False. That is an answer - no solutions
+        # here - not a failure to find them (#52 §5).
+        return _no_solutions(domain, plain_eqs, plain_syms, precision, assumptions)
     is_ineq = any(e.is_Relational and not isinstance(e, sp.Eq) for e in eqs)
     try:
         if is_ineq:
@@ -834,23 +1037,52 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
     if not solutions:
         # A degree-40 polynomial has 40 complex roots. "no solutions found" said the
         # opposite of the truth; what solve() means is "no closed form" (#28 SS2d).
-        numeric = _numeric_roots(eqs, syms, precision)
-        if numeric is not None:
+        numeric = _numeric_roots(eqs, syms, precision, domain)
+        if numeric:
             return ok(
                 {"solutions": numeric, "count": len(numeric)},
                 assumptions=assumptions + ["no closed form exists, so the roots were found numerically (nroots)"],
                 warnings=["these are numeric approximations, not exact values"],
             )
+        if numeric is not None:  # a polynomial whose roots all lie outside the domain
+            return _no_solutions(domain, plain_eqs, plain_syms, precision, assumptions)
         raise Unsupported(
-            "no closed form exists for this equation and its roots could not be found numerically",
+            "solve() found no solutions, and the equation is not a polynomial whose roots could be searched numerically",
             details={"equations": [str(e) for e in eqs]},
             hint="Try mode='solve' on a simpler form, or evaluate the expression at points with plot_points.",
         )
     return ok({"solutions": solutions, "count": len(solutions)}, assumptions=assumptions, warnings=warnings)
 
 
-def _numeric_roots(eqs: list[Any], syms: list[Any], precision: int) -> list[dict[str, Any]] | None:
-    """Roots of a single univariate polynomial, when no closed form exists."""
+def _no_solutions(domain: str, plain_eqs: list[Any], plain_syms: list[Any], precision: int, assumptions: list[str]) -> dict[str, Any]:
+    """An empty answer that says where the roots went: `x^2 + 1 = 0` has none over ℝ and two over ℂ."""
+    note = f"no {domain} solutions"
+    if domain not in ("complex", "c"):
+        elsewhere = _numeric_roots(plain_eqs, plain_syms, precision, "complex")
+        if elsewhere:
+            n = len(elsewhere)
+            note += f"; {n} complex root{'s' if n != 1 else ''} exist (domain='complex' to see them)"
+    return ok({"solutions": [], "count": 0}, assumptions=assumptions + [note])
+
+
+def _in_domain(root: Any, domain: str) -> bool:
+    if domain in ("complex", "c"):
+        return True
+    if not root.is_real:
+        return False
+    if domain == "positive":
+        return bool(root > 0)
+    if domain in ("integer", "z"):
+        return bool(abs(root - sp.Integer(round(root))) < sp.Float("1e-9"))
+    return True
+
+
+def _numeric_roots(eqs: list[Any], syms: list[Any], precision: int, domain: str = "complex") -> list[dict[str, Any]] | None:
+    """Roots of a single univariate polynomial, when no closed form exists.
+
+    ``None`` when the equation is not one; an empty list when it is, but none of its
+    roots lie in ``domain`` - four complex roots are not real solutions (#52 §5).
+    """
     if len(eqs) != 1 or len(syms) != 1:
         return None
     eq = eqs[0]
@@ -865,7 +1097,7 @@ def _numeric_roots(eqs: list[Any], syms: list[Any], precision: int) -> list[dict
         roots = poly.nroots(n=min(precision, 15), maxsteps=100)
     except Exception:
         return None
-    return [{str(syms[0]): _describe(r, precision)} for r in roots]
+    return [{str(syms[0]): _describe(r, precision)} for r in roots if _in_domain(r, domain)]
 
 
 def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
@@ -941,7 +1173,10 @@ def _mode_series(p: dict[str, Any]) -> dict[str, Any]:
     return ok(d, assumptions=assumptions)
 
 
-_PRIMES = re.compile(r"\b([A-Za-z_]\w*)('+)")
+#: `y''` - a name and its primes. No `\b` before the name: `4y'` has no word boundary
+#: between the coefficient and the function, and the prime then reached the token
+#: guard (#52 §4).
+_PRIMES = re.compile(r"(?<![A-Za-z_])([A-Za-z_]\w*)('+)")
 
 
 def _mode_ode(p: dict[str, Any]) -> dict[str, Any]:
@@ -966,7 +1201,7 @@ def _mode_ode(p: dict[str, Any]) -> dict[str, Any]:
         return f"Derivative({fname}({xname}),({xname},{primes}))"
 
     s = _PRIMES.sub(_prime, s)
-    s = re.sub(rf"\b{fname}\b(?!\s*\()", f"{fname}({xname})", s)
+    s = re.sub(rf"(?<![A-Za-z_]){fname}(?!\w)(?!\s*\()", f"{fname}({xname})", s)  # `4y` too, not only `4*y`
     local = {fname: f, xname: x}
     if "=" in s:
         lhs, rhs = s.split("=", 1)
@@ -1409,9 +1644,9 @@ def math(mode: str = "eval", **params: Any) -> dict[str, Any]:
     dispatch: dict[str, Callable[[], dict[str, Any]]] = {
         "eval": lambda: _mode_eval(p, exact_only=False),
         "exact": lambda: _mode_eval(p, exact_only=True),
-        "simplify": lambda: _mode_transform(p, sp.simplify),
-        "expand": lambda: _mode_transform(p, sp.expand),
-        "factor": lambda: _mode_transform(p, sp.factor),
+        "simplify": lambda: _mode_transform(p, mode="simplify"),
+        "expand": lambda: _mode_transform(p, mode="expand"),
+        "factor": lambda: _mode_transform(p, mode="factor"),
         "solve": lambda: _mode_solve(p),
         "diff": lambda: _mode_diff(p),
         "integrate": lambda: _mode_integrate(p),
@@ -1543,7 +1778,7 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
             "args": {"mode": "solve", "equations": ["x + y = 10", "x - y = 2"]},
         },
         {
-            "caption": "Restricting the domain to the reals — the complex roots are dropped and the empty result is flagged in `warnings`.",
+            "caption": "Restricting the domain to the reals: the empty result is still `ok`, and `assumptions` says where the roots went.",
             "args": {"mode": "solve", "equations": ["x^2 + 1 = 0"], "domain": "real"},
         },
         {

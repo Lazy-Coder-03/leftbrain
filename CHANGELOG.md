@@ -8,6 +8,42 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **`math` read a decimal literal as a binary float.** `exact` on `0.1 + 0.2 - 0.3` returned
+  `277555756156289/5000000000000000000000000000000`: the IEEE-754 rounding error, faithfully
+  rationalised. A decimal literal is now the rational it prints as, in every mode, so the sum
+  is `0`, `0.1 * 3` is exactly `3/10` and `2^0.5` is `sqrt(2)`.
+- **`math` read grouped digits as a tuple.** `17.5% of 8,45,000 + 12% of 1,20,000` came back as
+  five numbers with no warning. Indian and Western grouping (`8,45,000`, `845,000`,
+  `1,000,000`) is read as one number, with a line in `assumptions`; inside a call's brackets a
+  comma still separates arguments. Anything else that parses to a list — `3,14` — is refused
+  with the two spellings that would be read as one number, rather than evaluated as a tuple.
+- **A rational power ran to the deadline.** `(1+1/1000000)^1000000` is about 2.718 and also a
+  seven-million-digit integer over another; the size estimate measured the value and let it
+  through, and the hosted server built the rational until the 15 s kill. The estimate now
+  measures the exact form too. `eval` takes the tree unevaluated and returns the decimal the
+  caller asked for, with `warnings` saying why there is no `exact`; `exact` refuses as
+  `too_large` in a millisecond and points at `eval`.
+- **`ode` rejected the syntax its own docstring documents.** `y'' + 4y' + 4y = 0` failed the
+  token guard with `disallowed token: "'"`, because the prime rewrite wanted a word boundary
+  before `y` and there is none after a coefficient. The documented form now works, as does
+  `4y` for `4*y(x)`.
+- **`solve` reported "no real solutions" as a numeric failure.** `x^2 + 1 = 0` with
+  `domain=real` answered `unsupported` — "no closed form exists and its roots could not be found
+  numerically" — with `equations: ["False"]` leaking out. Neither half was true. It is now `ok`
+  with an empty list, and `assumptions` says `no real solutions; 2 complex roots exist
+  (domain='complex' to see them)`. The numeric fallback also respects the domain: the four
+  complex roots of `x^4 - 2x^2 + 3` are no longer offered as real solutions.
+- **`expand` never expanded trigonometry, and said nothing.** `sin(2*x)` came back untouched
+  while `exp(x + y)` split. The multiple-angle and sum identities are applied now; `log(x*y)`
+  is left alone, correctly, and `assumptions` says why. `expand`, `factor` and `simplify` all
+  say so when they return the input unchanged, so "already in simplest form" and "this mode
+  does not do that" can be told apart.
+- **`factor` returned an integer unchanged.** `factor 12` is now `2**2*3`, with the primes and
+  exponents in `factors` and `prime: true` for a prime.
+- **`factor` on an equation surfaced CPython's parser.** `x^2 - 5*x + 6 = 0` answered
+  `invalid syntax (<string>, line 1)`. A bare `=` where an expression is expected now says to
+  drop the `= 0` and points at `solve`; no parse failure carries the `(<string>, line 1)`
+  artefact any more, and unbalanced brackets are called that.
 - **The loading skeleton replaces the page instead of covering it.** The outgoing page was faded
   to a quarter and the skeleton laid over the top, so both were on screen at once and the text
   showed through the bars. The content now leaves the flow while the next page is on its way and
