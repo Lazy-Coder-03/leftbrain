@@ -22,6 +22,7 @@
         <input type="checkbox" name="scope" value="{{ tool }}" data-tool="{{ tool }}"{% if on %} checked{% endif %}>
         <span>{{ tool }}</span>
       </label>
+      {%- if counts is defined %}<span class="hint calls">{{ counts.get(tool, 0) }} call{{ "" if counts.get(tool, 0) == 1 else "s" }}</span>{% endif %}
       {% if modes %}<span class="count" data-count>{{ picked|length }}/{{ modes|length }}</span>{% endif %}
     </div>
     {% if modes %}

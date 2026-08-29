@@ -39,6 +39,60 @@ def test_signup_limits(tmp_path):
     assert all(keys[:3]) and keys[3] is None  # 3 per IP per day
 
 
+def test_a_verdict_will_not_take_its_key_positionally():
+    """The root cause of the 429-as-500 bug, closed off rather than only tested for.
+
+    `Verdict(False, reason, 429, info)` silently put a KeyInfo in `message`. Everything
+    after `status` is keyword-only now, so that call is a TypeError at the call site
+    instead of a 500 in front of a user.
+    """
+    import pytest
+
+    from leftbrain.keys import Verdict
+
+    with pytest.raises(TypeError):
+        Verdict(False, "rate limit", 429, "a message")
+    ok = Verdict(False, "rate limit", 429, message="a message", remaining=0)
+    assert ok.message == "a message" and ok.key is None
+
+
+def test_a_throttled_key_gets_429_over_http_not_500(tmp_path):
+    """The Verdict carrying the key positionally landed it in `message`, which is not
+    serialisable, so every rate limit and every exhausted quota answered 500."""
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    quota_key, _ = store.create("a@b.co", daily_quota=1, rpm=100)
+    rpm_key, _ = store.create("a@b.co", daily_quota=100, rpm=1)
+    app = build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"),
+                    web_config=WebConfig(client_id=None, client_secret=None, secret=None,
+                                         base_url=None, open_signup=False))
+    with TestClient(app) as c:
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {quota_key}"}).status_code == 200
+        spent = c.get("/keys/me", headers={"Authorization": f"Bearer {quota_key}"})
+        assert spent.status_code == 429
+        assert "quota" in spent.json()["error"] and spent.headers["retry-after"]
+
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {rpm_key}"}).status_code == 200
+        limited = c.get("/keys/me", headers={"Authorization": f"Bearer {rpm_key}"})
+        assert limited.status_code == 429
+        assert "rate limit" in limited.json()["error"] and limited.headers["retry-after"]
+
+
+def test_the_key_cap_is_five_and_still_reads_the_environment(monkeypatch):
+    """Five because a connector now takes a slot; still a number an operator can change."""
+    import importlib
+
+    from leftbrain import keys as keys_mod
+
+    assert keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL == 5
+    monkeypatch.setenv("LEFTBRAIN_MAX_KEYS_PER_EMAIL", "9")
+    try:
+        assert importlib.reload(keys_mod).MAX_ACTIVE_KEYS_PER_EMAIL == 9
+    finally:
+        monkeypatch.delenv("LEFTBRAIN_MAX_KEYS_PER_EMAIL")
+        importlib.reload(keys_mod)
+    assert keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL == 5
+
+
 def test_http_server_with_keys(tmp_path):
     app = build_app(
         include_external=False,
@@ -77,11 +131,11 @@ def test_http_server_static_key():
 
 def test_create_for_owner_cap_and_owns(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
-    made = [store.create_for_owner("Me@Example.com", f"key {i}") for i in range(3)]
+    made = [store.create_for_owner("Me@Example.com", f"key {i}") for i in range(MAX_ACTIVE_KEYS_PER_EMAIL)]
     assert all(raw and raw.startswith("lblz_") for raw, _ in made)
     assert made[0][1].owner == "me@example.com" and made[0][1].note == "key 0"
     raw, reason = store.create_for_owner("me@example.com", None)
-    assert raw is None and "3 active" in reason
+    assert raw is None and f"{MAX_ACTIVE_KEYS_PER_EMAIL} active" in reason
     prefix = made[0][1].prefix
     assert store.owns("me@example.com", prefix) and not store.owns("other@example.com", prefix)
     assert store.set_disabled(prefix, True)
@@ -212,12 +266,12 @@ def test_expired_key_is_rejected_with_403_and_a_dated_message(tmp_path):
 
 def test_expired_keys_do_not_count_towards_the_active_cap(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
-    made = [store.create_for_owner("me@example.com", f"k{i}", lifetime_days=30) for i in range(3)]
+    made = [store.create_for_owner("me@example.com", f"k{i}", lifetime_days=30) for i in range(MAX_ACTIVE_KEYS_PER_EMAIL)]
     assert store.create_for_owner("me@example.com", "full")[0] is None
     _expire(store, made[0][1].prefix, "2026-01-01T00:00:00.000000+00:00")
     raw, info = store.create_for_owner("me@example.com", "replacement", lifetime_days=None)
     assert raw and info.expires_at is None
-    assert store.stats()["active"] == 3
+    assert store.stats()["active"] == MAX_ACTIVE_KEYS_PER_EMAIL
 
 
 def test_expired_key_is_not_revealed(tmp_path):

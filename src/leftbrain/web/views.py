@@ -10,7 +10,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
 from starlette.routing import Route
 
-from ..scopes import CATALOGUE, Scope, parse_scope
+from ..scopes import CATALOGUE, Scope, narrows, parse_scope
 from . import auth, templates
 from .config import WebConfig
 from .tools_list import TOOLS
@@ -39,6 +39,31 @@ def no_store(response: Response) -> Response:
 
 def error_page(request: Request, status: int, title: str, message: str, user: Any = None) -> Response:
     return no_store(render(request, "error.html", status, title=title, message=message, page="error", user=user))
+
+
+def armoured(response: Response) -> Response:
+    """No framing, no caching. A page that grants something inside an iframe is clickjackable."""
+    response.headers["x-frame-options"] = "DENY"
+    response.headers["content-security-policy"] = "frame-ancestors 'none'"
+    return no_store(response)
+
+
+def fail_page_for(request: Request, cfg: WebConfig, status: int, title: str, message: str) -> Response:
+    """`fail_page` for callers outside `routes()`: an error page that keeps the nav signed in."""
+    return error_page(request, status, title, message, user=auth.current_user(request, cfg))
+
+
+def parse_grid_scope(form: Any) -> Scope | None:
+    """The tool grid as posted, read the same way wherever the grid appears.
+
+    An empty tick-list is **not** "every tool". `parse_scope([])` raises and the caller
+    renders that as a form error; substituting `None` here would read "the user chose
+    nothing" as "the user chose everything", which is a one-word mistake that fails open.
+    """
+    values = [str(v) for v in form.getlist("scope")]
+    ticked = {v for v in values if ":" not in v}
+    values = [v for v in values if ":" not in v or v.partition(":")[0] in ticked]
+    return parse_scope(values)
 
 
 def routes(store: Any, cfg: WebConfig) -> list[Any]:
@@ -339,7 +364,8 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         return no_store(RedirectResponse("/dashboard", status_code=302))
 
     def scope_ctx(user: auth.User, info: Any, error: str | None = None) -> dict[str, Any]:
-        return {"page": "dashboard", "user": user, "key": info, "csrf": auth.csrf_token(cfg.secret or "", user), "catalogue": CATALOGUE, "scope_of": info.scope, "error": error}
+        # the counts are the argument for unticking: a tool at zero has never been reached for
+        return {"page": "dashboard", "user": user, "key": info, "csrf": auth.csrf_token(cfg.secret or "", user), "catalogue": CATALOGUE, "scope_of": info.scope, "error": error, "counts": store.tool_counts(info.prefix) if store else {}}
 
     async def scope_page(request: Request) -> Response:
         """The tool grid for one key, pre-filled with what it may call today."""
@@ -372,7 +398,74 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         store.set_scope(prefix, scope)
         return no_store(RedirectResponse("/dashboard", status_code=302))
 
+    def pending_request(request: Request, user: auth.User) -> tuple[Any, Any] | None:
+        """The request and its key, when this user owns it.
+
+        Missing, expired and not-yours are all the same answer on purpose: a 403 would
+        confirm that a request id exists.
+        """
+        if store is None:
+            return None
+        record = store.scope_request(request.path_params["request_id"])
+        if record is None:
+            return None
+        info = store.get_by_prefix(record["prefix"])
+        if info is None or info.owner != user.email:
+            return None
+        return record, info
+
+    async def scope_request_page(request: Request) -> Response:
+        """What an agent has asked to give up, for its owner to approve or decline."""
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        found = pending_request(request, user)
+        if found is None:
+            return armoured(fail_page_for(request, cfg, 404, "No such request",
+                                          "That permission request has been used already, has expired, or does not exist."))
+        record, info = found
+        proposed = parse_scope(record["proposed"], strict=False)
+        keeping = sorted(proposed.tools) if proposed else []
+        held = sorted(info.scope.tools) if info.scope else sorted(CATALOGUE)
+        return armoured(render(
+            request, "scope_request.html", 200, page="dashboard", user=user, key=info,
+            keeping=keeping, dropping=[t for t in held if t not in set(keeping)],
+            counts=store.tool_counts(info.prefix), error=None,
+            csrf=auth.csrf_token(cfg.secret or "", user),
+        ))
+
+    async def scope_request_decide(request: Request) -> Response:
+        user = require_user(request)
+        if not user:
+            return RedirectResponse("/login", status_code=302)
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return armoured(fail_page_for(request, cfg, 403, "Form expired",
+                                          "Please open the link from your app again."))
+        found = pending_request(request, user)
+        if found is None:
+            return armoured(fail_page_for(request, cfg, 404, "No such request",
+                                          "That permission request has been used already, has expired, or does not exist."))
+        record, info = found
+        if not form.get("approve"):
+            store.close_scope_request(record["request_id"])
+            return armoured(fail_page_for(request, cfg, 200, "Declined", "Nothing was changed."))
+        proposed = parse_scope(record["proposed"], strict=False)
+        # re-checked here, not only when it was proposed: the owner may have narrowed the
+        # key further meanwhile, which would make a stale proposal a widening
+        if proposed is None or not narrows(info.scope, proposed):
+            store.close_scope_request(record["request_id"])
+            return armoured(fail_page_for(
+                request, cfg, 409, "This key has changed since the request",
+                f"It now allows {info.scope_summary}, which is already narrower than what was asked for. "
+                "Nothing was changed — ask the app to request again."))
+        store.set_scope(info.prefix, proposed)
+        store.close_scope_request(record["request_id"])
+        return no_store(RedirectResponse("/dashboard", status_code=303))
+
     return [
+        Route("/keys/scope-request/{request_id}", scope_request_page, methods=["GET"]),
+        Route("/keys/scope-request/{request_id}", scope_request_decide, methods=["POST"]),
         Route("/login", login),
         Route("/auth/github/callback", callback),
         Route("/logout", logout, methods=["POST"]),
@@ -386,7 +479,9 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/demo/{tool}", demo, methods=["POST"]),
         Route("/docs", docs_page),
         Route("/docs/tools/{name}", tool_page),
-        Route("/docs/{slug}", docs_page),
+        # `:path` so `agents/auth` resolves; `/docs/tools/{name}` is declared above and still
+        # wins, and `load_page` accepts only slugs named in `docs.PAGES`
+        Route("/docs/{slug:path}", docs_page),
     ]
 
 

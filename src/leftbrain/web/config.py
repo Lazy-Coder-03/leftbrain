@@ -30,3 +30,13 @@ class WebConfig:
     @property
     def oauth_ready(self) -> bool:
         return bool(self.client_id and self.client_secret and self.secret)
+
+    @property
+    def oauth_enabled(self) -> bool:
+        """Whether leftbrain can act as an OAuth authorization server for MCP clients (#34).
+
+        Needs a signing secret and a canonical issuer URL. RFC 8414 compares the issuer by
+        exact string, so one derived from request headers cannot be trusted to be the same
+        string twice — `LEFTBRAIN_BASE_URL` must be set, or the feature stays off.
+        """
+        return bool(self.secret and self.base_url)

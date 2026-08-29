@@ -204,10 +204,23 @@ def parse_scope(value: Any, *, strict: bool = True) -> Scope | None:
 #: The calling key's scope for the current request; ``None`` when the key (or the auth mode) has none.
 current_scope: contextvars.ContextVar[Scope | None] = contextvars.ContextVar("leftbrain_scope", default=None)
 
+#: Set per request by `AuthMiddleware` to a callable taking the tool's name, so `enforce`
+#: can count a call without this module importing `keys` — which imports this one.
+current_tool_recorder: contextvars.ContextVar[Any] = contextvars.ContextVar("leftbrain_tool_recorder", default=None)
+
 
 def denial(scope: Scope, tool: str, mode: str | None) -> dict[str, Any] | None:
     """The contract error a call outside ``scope`` gets, or ``None`` when it is allowed."""
     if tool not in scope.tools:
+        if not any(t in CATALOGUE for t in scope.tools):
+            # The scope survived `strict=False` loading but names nothing this build has —
+            # a key scoped to `files` on a server started without it. Offering
+            # `allowed: files` would point the caller at a tool nobody here can call.
+            return fail(
+                "forbidden",
+                f"this key is scoped to tools this server does not provide "
+                f"({', '.join(scope.tools)}); ask its owner to re-scope it at /dashboard",
+            )
         return fail("forbidden", f"this key may not call {tool}; allowed: {scope.listing()}")
     modes = scope.tools[tool]
     if modes is None or mode in modes:
@@ -239,11 +252,38 @@ def enforce(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]
                 denied = denial(scope, tool_name, mode)
                 if denied is not None:
                     return denied
+            # after the scope check, so a refused call is not counted as usage: it never ran
+            recorder = current_tool_recorder.get()
+            if recorder is not None:
+                try:
+                    recorder(tool_name)
+                except Exception:  # noqa: BLE001 - counting is never worth a failed call
+                    pass
             return fn(*args, **kwargs)
 
         return wrapper
 
     return decorate
+
+
+def narrows(current: Scope | None, proposed: Scope) -> bool:
+    """Whether ``proposed`` grants no more than ``current`` does.
+
+    An agent may put its own privileges down; picking them back up is its owner's decision,
+    made signed in on the dashboard. Without that asymmetry the scope is a suggestion rather
+    than a ceiling, and anything that hijacks the agent inherits the ability to lift it.
+    """
+    if current is None:
+        return True  # every tool is currently allowed, so any selection is narrower
+    for tool, modes in proposed.tools.items():
+        if tool not in current.tools:
+            return False
+        allowed = current.tools[tool]
+        if allowed is None:
+            continue  # every mode of this tool is allowed, so any subset of them is narrower
+        if modes is None or not set(modes) <= set(allowed):
+            return False  # asking for every mode, or for modes it does not currently hold
+    return True
 
 
 def allowed_tools(scope: Scope | None, names: list[str]) -> list[str]:

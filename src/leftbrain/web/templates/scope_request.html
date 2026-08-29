@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Approve a permission change · leftbrain{% endblock %}
+{% block content %}
+<main class="panel narrow">
+  <h2 class="sec">{{ key.note or key.prefix }} wants to give up access</h2>
+  <p class="lede sm">This app is asking to <strong>reduce</strong> what it can do. It cannot ask
+     for more — only you can widen a key, from your dashboard. The counts are its own usage.</p>
+
+  {% if error %}<p class="notice bad" role="alert">{{ error }}</p>{% endif %}
+
+  <dl class="facts">
+    <dt>Keeps</dt>
+    <dd>{% for tool in keeping %}<span class="mono">{{ tool }}</span>
+        <span class="hint">{{ counts.get(tool, 0) }} call{{ "" if counts.get(tool, 0) == 1 else "s" }}</span><br>
+        {% else %}<span class="hint">nothing</span>{% endfor %}</dd>
+    <dt>Gives up</dt>
+    <dd>{% for tool in dropping %}<span class="mono">{{ tool }}</span>
+        <span class="hint">{{ counts.get(tool, 0) }} call{{ "" if counts.get(tool, 0) == 1 else "s" }}</span><br>
+        {% else %}<span class="hint">nothing</span>{% endfor %}</dd>
+  </dl>
+
+  <form method="post">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <div class="cta">
+      <button class="btn primary" type="submit" name="approve" value="1">Approve</button>
+      <button class="btn ghost" type="submit">Decline</button>
+    </div>
+  </form>
+</main>
+{% endblock %}

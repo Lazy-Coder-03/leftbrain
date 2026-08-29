@@ -1,6 +1,6 @@
 # Quickstart
 
-Two ways in: hand the prompt below to your coding agent, or wire it up yourself in three steps — get a key, store it in your shell, call a tool. All examples target the hosted server at **https://leftbrain.idlesync.in**; a self-hosted server uses the same routes on your own host.
+Two ways in: hand the prompt below to your coding agent, or wire it up yourself in three steps — get a key, store it in your shell, call a tool. (A client that speaks **OAuth** needs neither: connect it and approve, and leftbrain makes the key for you — see [Two ways to connect](/docs/clients#two-ways-to-connect).) All examples target the hosted server at **https://leftbrain.idlesync.in**; a self-hosted server uses the same routes on your own host.
 
 
 <h2 id="set-it-up-for-me">Set it up for me</h2>
@@ -74,6 +74,8 @@ how many tools you found and what that call returned.
 Prefer to wire it up yourself? The rest of this page is the manual route.
 
 ## 1 · Get a key
+
+<div class="callout">Or skip this step entirely. If your client offers <strong>OAuth</strong> — ChatGPT, and optionally Claude Code, Cursor or VS Code — click connect there instead and approve the leftbrain page. You never see or handle a key: leftbrain creates one for you, names it after the app and the machine it runs on, and puts it on your Keys page where you can read it, re-scope it or revoke it like any other. See <a href="/docs/clients#two-ways-to-connect">Two ways to connect</a>. ChatGPT has no field for a key at all, so OAuth is its only route.</div>
 
 [Sign in with GitHub](/login) and create a key on the Keys page. The free tier gives every key {{daily_quota}} calls/day and {{rpm}} requests/minute. A key can be limited to specific tools — and to specific modes of a tool — from the **Tools** disclosure when you create it, or later with **Edit scope** on its row; a scoped key simply shows fewer tools to your client. While you stay signed in, **Show** on the Keys page brings a key back whenever you need it — and every example below is already filled in with it.
 
@@ -200,3 +202,5 @@ Add `-H "Accept: application/json"` only (no `text/event-stream`) if your server
 [Connect an MCP client](/docs/clients) — Claude Code, Claude Desktop, Cursor, VS Code or the Python client.
 
 [Build your own agent](/docs/custom-agents) — the raw protocol, an MCP client in eight languages, and the framework wiring.
+
+[Auth, for agents](/docs/agents/auth) — written for a model rather than a person: what to do with a 401, how to obtain a key without one being pasted in, and what to say to its user at each step.

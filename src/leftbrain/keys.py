@@ -40,11 +40,11 @@ import sqlite3
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .scopes import Scope, parse_scope, summarize
+from .scopes import CATALOGUE, Scope, parse_scope, summarize
 
 DEFAULT_DB = "leftbrain-keys.sqlite3"
 DEFAULT_DAILY = int(os.environ.get("LEFTBRAIN_DEFAULT_DAILY_QUOTA", "1000"))
@@ -52,10 +52,11 @@ DEFAULT_RPM = int(os.environ.get("LEFTBRAIN_DEFAULT_RPM", "60"))
 KEY_PREFIX = "lblz_"
 PREFIX_LEN = len(KEY_PREFIX) + 8  # shown/stored identifier, e.g. lblz_pI5brWOG
 SIGNUPS_PER_IP_PER_DAY = int(os.environ.get("LEFTBRAIN_SIGNUPS_PER_IP_PER_DAY", "3"))
-MAX_ACTIVE_KEYS_PER_EMAIL = int(os.environ.get("LEFTBRAIN_MAX_KEYS_PER_EMAIL", "3"))
+MAX_ACTIVE_KEYS_PER_EMAIL = int(os.environ.get("LEFTBRAIN_MAX_KEYS_PER_EMAIL", "5"))
 LIFETIME_CHOICES = (30, 90, 365)  # days offered at creation; None means never
 DEFAULT_LIFETIME_DAYS = 90
 EXPIRY_WARNING_DAYS = 7  # "expires soon" once this close
+SCOPE_REQUEST_TTL = 900  # fifteen minutes: long enough to walk to another device
 NEVER_EXPIRES_WARNING = "Keys that never expire are a liability if leaked; prefer a lifetime and rotate."
 # ISO strings in one fixed shape compare correctly as text, in SQLite and Postgres alike
 _ACTIVE = "disabled=0 AND (expires_at IS NULL OR expires_at > ?)"
@@ -88,6 +89,77 @@ _SCHEMA = [
         day   TEXT NOT NULL,
         count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (ip, day)
+    )""",
+    # -- OAuth 2.1 for MCP clients (#34). Whole new tables belong here rather than in
+    # `_migrate`, which adds columns to tables that already exist; these are
+    # CREATE TABLE IF NOT EXISTS and run on every open, on SQLite and Postgres alike.
+    """CREATE TABLE IF NOT EXISTS oauth_clients (
+        client_id     TEXT PRIMARY KEY,
+        secret_hash   TEXT,
+        name          TEXT,
+        redirect_uris TEXT NOT NULL,
+        metadata      TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        last_used     TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_consents (
+        owner      TEXT NOT NULL,
+        client_id  TEXT NOT NULL,
+        key_prefix TEXT NOT NULL,
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (owner, client_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_codes (
+        code_hash             TEXT PRIMARY KEY,
+        client_id             TEXT NOT NULL,
+        key_hash              TEXT NOT NULL,
+        owner                 TEXT NOT NULL,
+        scopes                TEXT NOT NULL,
+        code_challenge        TEXT NOT NULL,
+        redirect_uri          TEXT NOT NULL,
+        redirect_uri_provided INTEGER NOT NULL DEFAULT 1,
+        resource              TEXT,
+        expires_at            TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_tokens (
+        token_hash TEXT PRIMARY KEY,
+        kind       TEXT NOT NULL,
+        client_id  TEXT NOT NULL,
+        key_hash   TEXT NOT NULL,
+        scopes     TEXT NOT NULL,
+        resource   TEXT,
+        expires_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_devices (
+        device_hash TEXT PRIMARY KEY,
+        user_code   TEXT NOT NULL,
+        client_id   TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        owner       TEXT,
+        key_hash    TEXT,
+        scopes      TEXT NOT NULL,
+        expires_at  TEXT NOT NULL,
+        last_polled TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_key ON oauth_tokens(key_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_oauth_devices_code ON oauth_devices(user_code)",
+    # `usage` counts calls per key per day; this counts them per key per tool, which is
+    # what the scope editor needs to show someone which tools to untick.
+    """CREATE TABLE IF NOT EXISTS tool_usage (
+        prefix    TEXT NOT NULL,
+        tool      TEXT NOT NULL,
+        count     INTEGER NOT NULL DEFAULT 0,
+        last_used TEXT NOT NULL,
+        PRIMARY KEY (prefix, tool)
+    )""",
+    # A narrowing an agent asked for and a human has not yet approved. Nothing is granted
+    # or removed by a row here; it only records what was proposed (#34).
+    """CREATE TABLE IF NOT EXISTS scope_requests (
+        request_id   TEXT PRIMARY KEY,
+        prefix       TEXT NOT NULL,
+        proposed     TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        expires_at   TEXT NOT NULL
     )""",
 ]
 
@@ -183,9 +255,19 @@ class KeyInfo:
         """Counts towards the owner's active-key cap: usable, and not a legacy key nobody can show again."""
         return self.usable and not self.legacy
 
+    @property
+    def allows_nothing(self) -> bool:
+        """A scope that loaded but names no tool this build has: the key can call nothing.
+
+        Reachable without anyone doing anything wrong — a key scoped to `files` on a server
+        started without the files extra. It is worth saying out loud, because the symptom is
+        an empty tool list and silence.
+        """
+        return self.scope is not None and not any(t in CATALOGUE for t in self.scope.tools)
+
     def to_dict(self) -> dict[str, Any]:
         fields = {k: v for k, v in self.__dict__.items() if k not in ("revealable", "legacy", "scope")}
-        return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today), "tools": self.scope.to_dict() if self.scope else None}
+        return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today), "tools": self.scope.to_dict() if self.scope else None, "allows_nothing": self.allows_nothing}
 
 
 @dataclass
@@ -193,6 +275,10 @@ class Verdict:
     ok: bool
     reason: str = ""
     status: int = 200
+    # Everything below is keyword-only. Passing the KeyInfo positionally put it in
+    # `message`, which is not serialisable, and turned every 429 into a 500; naming is
+    # not a convention here, it is the thing that stops that shape being writable.
+    _: KW_ONLY
     message: str = ""  # a fuller explanation for the caller, when the reason alone is terse
     key: KeyInfo | None = None
     remaining: int | None = None
@@ -324,8 +410,56 @@ class KeyStore:
             if not row:
                 return False
             self.db.run("DELETE FROM usage WHERE key_hash=?", (row["key_hash"],))
+            self.db.run("DELETE FROM tool_usage WHERE prefix=?", (prefix,))
+            self.db.run("DELETE FROM scope_requests WHERE prefix=?", (prefix,))
             self.db.run("DELETE FROM keys WHERE key_hash=?", (row["key_hash"],))
         return True
+
+    def open_scope_request(self, prefix: str, proposed: Scope) -> str:
+        """Record a narrowing an agent has asked for. Nothing changes until it is approved."""
+        request_id = secrets.token_urlsafe(24)
+        expires = (datetime.now(UTC) + timedelta(seconds=SCOPE_REQUEST_TTL)).isoformat(timespec="seconds")
+        with self._lock:
+            self.db.run(
+                "INSERT INTO scope_requests(request_id, prefix, proposed, requested_at, expires_at) "
+                "VALUES (?,?,?,?,?)",
+                (request_id, prefix, proposed.to_json(), _now(), expires),
+            )
+        return request_id
+
+    def scope_request(self, request_id: str) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT * FROM scope_requests WHERE request_id=? AND expires_at > ?",
+            (request_id, _now()),
+        )
+        return dict(row) if row else None
+
+    def close_scope_request(self, request_id: str) -> None:
+        with self._lock:
+            self.db.run("DELETE FROM scope_requests WHERE request_id=?", (request_id,))
+
+    def record_tool_call(self, prefix: str, tool: str) -> None:
+        """One lifetime counter per key per tool, for the scope editor to show.
+
+        Never raises. A lost count is not worth costing the caller the answer they asked for.
+        """
+        try:
+            with self._lock:
+                self.db.run(
+                    "INSERT INTO tool_usage(prefix, tool, count, last_used) VALUES (?,?,1,?) "
+                    "ON CONFLICT(prefix, tool) DO UPDATE SET count = tool_usage.count + 1, "
+                    "last_used = excluded.last_used",
+                    (prefix, tool, _now()),
+                )
+        except Exception:  # noqa: BLE001 - see above; a counter must never fail a request
+            pass
+
+    def tool_counts(self, prefix: str) -> dict[str, int]:
+        try:
+            rows = self.db.all("SELECT tool, count FROM tool_usage WHERE prefix = ?", (prefix,))
+        except Exception:  # noqa: BLE001
+            return {}
+        return {r["tool"]: int(r["count"]) for r in rows}
 
     @staticmethod
     def _limit_sets(daily_quota: int | None, rpm: int | None) -> tuple[list[str], list[Any]]:
@@ -373,10 +507,36 @@ class KeyStore:
     def verify_and_count(self, raw_key: str) -> Verdict:
         if not raw_key or not raw_key.startswith(KEY_PREFIX):
             return Verdict(False, "invalid key", 401)
-        h = _hash(raw_key)
-        row = self.db.one("SELECT * FROM keys WHERE key_hash = ?", (h,))
+        row = self.db.one("SELECT * FROM keys WHERE key_hash = ?", (_hash(raw_key),))
         if not row:
             return Verdict(False, "unknown key", 401)
+        return self._meter(row)
+
+    def verify_oauth_token_and_count(self, token: str) -> Verdict:
+        """An OAuth access token, resolved to the key it was issued against and metered as one.
+
+        The join is the revocation mechanism: a disabled key fails the same check a key does,
+        and a revoked one has no row at all, so its tokens stop working on the next call with
+        no second piece of bookkeeping to keep in step (#34).
+        """
+        if not token:
+            return Verdict(False, "invalid token", 401)
+        row = self.db.one(
+            "SELECT k.* FROM oauth_tokens t JOIN keys k ON k.key_hash = t.key_hash "
+            "WHERE t.token_hash = ? AND t.kind = 'access' AND t.expires_at > ?",
+            (_hash(token), _now()),
+        )
+        if not row:
+            return Verdict(False, "invalid token", 401)
+        return self._meter(row)
+
+    def _meter(self, row: dict[str, Any]) -> Verdict:
+        """Quota, rate limit and usage counting for one key row, whichever credential named it.
+
+        Both credential kinds run this, so the headers a caller sees, the daily counter and
+        the rpm window cannot drift apart: there is only one copy of them.
+        """
+        h = row["key_hash"]
         if row["disabled"]:
             return Verdict(False, "key disabled", 403)
         info = self._info(row)
@@ -387,9 +547,11 @@ class KeyStore:
             window = [t for t in self._rpm_window.get(h, []) if now - t < 60]
             if len(window) >= info.rpm:
                 self._rpm_window[h] = window
-                return Verdict(False, f"rate limit: {info.rpm} requests/minute", 429, info, retry_after=int(60 - (now - window[0])) + 1)
+                # `key=` by name: the fourth positional is `message`, and a KeyInfo landing
+                # there made every 429 a 500 when the response was serialised.
+                return Verdict(False, f"rate limit: {info.rpm} requests/minute", 429, key=info, retry_after=int(60 - (now - window[0])) + 1)
             if info.used_today >= info.daily_quota:
-                return Verdict(False, f"daily quota of {info.daily_quota} exhausted; resets at 00:00 UTC", 429, info, remaining=0, retry_after=self._seconds_to_midnight())
+                return Verdict(False, f"daily quota of {info.daily_quota} exhausted; resets at 00:00 UTC", 429, key=info, remaining=0, retry_after=self._seconds_to_midnight())
             window.append(now)
             self._rpm_window[h] = window
             self.db.run("INSERT INTO usage(key_hash, day, count) VALUES (?,?,1) ON CONFLICT(key_hash, day) DO UPDATE SET count = usage.count + 1", (h, _today()))

@@ -6,7 +6,49 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **OAuth 2.1 for `/mcp`**, so ChatGPT plugins and Claude's web connectors can connect at all —
+  neither will send a static key, and ChatGPT's dialog has no field for one. Discovery
+  (RFC 8414, RFC 9728), Client ID Metadata Documents, dynamic client registration (RFC 7591),
+  PKCE `S256`, and refresh-token rotation. Needs `LEFTBRAIN_SECRET` and `LEFTBRAIN_BASE_URL`;
+  without both, nothing is mounted. **`lblz_` keys are unaffected** — same responses, same quota
+  headers, same `tools/list` filtering.
+- **A consent screen at `/oauth/consent`**, which is not decoration: leftbrain uses a static
+  GitHub client id against a third party that sets a consent cookie, and now allows dynamic
+  registration — every precondition of the confused-deputy attack the MCP guidance describes.
+  Consent is recorded per client and checked first, and no signed state is set until a human has
+  approved.
+- **The device grant (RFC 8628)** at `/oauth/device_authorization` and `/device`, for an agent on
+  a machine with no browser: it shows its user a short code instead of asking them to paste a key
+  into the conversation. No shipping MCP client drives this yet, so it is for agents calling the
+  endpoints themselves; it will not make Claude Code connect.
+- **A connector's key is an ordinary key.** Approving creates one named after the app and where it
+  runs — `Claude Code · Windows`, `ChatGPT · web` — visible on the dashboard, revealable,
+  re-scopable and revocable, counting against the same cap. Reconnecting the same app reuses its
+  key rather than consuming a second slot.
+- **Per-tool call counts in the scope editor**, so narrowing a key is a decision rather than a
+  guess: a tool sitting at zero calls is one to untick.
+- **`POST /keys/me/scope`**, letting a caller propose narrowing its own key. It returns `202` and
+  a URL for the owner to approve; nothing changes until they do. Widening is refused outright.
+- **`/docs/agents/auth`**, an authentication guide written for a model rather than a person, and
+  linked from the 401 body and from RFC 9728's `resource_documentation`.
+
+### Fixed
+
+- **A throttled key answered `500`, not `429`.** Both rate-limit paths passed the key record into
+  `Verdict`'s `message` field positionally, and it is not serialisable — so every caller who hit
+  their rate limit or exhausted their daily quota got a server error with no `Retry-After` and no
+  explanation. `Verdict`'s optional fields are keyword-only now, so the shape cannot recur.
+- **A key scoped to tools this build does not ship said the wrong thing.** It correctly allowed
+  nothing and listed nothing, but refused calls with `allowed: files` — naming a tool nobody on
+  that server can call. It now says the tools are not provided and points at the dashboard, and
+  the key carries a warning on its row.
+
 ### Changed
+
+- **The active-key cap rises from 3 to 5** (`LEFTBRAIN_MAX_KEYS_PER_EMAIL`), now that connecting
+  an app consumes a slot. Three was sized for keys pasted into config files.
 
 - **`numbers.compare`'s `percent_change_a_to_b` divides by `|a|`**, matching
   `finance.percent`: from -100 to -50 is +50%, not -50%. It is omitted, with an assumption

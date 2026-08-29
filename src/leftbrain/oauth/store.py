@@ -1,0 +1,209 @@
+"""Persistence for the OAuth authorization server, alongside the key store.
+
+Every issued credential is bound to an ordinary key row, so revoking the key on the
+dashboard revokes the tokens with it and no second revocation path exists.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from mcp.shared.auth import OAuthClientInformationFull
+
+from ..keys import _hash, _now
+from .redirects import LoopbackTolerantClient
+
+
+class OAuthStore:
+    """OAuth records living in the key store's database, sharing its connection and lock."""
+
+    def __init__(self, keys: Any) -> None:
+        self.keys = keys
+        self.db = keys.db
+
+    # -- clients -------------------------------------------------------------
+
+    def save_client(self, client: OAuthClientInformationFull) -> None:
+        """Store a registration, replacing any earlier one under the same id.
+
+        The whole record is kept as JSON and re-parsed on load, so a field the SDK adds
+        later survives a round trip without a migration.
+        """
+        uris = json.dumps([str(u) for u in (client.redirect_uris or [])])
+        secret_hash = _hash(client.client_secret) if client.client_secret else None
+        with self.keys._lock:
+            self.db.run(
+                "INSERT INTO oauth_clients(client_id, secret_hash, name, redirect_uris, metadata, created_at) "
+                "VALUES (?,?,?,?,?,?) ON CONFLICT(client_id) DO UPDATE SET "
+                "secret_hash=excluded.secret_hash, name=excluded.name, "
+                "redirect_uris=excluded.redirect_uris, metadata=excluded.metadata",
+                (client.client_id, secret_hash, client.client_name, uris, client.model_dump_json(), _now()),
+            )
+
+    def load_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        """The registration, as a client that tolerates a loopback port change.
+
+        The SDK's `/authorize` handler asks the client object to validate the presented
+        redirect URI, so the RFC 8252 exception has to live on the object it asks.
+        """
+        row = self.db.one("SELECT metadata FROM oauth_clients WHERE client_id = ?", (client_id,))
+        if not row:
+            return None
+        return LoopbackTolerantClient.model_validate_json(row["metadata"])
+
+    def prune_clients(self, *, older_than_days: int = 30) -> int:
+        """Drop registrations nobody ever consented to.
+
+        Anthropic's docs warn that a client falling back to dynamic registration registers
+        afresh on every connection, so these accumulate without bound. A row with a consent
+        against it is somebody's live connector and is never touched.
+        """
+        cutoff = self._expiry(-older_than_days * 86400)
+        with self.keys._lock:
+            return self.db.run(
+                "DELETE FROM oauth_clients WHERE created_at < ? AND client_id NOT IN "
+                "(SELECT client_id FROM oauth_consents)",
+                (cutoff,),
+            )
+
+    # -- consent -------------------------------------------------------------
+
+    @staticmethod
+    def _owner(email: str) -> str:
+        """Owners are stored lowered and stripped by `keys`; consent must agree or never match."""
+        return (email or "").strip().lower()
+
+    def record_consent(self, owner: str, client_id: str, key_prefix: str) -> None:
+        """Remember that this owner approved this client, and which key it was given.
+
+        Checked before anything is forwarded to GitHub: the per-client consent registry is
+        the confused-deputy mitigation. It is also what makes a reconnection reuse the key
+        it already minted instead of eating another of the owner's slots.
+        """
+        with self.keys._lock:
+            self.db.run(
+                "INSERT INTO oauth_consents(owner, client_id, key_prefix, granted_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(owner, client_id) DO UPDATE SET key_prefix=excluded.key_prefix, "
+                "granted_at=excluded.granted_at",
+                (self._owner(owner), client_id, key_prefix, _now()),
+            )
+
+    def consent_for(self, owner: str, client_id: str) -> str | None:
+        row = self.db.one(
+            "SELECT key_prefix FROM oauth_consents WHERE owner=? AND client_id=?",
+            (self._owner(owner), client_id),
+        )
+        return row["key_prefix"] if row else None
+
+    # -- authorization codes -------------------------------------------------
+
+    @staticmethod
+    def _expiry(seconds: int) -> str:
+        """One fixed ISO shape, so expiry compares correctly as text in SQLite and Postgres."""
+        return (datetime.now(UTC) + timedelta(seconds=seconds)).isoformat(timespec="seconds")
+
+    def save_code(
+        self, code: str, *, client_id: str, key_hash: str, owner: str, scopes: list[str],
+        code_challenge: str, redirect_uri: str, redirect_uri_provided: bool,
+        resource: str | None, ttl: int = 60,
+    ) -> None:
+        with self.keys._lock:
+            self.db.run(
+                "INSERT INTO oauth_codes(code_hash, client_id, key_hash, owner, scopes, code_challenge, "
+                "redirect_uri, redirect_uri_provided, resource, expires_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (_hash(code), client_id, key_hash, owner, json.dumps(scopes), code_challenge,
+                 redirect_uri, 1 if redirect_uri_provided else 0, resource, self._expiry(ttl)),
+            )
+
+    def take_code(self, code: str) -> dict[str, Any] | None:
+        """Read a code and delete it under the same lock: single use, replay included.
+
+        An expired code is consumed too, so a replay cannot tell "expired" from "already
+        spent" by whether a second attempt behaves differently.
+        """
+        h = _hash(code)
+        with self.keys._lock:
+            row = self.db.one("SELECT * FROM oauth_codes WHERE code_hash = ?", (h,))
+            self.db.run("DELETE FROM oauth_codes WHERE code_hash = ?", (h,))
+        if not row or row["expires_at"] <= _now():
+            return None
+        return {
+            **row,
+            "scopes": json.loads(row["scopes"]),
+            "redirect_uri_provided": bool(row["redirect_uri_provided"]),
+        }
+
+    # -- tokens --------------------------------------------------------------
+
+    def save_token(
+        self, token: str, *, kind: str, client_id: str, key_hash: str,
+        scopes: list[str], resource: str | None, ttl: int,
+    ) -> None:
+        with self.keys._lock:
+            self.db.run(
+                "INSERT INTO oauth_tokens(token_hash, kind, client_id, key_hash, scopes, resource, expires_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (_hash(token), kind, client_id, key_hash, json.dumps(scopes), resource, self._expiry(ttl)),
+            )
+
+    def load_token(self, token: str, kind: str) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT * FROM oauth_tokens WHERE token_hash=? AND kind=? AND expires_at > ?",
+            (_hash(token), kind, _now()),
+        )
+        return {**row, "scopes": json.loads(row["scopes"])} if row else None
+
+    def revoke_token(self, token: str) -> None:
+        with self.keys._lock:
+            self.db.run("DELETE FROM oauth_tokens WHERE token_hash = ?", (_hash(token),))
+
+    def revoke_client_tokens(self, client_id: str, key_hash: str) -> None:
+        """RFC 7009: revoking one credential revokes its sibling, so both kinds go together."""
+        with self.keys._lock:
+            self.db.run("DELETE FROM oauth_tokens WHERE client_id=? AND key_hash=?", (client_id, key_hash))
+
+    # -- device grant (RFC 8628) ---------------------------------------------
+
+    def save_device(self, device_code: str, *, user_code: str, client_id: str,
+                    scopes: list[str], ttl: int) -> None:
+        with self.keys._lock:
+            self.db.run(
+                "INSERT INTO oauth_devices(device_hash, user_code, client_id, status, scopes, expires_at) "
+                "VALUES (?,?,?,'pending',?,?)",
+                (_hash(device_code), user_code, client_id, json.dumps(scopes), self._expiry(ttl)),
+            )
+
+    def device_by_user_code(self, user_code: str) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT * FROM oauth_devices WHERE user_code=? AND status='pending' AND expires_at > ?",
+            (user_code, _now()),
+        )
+        return {**row, "scopes": json.loads(row["scopes"])} if row else None
+
+    def settle_device(self, user_code: str, *, status: str, owner: str | None = None,
+                      key_hash: str | None = None) -> bool:
+        """Record the human's decision. Only a pending, unexpired code can be settled."""
+        with self.keys._lock:
+            return self.db.run(
+                "UPDATE oauth_devices SET status=?, owner=?, key_hash=? "
+                "WHERE user_code=? AND status='pending' AND expires_at > ?",
+                (status, owner, key_hash, user_code, _now()),
+            ) > 0
+
+    def take_device(self, device_code: str, client_id: str) -> dict[str, Any] | None:
+        """This client's device record; a settled one is consumed so it grants once.
+
+        The client is checked before anything is deleted, so another client polling with a
+        stolen device code cannot destroy the record its owner is waiting on.
+        """
+        h = _hash(device_code)
+        with self.keys._lock:
+            row = self.db.one("SELECT * FROM oauth_devices WHERE device_hash = ?", (h,))
+            if not row or row["client_id"] != client_id:
+                return None
+            if row["status"] in ("approved", "denied"):
+                self.db.run("DELETE FROM oauth_devices WHERE device_hash = ?", (h,))
+        status = "expired" if row["expires_at"] <= _now() else row["status"]
+        return {**row, "status": status, "scopes": json.loads(row["scopes"])}

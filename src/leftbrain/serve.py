@@ -39,7 +39,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from . import __version__, observe
-from .scopes import Scope, allowed_tools, current_scope
+from .scopes import Scope, allowed_tools, current_scope, current_tool_recorder
 
 MCP_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp")
 PROTECTED_PREFIXES = (*MCP_PREFIXES, "/keys/me")
@@ -173,10 +173,18 @@ def _bearer(scope: Any) -> str:
 class AuthMiddleware:
     """Static key and/or key-store check with quota metering. Public paths pass through."""
 
-    def __init__(self, app: Any, *, static_key: str | None, store: Any | None) -> None:
+    def __init__(self, app: Any, *, static_key: str | None, store: Any | None, base_url: str | None = None) -> None:
         self.app = app
         self.static = static_key.encode() if static_key else None
         self.store = store
+        #: set only when this server is an OAuth authorization server, so a 401 can point
+        #: at the discovery document and tell an agent what to do next (#34)
+        self.base_url = base_url
+        # resolved once here rather than imported at module level, which is how the rest of
+        # this file keeps `keys` (and its optional drivers) off the import path
+        from .keys import KEY_PREFIX
+
+        self.key_prefix = KEY_PREFIX
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http" or not _protected(scope.get("path", "")):
@@ -191,7 +199,14 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         if self.store is not None:
-            verdict = self.store.verify_and_count(supplied)
+            # A credential that is not a leftbrain key is an OAuth access token. Both resolve
+            # to a key row and meter through the same code, so quota, rpm and tool scope are
+            # enforced in one place whichever door the caller came through (#34).
+            verdict = (
+                self.store.verify_and_count(supplied)
+                if supplied.startswith(self.key_prefix)
+                else self.store.verify_oauth_token_and_count(supplied)
+            )
             if verdict.ok:
                 scope.setdefault("state", {})["auth"] = {"kind": "key", "key": verdict.key, "remaining": verdict.remaining}
                 extra = {"x-ratelimit-remaining-today": str(verdict.remaining), "x-ratelimit-limit-day": str(verdict.key.daily_quota), "x-ratelimit-limit-minute": str(verdict.key.rpm)}
@@ -200,12 +215,17 @@ class AuthMiddleware:
                 # agent can back off before it hits a 429 (#28 SS6).
                 quota_token = observe.current_quota.set({"remaining_today": verdict.remaining, "daily_quota": verdict.key.daily_quota, "rpm": verdict.key.rpm})
                 token = current_scope.set(key_scope)  # what enforce() reads inside every tool
+                # enforce() also counts each call against this key, so the scope editor can
+                # show its owner which tools it has actually reached for (#34)
+                prefix = verdict.key.prefix
+                recorder = current_tool_recorder.set(lambda tool: self.store.record_tool_call(prefix, tool))
                 try:
                     if key_scope is not None and scope.get("method") == "POST" and _under(scope.get("path", ""), MCP_PREFIXES):
                         await self._scoped(scope, receive, send, extra, key_scope)
                     else:
                         await self._with_headers(scope, receive, send, extra)
                 finally:
+                    current_tool_recorder.reset(recorder)
                     current_scope.reset(token)
                     observe.current_quota.reset(quota_token)
                 return
@@ -271,9 +291,33 @@ class AuthMiddleware:
 
         await self._with_headers(scope, replay, buffered, extra)
 
-    @staticmethod
-    async def _reject(scope: Any, receive: Any, send: Any, status: int, error: str, message: str, extra: dict[str, str] | None = None) -> None:
-        resp = JSONResponse({"ok": False, "error": error, "message": message}, status_code=status, headers={"WWW-Authenticate": "Bearer", **(extra or {})})
+    def _challenge(self) -> str:
+        """RFC 9728: point the client at the document that names our authorization server.
+
+        Claude Code probes the well-known paths before it ever reaches this, so the pointer
+        is not what starts discovery there — but ChatGPT and Claude's web connectors read it,
+        and the MCP spec requires the 401 to carry it.
+        """
+        if not self.base_url:
+            return "Bearer"
+        return f'Bearer realm="leftbrain", resource_metadata="{self.base_url}/.well-known/oauth-protected-resource/mcp"'
+
+    def _how_to_authorize(self) -> dict[str, str]:
+        """What an agent should do next, in fields it can act on and a line it can read aloud."""
+        return {
+            "if_you_have_a_browser": f"{self.base_url}/.well-known/oauth-protected-resource/mcp",
+            "if_you_have_no_browser": f"POST {self.base_url}/oauth/device_authorization",
+            "tell_your_user": f"leftbrain needs authorising. I can give you a short code to approve at {self.base_url}/device",
+            "static_key_alternative": f"{self.base_url}/dashboard",
+            "documentation": f"{self.base_url}/docs/agents/auth",
+        }
+
+    async def _reject(self, scope: Any, receive: Any, send: Any, status: int, error: str, message: str, extra: dict[str, str] | None = None) -> None:
+        # the three existing fields are untouched; a valid key never sees this body at all
+        body: dict[str, Any] = {"ok": False, "error": error, "message": message}
+        if self.base_url:
+            body["how_to_authorize"] = self._how_to_authorize()
+        resp = JSONResponse(body, status_code=status, headers={"WWW-Authenticate": self._challenge(), **(extra or {})})
         await resp(scope, receive, send)
 
 
@@ -415,6 +459,42 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
             return JSONResponse({"ok": True, "result": {"kind": "static", "quota": "unlimited"}})
         return JSONResponse({"ok": False, "error": "unauthorized", "message": "no key"}, status_code=401)
 
+    async def me_scope(request: Request) -> JSONResponse:
+        """Propose narrowing this credential's own key. A human approves it; this does not (#34).
+
+        Widening is refused outright rather than queued, because a credential that can *ask*
+        for more is one whose scope is a suggestion — and anything that hijacks the agent
+        inherits the ability to ask.
+        """
+        from .scopes import narrows, parse_scope, summarize
+
+        info = (request.scope.get("state", {}).get("auth") or {}).get("key")
+        if info is None:
+            return JSONResponse({"ok": False, "error": "unsupported", "message": "this server's credential has no scope to narrow"}, status_code=400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            proposed = parse_scope((body or {}).get("tools"))
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": "invalid", "message": str(e)}, status_code=400)
+        if proposed is None:
+            return JSONResponse({"ok": False, "error": "invalid", "message": 'name the tools to keep, e.g. {"tools": ["math", "convert"]}'}, status_code=400)
+        if not narrows(info.scope, proposed):
+            return JSONResponse({"ok": False, "error": "forbidden", "message": f"a key may only narrow its own scope; it holds {summarize(info.scope)} and asked for {proposed.summary()}. Widen it at /dashboard."}, status_code=403)
+        from .keys import SCOPE_REQUEST_TTL
+
+        request_id = store.open_scope_request(info.prefix, proposed)
+        url = f"{cfg.base_url or ''}/keys/scope-request/{request_id}"
+        return JSONResponse({"ok": True, "result": {
+            "status": "pending_approval",
+            "approve_url": url,
+            "tell_your_user": f"I would like to give up some of my own access to leftbrain, keeping only {proposed.listing()}. Approve at {url}",
+            "expires_in": SCOPE_REQUEST_TTL,
+            "check": "GET /keys/me",
+        }}, status_code=202)
+
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         from . import runner
@@ -442,10 +522,16 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
             return error_page(request, 404, "Page not found", "That page isn't here. Try the docs, or start from the home page.", user=web_auth.current_user(request, cfg))
         return JSONResponse({"ok": False, "error": "unsupported", "message": "no such endpoint; see / for the endpoint list"}, status_code=404)
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *mounts, Mount("", app=_McpOnly(root_app))]
+    from .oauth import build_oauth_routes
+
+    # before the catch-all mount, which 404s anything that is not /mcp-shaped: the discovery
+    # documents and /register must answer for their own sake (#34)
+    oauth_routes = build_oauth_routes(store, cfg)
+
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
-        app = AuthMiddleware(app, static_key=static_key, store=store)
+        app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None)
     return RequestMetaMiddleware(SecurityHeadersMiddleware(app))
 
 
