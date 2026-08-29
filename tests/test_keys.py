@@ -39,6 +39,23 @@ def test_signup_limits(tmp_path):
     assert all(keys[:3]) and keys[3] is None  # 3 per IP per day
 
 
+def test_a_verdict_will_not_take_its_key_positionally():
+    """The root cause of the 429-as-500 bug, closed off rather than only tested for.
+
+    `Verdict(False, reason, 429, info)` silently put a KeyInfo in `message`. Everything
+    after `status` is keyword-only now, so that call is a TypeError at the call site
+    instead of a 500 in front of a user.
+    """
+    import pytest
+
+    from leftbrain.keys import Verdict
+
+    with pytest.raises(TypeError):
+        Verdict(False, "rate limit", 429, "a message")
+    ok = Verdict(False, "rate limit", 429, message="a message", remaining=0)
+    assert ok.message == "a message" and ok.key is None
+
+
 def test_a_throttled_key_gets_429_over_http_not_500(tmp_path):
     """The Verdict carrying the key positionally landed it in `message`, which is not
     serialisable, so every rate limit and every exhausted quota answered 500."""

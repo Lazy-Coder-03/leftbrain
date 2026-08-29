@@ -40,7 +40,7 @@ import sqlite3
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -246,6 +246,10 @@ class Verdict:
     ok: bool
     reason: str = ""
     status: int = 200
+    # Everything below is keyword-only. Passing the KeyInfo positionally put it in
+    # `message`, which is not serialisable, and turned every 429 into a 500; naming is
+    # not a convention here, it is the thing that stops that shape being writable.
+    _: KW_ONLY
     message: str = ""  # a fuller explanation for the caller, when the reason alone is terse
     key: KeyInfo | None = None
     remaining: int | None = None
