@@ -357,7 +357,8 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         return no_store(RedirectResponse("/dashboard", status_code=302))
 
     def scope_ctx(user: auth.User, info: Any, error: str | None = None) -> dict[str, Any]:
-        return {"page": "dashboard", "user": user, "key": info, "csrf": auth.csrf_token(cfg.secret or "", user), "catalogue": CATALOGUE, "scope_of": info.scope, "error": error}
+        # the counts are the argument for unticking: a tool at zero has never been reached for
+        return {"page": "dashboard", "user": user, "key": info, "csrf": auth.csrf_token(cfg.secret or "", user), "catalogue": CATALOGUE, "scope_of": info.scope, "error": error, "counts": store.tool_counts(info.prefix) if store else {}}
 
     async def scope_page(request: Request) -> Response:
         """The tool grid for one key, pre-filled with what it may call today."""

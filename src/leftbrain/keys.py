@@ -142,6 +142,15 @@ _SCHEMA = [
     )""",
     "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_key ON oauth_tokens(key_hash)",
     "CREATE INDEX IF NOT EXISTS idx_oauth_devices_code ON oauth_devices(user_code)",
+    # `usage` counts calls per key per day; this counts them per key per tool, which is
+    # what the scope editor needs to show someone which tools to untick.
+    """CREATE TABLE IF NOT EXISTS tool_usage (
+        prefix    TEXT NOT NULL,
+        tool      TEXT NOT NULL,
+        count     INTEGER NOT NULL DEFAULT 0,
+        last_used TEXT NOT NULL,
+        PRIMARY KEY (prefix, tool)
+    )""",
 ]
 
 
@@ -381,8 +390,32 @@ class KeyStore:
             if not row:
                 return False
             self.db.run("DELETE FROM usage WHERE key_hash=?", (row["key_hash"],))
+            self.db.run("DELETE FROM tool_usage WHERE prefix=?", (prefix,))
             self.db.run("DELETE FROM keys WHERE key_hash=?", (row["key_hash"],))
         return True
+
+    def record_tool_call(self, prefix: str, tool: str) -> None:
+        """One lifetime counter per key per tool, for the scope editor to show.
+
+        Never raises. A lost count is not worth costing the caller the answer they asked for.
+        """
+        try:
+            with self._lock:
+                self.db.run(
+                    "INSERT INTO tool_usage(prefix, tool, count, last_used) VALUES (?,?,1,?) "
+                    "ON CONFLICT(prefix, tool) DO UPDATE SET count = tool_usage.count + 1, "
+                    "last_used = excluded.last_used",
+                    (prefix, tool, _now()),
+                )
+        except Exception:  # noqa: BLE001 - see above; a counter must never fail a request
+            pass
+
+    def tool_counts(self, prefix: str) -> dict[str, int]:
+        try:
+            rows = self.db.all("SELECT tool, count FROM tool_usage WHERE prefix = ?", (prefix,))
+        except Exception:  # noqa: BLE001
+            return {}
+        return {r["tool"]: int(r["count"]) for r in rows}
 
     @staticmethod
     def _limit_sets(daily_quota: int | None, rpm: int | None) -> tuple[list[str], list[Any]]:

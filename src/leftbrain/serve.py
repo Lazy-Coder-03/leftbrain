@@ -39,7 +39,7 @@ from starlette.responses import JSONResponse
 from starlette.routing import Mount, Route
 
 from . import __version__, observe
-from .scopes import Scope, allowed_tools, current_scope
+from .scopes import Scope, allowed_tools, current_scope, current_tool_recorder
 
 MCP_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp")
 PROTECTED_PREFIXES = (*MCP_PREFIXES, "/keys/me")
@@ -215,12 +215,17 @@ class AuthMiddleware:
                 # agent can back off before it hits a 429 (#28 SS6).
                 quota_token = observe.current_quota.set({"remaining_today": verdict.remaining, "daily_quota": verdict.key.daily_quota, "rpm": verdict.key.rpm})
                 token = current_scope.set(key_scope)  # what enforce() reads inside every tool
+                # enforce() also counts each call against this key, so the scope editor can
+                # show its owner which tools it has actually reached for (#34)
+                prefix = verdict.key.prefix
+                recorder = current_tool_recorder.set(lambda tool: self.store.record_tool_call(prefix, tool))
                 try:
                     if key_scope is not None and scope.get("method") == "POST" and _under(scope.get("path", ""), MCP_PREFIXES):
                         await self._scoped(scope, receive, send, extra, key_scope)
                     else:
                         await self._with_headers(scope, receive, send, extra)
                 finally:
+                    current_tool_recorder.reset(recorder)
                     current_scope.reset(token)
                     observe.current_quota.reset(quota_token)
                 return

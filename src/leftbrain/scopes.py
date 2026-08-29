@@ -204,6 +204,10 @@ def parse_scope(value: Any, *, strict: bool = True) -> Scope | None:
 #: The calling key's scope for the current request; ``None`` when the key (or the auth mode) has none.
 current_scope: contextvars.ContextVar[Scope | None] = contextvars.ContextVar("leftbrain_scope", default=None)
 
+#: Set per request by `AuthMiddleware` to a callable taking the tool's name, so `enforce`
+#: can count a call without this module importing `keys` — which imports this one.
+current_tool_recorder: contextvars.ContextVar[Any] = contextvars.ContextVar("leftbrain_tool_recorder", default=None)
+
 
 def denial(scope: Scope, tool: str, mode: str | None) -> dict[str, Any] | None:
     """The contract error a call outside ``scope`` gets, or ``None`` when it is allowed."""
@@ -239,6 +243,13 @@ def enforce(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]
                 denied = denial(scope, tool_name, mode)
                 if denied is not None:
                     return denied
+            # after the scope check, so a refused call is not counted as usage: it never ran
+            recorder = current_tool_recorder.get()
+            if recorder is not None:
+                try:
+                    recorder(tool_name)
+                except Exception:  # noqa: BLE001 - counting is never worth a failed call
+                    pass
             return fn(*args, **kwargs)
 
         return wrapper
