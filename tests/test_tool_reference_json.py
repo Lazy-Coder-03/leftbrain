@@ -11,9 +11,11 @@ pytest.importorskip("starlette")
 
 from starlette.testclient import TestClient  # noqa: E402
 
-from leftbrain import __version__  # noqa: E402
+from leftbrain import (
+    __version__,  # noqa: E402
+    toolref,  # noqa: E402
+)
 from leftbrain.serve import build_app  # noqa: E402
-from leftbrain.web import toolref  # noqa: E402
 
 
 @pytest.fixture
@@ -44,7 +46,9 @@ def test_a_browser_still_gets_the_page(client):
 
 def test_one_tool_gives_every_mode_with_its_parameters(client):
     body = client.get("/docs/tools/holidays").json()
-    assert [m["name"] for m in body["modes"]] == ["list", "check", "next", "countries", "subdivisions", "categories"]
+    from leftbrain.core.holidays_ import MODES as HOLIDAY_MODES
+
+    assert [m["name"] for m in body["modes"]] == list(HOLIDAY_MODES)
     check = next(m for m in body["modes"] if m["name"] == "check")
     region = next(p for p in check["parameters"] if p["name"] == "region")
     assert region["required"] is True and region["type"] == "string" and region["doc"]

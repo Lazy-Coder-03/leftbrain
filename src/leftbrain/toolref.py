@@ -30,18 +30,16 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from ..contract import CODES, schema_rejection
-from ..core import collections_, datetimex, geo_offline, holidays_, mathx, random_
-from ..core import color as color_mod
-from ..core import convert as convert_mod
-from ..core import encode as encode_mod
-from ..core import finance as finance_mod
-from ..core import numbers as numbers_mod
-from ..core import scale as scale_mod
-from ..core import text as text_mod
-from ..core import validate as validate_mod
-from .docs import render_markdown
-from .tools_list import TOOLS
+from .contract import CODES, schema_rejection
+from .core import collections_, datetimex, geo_offline, holidays_, mathx, random_
+from .core import color as color_mod
+from .core import convert as convert_mod
+from .core import encode as encode_mod
+from .core import finance as finance_mod
+from .core import numbers as numbers_mod
+from .core import scale as scale_mod
+from .core import text as text_mod
+from .core import validate as validate_mod
 
 #: Responses longer than this are elided in the page (the call still returns them all).
 MAX_JSON_LINES = 140
@@ -148,8 +146,8 @@ def specs() -> dict[str, ToolSpec]:
     it directly keeps the docs build synchronous. ``tests/test_toolref.py`` asserts the two
     agree, so an SDK change cannot quietly desynchronise the page from the wire.
     """
-    from ..external.mcp_server import server as external_server
-    from ..mcp_server import server as core_server
+    from .external.mcp_server import server as external_server
+    from .mcp_server import server as core_server
 
     out: dict[str, ToolSpec] = {}
     for server in (core_server, external_server):
@@ -607,6 +605,8 @@ def catalogue_json() -> dict[str, Any]:
     """Every tool, with its one-liner and its mode names - the index, for a machine."""
     described = {t.name: t for t in CATALOGUE}
     listed = []
+    from .web.tools_list import TOOLS
+
     for name, description, _modes in TOOLS:
         tool = described[name]
         listed.append(
@@ -644,7 +644,7 @@ def catalogue_json() -> dict[str, Any]:
 
 
 def _version() -> str:
-    from .. import __version__
+    from . import __version__
 
     return __version__
 
@@ -698,6 +698,8 @@ def index_markdown() -> str:
         "",
     ]
     described = {t.name: t for t in CATALOGUE}
+    from .web.tools_list import TOOLS
+
     for name, desc, _modes in TOOLS:
         parts += _index_entry(described[name], desc + ".")
     parts += [
@@ -714,6 +716,8 @@ def index_markdown() -> str:
 
 @lru_cache(maxsize=1)
 def index_page() -> tuple[str, str]:
+    from .web.docs import render_markdown
+
     return "Tools", render_markdown(index_markdown())
 
 
@@ -722,6 +726,8 @@ def tool_page(name: str) -> tuple[str, str] | None:
     tool = by_name(name)
     if tool is None:
         return None
+    from .web.docs import render_markdown
+
     return tool.name, render_markdown(tool_markdown(tool))
 
 
@@ -743,7 +749,15 @@ MATH = ToolDoc(
         "`math` is SymPy behind the leftbrain contract. Answers come back in exact form *and* "
         "decimal form *and* LaTeX together, so the caller never rounds, re-derives or re-types "
         "anything. Expressions are parsed in a locked-down namespace — no builtins, no attribute "
-        "access, no imports — and run under a timeout."
+        "access, no imports — and run under a timeout.\n\n"
+        "That namespace is an allowlist, not all of SymPy: `isprime` and `factorint` are in, "
+        "`primepi` and `nextprime` are not. Every function it will evaluate is listed under "
+        "**Functions** below, and a rejected name comes back with the near misses and the whole "
+        "accepted set rather than only what failed.\n\n"
+        "**Batching.** There is no list mode, but predicates return booleans that coerce to 1 "
+        "and 0 inside an expression, so `is_prime(11) + is_prime(12) + is_prime(13)` counts how "
+        "many hold in one call. For a bounded run of primes or squares, `numbers.sequence` takes "
+        "`start` and `end`."
     ),
     when=(
         "Before stating any number: percentages, fractions, powers, roots, interest, ratios.",
@@ -774,6 +788,7 @@ MATH = ToolDoc(
                 "decimal is returned and `warnings` says so."
             ),
             params=(
+                Param("percent", "How to read a `%` between two values: `modulus` for the remainder, `percent` for a percentage of what follows. Only asked for when the expression has one; `mod` is the spelling that never needs it."),
                 Param("expr", "The expression to evaluate.", required=True),
                 Param("angle", "Mandatory whenever the expression contains trigonometry."),
                 Param("vars", "Values substituted before evaluating, e.g. `{'a': 3}`."),
@@ -791,6 +806,7 @@ MATH = ToolDoc(
                 "refused as `too_large` before it is built; `eval` with `precision` gives the decimal."
             ),
             params=(
+                Param("percent", "How to read a `%` between two values: `modulus` for the remainder, `percent` for a percentage of what follows. Only asked for when the expression has one; `mod` is the spelling that never needs it."),
                 Param("expr", "The expression to evaluate.", required=True),
                 Param("angle", "Mandatory whenever the expression contains trigonometry."),
                 Param("vars", "Values substituted before evaluating."),
@@ -1615,6 +1631,7 @@ HOLIDAYS = ToolDoc(
                 "holiday list."
             ),
             params=(
+                Param("language", "Language for holiday names; see mode `categories`."),
                 Param("region", "ISO country code (`IN`, `US`, `GB`); `UK` is accepted as `GB`.", required=True),
                 Param("year", "The year.", default="current year"),
                 Param("years", "Several years at once."),
@@ -1632,6 +1649,8 @@ HOLIDAYS = ToolDoc(
                 "an ambiguous numeric date is refused here too."
             ),
             params=(
+                Param("date_locale", "How an ambiguous date is read (DD/MM vs MM/DD). `locale` is the old name."),
+                Param("language", "Language for holiday names; see mode `categories`."),
                 Param("region", "ISO country code.", required=True),
                 Param("date", "The date to check.", default="`today`"),
                 Param("subdiv", "State or province code."),
@@ -1647,6 +1666,8 @@ HOLIDAYS = ToolDoc(
                 "December still returns January's holidays."
             ),
             params=(
+                Param("date_locale", "How an ambiguous date is read. `locale` is the old name."),
+                Param("language", "Language for holiday names."),
                 Param("region", "ISO country code.", required=True),
                 Param("date", "Start looking from here.", default="`today`"),
                 Param("n", "How many holidays to return.", default="5"),
@@ -1674,6 +1695,66 @@ HOLIDAYS = ToolDoc(
             ),
             params=(
                 Param("region", "ISO country code.", required=True),
+            ),
+        ),
+        Mode(
+            name="festival",
+            purpose="A festival by name, with its named days in order.",
+            description=(
+                "`check` and `next` are date-first: you bring a date and they tell you about it. "
+                "This is name-first — “when is Durga Puja” — and it searches *every* category, "
+                "because a festival is often not a public holiday. A multi-day festival comes "
+                "back as one thing with its days named (Saptami, Mahashtami, Mahanavami) rather "
+                "than as unrelated rows sharing a prefix.\n\n"
+                "Common names are mapped onto whatever this dataset calls the same festival — "
+                "Durga Puja is filed as `Dussehra`, Kali Puja only as `Naraka Chaturdashi` — and "
+                "the substitution is stated. A name it cannot find is refused with the near "
+                "misses, never an empty list: “not in this dataset” and “no such festival” are "
+                "different claims and only the first one is ours to make."
+            ),
+            params=(
+                Param("name", "The festival to look up.", required=True),
+                Param("region", "ISO country code.", required=True),
+                Param("subdiv", "State/province code."),
+                Param("year", "Defaults to the current year."),
+                Param("categories", "Defaults to every category this country has."),
+                Param("language", "Language for the names; see mode `categories`."),
+            ),
+        ),
+        Mode(
+            name="upcoming",
+            purpose="Everything marked in a window, not only public holidays.",
+            description=(
+                "“What festivals are coming up?” Searches every category by default and reports "
+                "each named day separately, so a multi-day festival shows each of its days. "
+                "Without `end` the window is the twelve months from `start`."
+            ),
+            params=(
+                Param("region", "ISO country code.", required=True),
+                Param("subdiv", "State/province code."),
+                Param("start", "Defaults to today."),
+                Param("end", "Defaults to a year after `start`."),
+                Param("n", "How many to return (default 20)."),
+                Param("categories", "Defaults to every category."),
+                Param("language", "Language for the names."),
+            ),
+        ),
+        Mode(
+            name="compare",
+            purpose="The same dates across two or more regions, as a table.",
+            description=(
+                "“Which Durga Puja days are holidays in West Bengal but not Assam?” Two calls "
+                "and a hand-written diff otherwise — and the diff is easy to get wrong, because "
+                "the two responses use names that do not line up. Each date says which of the "
+                "compared places observe it and which do not."
+            ),
+            params=(
+                Param("subdivs", "Two or more state codes, within one `region`."),
+                Param("regions", "Two or more country codes, instead of `subdivs`."),
+                Param("region", "ISO country code, when comparing `subdivs`."),
+                Param("year", "Defaults to the current year."),
+                Param("month", "Narrow to one month."),
+                Param("categories", "Defaults to every category."),
             ),
         ),
         Mode(

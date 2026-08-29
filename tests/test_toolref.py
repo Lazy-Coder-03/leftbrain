@@ -11,6 +11,7 @@ import asyncio
 import pytest
 from starlette.testclient import TestClient
 
+from leftbrain import toolref
 from leftbrain.core import collections_, datetimex, encode, geo_offline, holidays_, mathx, random_
 from leftbrain.core import color as color_mod
 from leftbrain.core import convert as convert_mod
@@ -21,7 +22,6 @@ from leftbrain.core import text as text_mod
 from leftbrain.core import validate as validate_mod
 from leftbrain.external import tools as external_tools
 from leftbrain.serve import build_app
-from leftbrain.web import toolref
 from leftbrain.web.config import WebConfig
 from leftbrain.web.tools_list import TOOLS
 

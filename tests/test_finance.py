@@ -167,3 +167,40 @@ def test_finance_registered_everywhere():
     assert "finance" in lb.TOOLS and finance.MODES == ("emi", "compound", "cagr", "npv_irr", "gst", "percent")
     assert set(finance.EXAMPLES) == set(finance.MODES)
     assert lb.finance_tool("nope")["error"] == "invalid_input"
+
+
+# --- a SIP with no opening balance was refused ------------------------------------------
+#
+# "growth and SIPs" is advertised at tool level, but `principal` was required - so the
+# ordinary SIP, "5,000 a month for ten years", had no opening balance to name and was
+# refused outright. It is `compound` with a `contribution`; the lump sum is the optional part.
+
+
+def test_a_sip_needs_no_opening_balance():
+    r = finance.finance("compound", contribution=5000, rate=12, rate_period="annual", years=10, compounding="monthly")
+    assert r["ok"], r
+    assert r["result"]["total_contributed"] == "600000.00"
+    assert r["result"]["future_value"] == "1150193.45"
+    assert r["result"]["principal"] == "0.00"
+
+
+def test_the_assumed_zero_is_stated_not_silent():
+    r = finance.finance("compound", contribution=5000, rate=12, rate_period="annual", years=10, compounding="monthly")
+    assert any("starting from zero" in a for a in r["assumptions"]), r["assumptions"]
+
+
+def test_it_agrees_with_spelling_the_zero_out():
+    common = {"contribution": 5000, "rate": 12, "rate_period": "annual", "years": 10, "compounding": "monthly"}
+    assert finance.finance("compound", **common)["result"] == finance.finance("compound", principal=0, **common)["result"]
+
+
+def test_a_lump_sum_alongside_the_sip_is_unchanged():
+    r = finance.finance("compound", principal=100000, contribution=1000, rate=12, rate_period="annual", months=12, compounding="monthly")
+    assert r["ok"] and r["result"]["principal"] == "100000.00"
+    assert not any("starting from zero" in a for a in r["assumptions"])
+
+
+def test_principal_is_still_required_when_nothing_is_contributed():
+    """With no contribution there is no question about what is growing."""
+    r = finance.finance("compound", rate=12, rate_period="annual", years=10)
+    assert not r["ok"] and "'principal' is required" in r["message"]

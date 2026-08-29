@@ -3,25 +3,32 @@
 from __future__ import annotations
 
 import calendar
+import difflib
+import hashlib
+import re
 from datetime import date, timedelta
+from functools import lru_cache
 from typing import Any
 
 import holidays as _hol
 
-from ..contract import Ambiguous, TooLarge, ToolError, check_params, ok, tool, whole
+from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, check_params, ok, tool, whole
 
-MODES = ("list", "check", "next", "countries", "subdivisions", "categories")
+MODES = ("list", "check", "next", "countries", "subdivisions", "festival", "upcoming", "compare", "categories")
 
 #: What each mode reads. Anything else in a call is a caller's mistake, not a default
 #: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
 #: the same map from the code and fails when the two drift. One set per mode.
 MODE_PARAMS: dict[str, frozenset[str]] = {
-    "list": frozenset({"categories", "country", "month", "region", "state", "subdiv", "year", "years"}),
-    "check": frozenset({"categories", "country", "date", "date_locale", "locale", "region", "state", "subdiv", "value"}),
-    "next": frozenset({"categories", "country", "date", "date_locale", "locale", "n", "region", "state", "subdiv"}),
+    "list": frozenset({"categories", "country", "format", "language", "month", "region", "state", "subdiv", "year", "years"}),
+    "check": frozenset({"categories", "country", "date", "date_locale", "language", "locale", "region", "state", "subdiv", "value"}),
+    "next": frozenset({"categories", "country", "date", "date_locale", "language", "locale", "n", "region", "state", "subdiv"}),
     "countries": frozenset(),
     "subdivisions": frozenset({"country", "region"}),
     "categories": frozenset({"country", "region"}),
+    "festival": frozenset({"categories", "country", "language", "name", "region", "state", "subdiv", "year"}),
+    "upcoming": frozenset({"categories", "country", "date", "date_locale", "end", "language", "locale", "n", "region", "start", "state", "subdiv"}),
+    "compare": frozenset({"categories", "country", "language", "month", "region", "regions", "subdivs", "year"}),
 }
 
 #: Past this year, lunar and observed-date rules are projections rather than calendars.
@@ -96,6 +103,148 @@ def _country(region: Any, notes: list[str] | None = None) -> str:
 DEFAULT_CATEGORY = "public"
 
 
+#: The dataset's per-country category names, mapped onto one vocabulary that means the same
+#: thing everywhere. The upstream sets are whatever each country's maintainer modelled -
+#: `optional` exists for India and not for the US - so a caller could not ask "is this a bank
+#: holiday" without first learning that country's names (#89). Anything unrecognised is
+#: reported as itself rather than forced into a bucket it may not belong in.
+CLASSIFICATIONS: dict[str, str] = {
+    "public": "public_holiday",
+    "government": "government_holiday",
+    "bank": "bank_holiday",
+    "half_day": "half_day",
+    "optional": "optional_holiday",
+    "optional_women": "optional_holiday",
+    "religious": "religious_festival",
+    "catholic": "religious_festival",
+    "christian": "religious_festival",
+    "hebrew": "religious_festival",
+    "islamic": "religious_festival",
+    "chinese": "religious_festival",
+    "hindu": "religious_festival",
+    "buddhist": "religious_festival",
+    "school": "observance",
+    "unofficial": "observance",
+    "workday": "working_day",
+    "armed_forces": "observance",
+}
+
+
+def classify(category: str) -> str:
+    """One name for a kind of day, whatever this country calls it."""
+    return CLASSIFICATIONS.get(str(category).lower(), f"unclassified:{category}")
+
+
+#: Kinds of day that mean the office is shut. `optional_holiday` deliberately is not one:
+#: whether it is taken off is the caller's question, not the dataset's.
+CLOSES_OFFICES = frozenset({"public_holiday", "government_holiday", "bank_holiday"})
+
+
+def observances(code: str, day: date, subdiv: str | None, language: str | None = None) -> list[dict[str, str]]:
+    """Everything the dataset marks on one date, each with what kind of day it is.
+
+    `is_holiday` and `is_weekend` had to carry every question and could not: 2026-10-18 in
+    West Bengal came back `is_holiday: false, is_weekend: true`, which is true, useless, and
+    silent about the date being Durga Puja Saptami (#95).
+    """
+    found: list[dict[str, str]] = []
+    for category in supported_categories(code):
+        try:
+            named = holiday_map(code, {day.year}, subdiv, [category], None, language).get(day)
+        except ToolError:
+            continue
+        if not named:
+            continue
+        for name in str(named).split("; "):
+            if not any(f["name"] == name for f in found):
+                found.append({"name": name, "category": category, "classification": classify(category)})
+    return found
+
+
+@lru_cache(maxsize=256)
+def coverage(code: str) -> dict[str, Any]:
+    """What this country's calendar is, and how far it reaches.
+
+    Every date came back with no indication of its source or its range, so a date the dataset
+    tabulates and one from a year it does not cover were indistinguishable - and the second
+    was an empty list, which reads exactly like "no holidays" (#90).
+    """
+    try:
+        entry = _hol.country_holidays(code)
+    except Exception:  # noqa: BLE001 - a country we cannot introspect still answers `list`
+        return {"start_year": None, "end_year": None, "languages": (), "default_language": None}
+    return {
+        "start_year": getattr(entry, "start_year", None),
+        "end_year": getattr(entry, "end_year", None),
+        "languages": tuple(getattr(entry, "supported_languages", ()) or ()),
+        "default_language": getattr(entry, "default_language", None),
+    }
+
+
+def provenance(code: str, language: str | None = None, categories: Any = None) -> dict[str, Any]:
+    """Where a date came from: the source, its range, and how it was read."""
+    reach = coverage(code)
+    return {
+        "source": f"python-holidays {_hol.__version__}",
+        "calendar": "gregorian",
+        "covers": {"from": reach["start_year"], "to": reach["end_year"]},
+        "language": language or reach["default_language"],
+        "categories": list(categories) if categories else [DEFAULT_CATEGORY],
+    }
+
+
+def _check_years(code: str, years: list[int]) -> None:
+    """Refuse a year the source does not reach, rather than answering an empty list.
+
+    An empty list because the tables stop in 2100 reads exactly like an empty list because
+    nothing falls in that year, and only one of those is a fact about holidays (#90).
+    """
+    reach = coverage(code)
+    lo, hi = reach["start_year"], reach["end_year"]
+    if lo is None or hi is None:
+        return
+    outside = sorted(y for y in years if y < lo or y > hi)
+    if outside:
+        raise Unsupported(
+            f"the calendar for {code} covers {lo}-{hi}; {', '.join(str(y) for y in outside)} "
+            f"{'is' if len(outside) == 1 else 'are'} outside it, and an empty list would read as 'no holidays'",
+            details={"region": code, "covers": {"from": lo, "to": hi}, "outside": outside},
+            hint=f"Ask for a year between {lo} and {hi}.",
+        )
+
+
+def _language(p: dict[str, Any], code: str, notes: list[str]) -> str | None:
+    """The language for holiday *names*, which is a real capability and was never exposed.
+
+    `locale` was refused for `hi` with "use a country code" - but the dataset carries Hindi,
+    Bengali, Tamil and eight more for India, and that is plainly what someone passing `hi`
+    wanted. `locale` sets how a *date* is read; `language` sets what the names come back in
+    (#76).
+    """
+    wanted = p.get("language")
+    if wanted is None:
+        return None
+    available = coverage(code)["languages"]
+    key = str(wanted).strip()
+    if not available:
+        raise Unsupported(
+            f"{code}'s holiday names are not translated; they come back in the source's own language",
+            details={"region": code, "languages": []},
+        )
+    match = next((a for a in available if a.lower() == key.lower()), None)
+    if match is None:  # `hi` should find `hi_IN`, and `en` the first English there is
+        match = next((a for a in available if a.lower().split("_")[0] == key.lower().split("_")[0]), None)
+        if match:
+            notes.append(f"language {key!r} read as {match!r}")
+    if match is None:
+        raise Ambiguous(
+            f"{code} has no holiday names in {key!r}",
+            field="language",
+            options=list(available),
+        )
+    return match
+
+
 def supported_categories(code: str) -> tuple[str, ...]:
     """The category values this country actually accepts.
 
@@ -130,9 +279,12 @@ def _checked_categories(code: str, categories: Any) -> tuple[str, ...]:
 
 
 def holiday_map(region: str, years: set[int] | list[int], subdiv: str | None = None, categories: Any = None,
-                notes: list[str] | None = None) -> dict[date, str]:
+                notes: list[str] | None = None, language: str | None = None) -> dict[date, str]:
     code = _country(region, notes)
+    _check_years(code, sorted(years))
     kwargs: dict[str, Any] = {"years": sorted(years)}
+    if language:
+        kwargs["language"] = language
     if subdiv:
         subdiv = str(subdiv).strip().upper()
         supported = _hol.list_supported_countries().get(code, [])
@@ -194,13 +346,296 @@ def _mode_countries(p: dict[str, Any]) -> dict[str, Any]:
               assumptions=["'code' is the value to pass as region; 'aliases' also resolve to it"])
 
 
+#: Names a caller will reach for, mapped onto what this dataset calls the same festival.
+#: Every entry was checked against the data rather than assumed: West Bengal 2026 files the
+#: Durga Puja days as `Dussehra (Saptami)` and so on, and Kali Puja only as
+#: `Naraka Chaturdashi`. A miss is answered with near misses (#87), so this table only has to
+#: carry the ones that are common *and* spelled differently - it is not a festival list, and
+#: it never invents a date.
+FESTIVAL_ALIASES: dict[str, str] = {
+    "durga puja": "dussehra",
+    "durgotsav": "dussehra",
+    "durga pujo": "dussehra",
+    "kali puja": "naraka chaturdashi",
+    "shyama puja": "naraka chaturdashi",
+    "saraswati puja": "basant panchami",
+    "sri panchami": "basant panchami",
+    "bengali new year": "pohela boishakh",
+    "poila boishakh": "pohela boishakh",
+    "bhai phota": "bhai duj",
+    "bhai phonta": "bhai duj",
+    "chhath puja": "chhat puja",
+}
+
+
+def _festival_key(name: str) -> str:
+    """A festival's name reduced for matching: case, punctuation and the day in brackets gone."""
+    base = re.sub(r"\([^)]*\)", " ", str(name))
+    return re.sub(r"[^a-z0-9]+", " ", base.lower()).strip()
+
+
+def _words(name: str) -> str:
+    """A name reduced for matching, brackets and all."""
+    return re.sub(r"[^a-z0-9]+", " ", str(name).lower()).strip()
+
+
+def _grouped(hm: dict[date, str]) -> dict[str, list[tuple[date, str]]]:
+    """Every entry filed under its festival, so a multi-day festival is one thing.
+
+    Durga Puja came back as unrelated rows sharing a prefix - `Dussehra (Saptami)`,
+    `Dussehra (Mahanavami); Dussehra (Mahashtami)` - and an agent asked for "the Durga Puja
+    dates" had to reassemble that from string prefixes (#88).
+    """
+    out: dict[str, list[tuple[date, str]]] = {}
+    for day, joined in sorted(hm.items()):
+        for name in str(joined).split("; "):
+            out.setdefault(_festival_key(name), []).append((day, name))
+    return out
+
+
+def _day_name(name: str) -> str | None:
+    """`Dussehra (Saptami)` -> `Saptami`: the named day within a festival."""
+    match = re.search(r"\(([^)]*)\)", str(name))
+    return match.group(1).strip() if match else None
+
+
+#: What `list` can hand back besides JSON rows.
+FORMATS = ("json", "ics", "csv")
+
+
+def _ics_escape(text: str) -> str:
+    """RFC 5545 escaping: backslash, semicolon, comma and newline are all special."""
+    return str(text).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _uid(code: str, subdiv: str | None, row: dict[str, Any]) -> str:
+    """A stable event id. Not `hash()`: PYTHONHASHSEED is randomised per process, so the same
+    calendar exported twice would carry different UIDs and a client would add the events again
+    instead of updating them."""
+    seed = "|".join([code, str(subdiv), str(row["date"]), str(row["name"])])
+    return hashlib.sha1(seed.encode()).hexdigest()[:16]
+
+
+def _as_ics(rows: list[dict[str, Any]], code: str, subdiv: str | None) -> str:
+    """An all-day VEVENT per entry, which is what a holiday is.
+
+    DTEND is exclusive in RFC 5545, so a one-day event ends on the following day. Getting that
+    wrong is the classic off-by-one that makes every imported holiday a day short.
+    """
+    name = f"{code}{'/' + subdiv if subdiv else ''} holidays"
+    out = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", f"PRODID:-//leftbrain//holidays {_hol.__version__}//EN",
+        "CALSCALE:GREGORIAN", "METHOD:PUBLISH", f"X-WR-CALNAME:{_ics_escape(name)}",
+    ]
+    for row in rows:
+        day = date.fromisoformat(row["date"])
+        out += [
+            "BEGIN:VEVENT",
+            f"UID:{row['date']}-{_uid(code, subdiv, row)}@leftbrain",
+            f"DTSTAMP:{day.strftime('%Y%m%d')}T000000Z",
+            f"DTSTART;VALUE=DATE:{day.strftime('%Y%m%d')}",
+            f"DTEND;VALUE=DATE:{(day + timedelta(days=1)).strftime('%Y%m%d')}",
+            f"SUMMARY:{_ics_escape(row['name'])}",
+            "TRANSP:TRANSPARENT",
+            "END:VEVENT",
+        ]
+    out.append("END:VCALENDAR")
+    return "\r\n".join(out) + "\r\n"
+
+
+def _as_csv(rows: list[dict[str, Any]]) -> str:
+    """Reuses `collections.to_csv`, so the formula escaping is the one already tested."""
+    from .collections_ import collections as collections_tool
+
+    answered = collections_tool("to_csv", items=rows or [{"date": "", "name": "", "weekday": ""}])
+    if not answered["ok"]:  # pragma: no cover - to_csv refusing well-formed records
+        raise ToolError(answered["message"])
+    return answered["result"]["csv"] if rows else "date,name,weekday\r\n"
+
+
+def festival_dates(name: str, year: int, region: str, subdiv: str | None = None,
+                   categories: Any = None, notes: list[str] | None = None) -> list[tuple[date, str]]:
+    """Every dated entry for one festival, or an `Ambiguous` naming the near misses.
+
+    Shared with `datetime` so a festival can anchor date arithmetic without that module
+    learning anything about holidays (#92).
+    """
+    notes = notes if notes is not None else []
+    code = _country(region, notes)
+    wanted = str(name).strip()
+    chosen = categories or list(supported_categories(code))
+    hm = holiday_map(code, {int(year)}, subdiv, chosen, notes, None)
+    groups = _grouped(hm)
+    full_names = {k: " ".join(_words(n) for _d, n in entries) for k, entries in groups.items()}
+    key = _festival_key(wanted)
+    if key in FESTIVAL_ALIASES:
+        notes.append(f"{wanted!r} looked up as {FESTIVAL_ALIASES[key]!r}, which is what this dataset calls it")
+        key = FESTIVAL_ALIASES[key]
+    matches = [k for k in groups if k == key]
+    if not matches:
+        # A named day inside a festival - "Saptami" is `Dussehra (Saptami)` - and it has to be
+        # tried before the substring pass, which would otherwise match the whole of Dussehra
+        # and hand back four dates for a question about one.
+        day_named = [(d, n) for entries in groups.values() for d, n in entries if _words(_day_name(n) or "") == key]
+        if day_named:
+            return sorted(set(day_named))
+        matches = [k for k in groups if key in k or k in key or key in full_names[k]]
+    if not matches:
+        close = difflib.get_close_matches(key, list(groups), n=5, cutoff=0.5)
+        named = sorted({n for k in (close or list(groups)[:8]) for _d, n in groups[k]})
+        raise Ambiguous(
+            f"{code}{'/' + subdiv if subdiv else ''} has no festival or day matching {wanted!r} in {year}",
+            field="name",
+            options=named,
+        )
+    return sorted({(d, n) for k in matches for d, n in groups[k]})
+
+
+def _mode_festival(p: dict[str, Any]) -> dict[str, Any]:
+    """A festival by name, with its named days in order (#87, #88)."""
+    notes: list[str] = []
+    code = _region(p, notes)
+    wanted = p.get("name")
+    if not wanted:
+        raise ToolError("'name' is required: the festival to look up")
+    subdiv = p.get("subdiv") or p.get("state")
+    language = _language(p, code, notes)
+    year = whole(p.get("year", date.today().year), "year", lo=1, hi=9999)
+    categories = p.get("categories") or list(supported_categories(code))
+    if not p.get("categories"):
+        notes.append(f"every category searched ({', '.join(categories)}); a festival is often not a {DEFAULT_CATEGORY} holiday")
+    hm = holiday_map(code, {year}, subdiv, categories, notes, language)
+    groups = _grouped(hm)
+    key = _festival_key(wanted)
+    if key in FESTIVAL_ALIASES:
+        notes.append(f"{str(wanted)!r} looked up as {FESTIVAL_ALIASES[key]!r}, which is what this dataset calls it")
+        key = FESTIVAL_ALIASES[key]
+    #: the whole name as well as the grouping key, because `Diwali (Deepavali)` keeps the
+    #: common name in the brackets that grouping strips
+    full_names = {k: " ".join(_words(name) for _day, name in entries) for k, entries in groups.items()}
+    matches = [k for k in groups if k == key]
+    if not matches:
+        matches = [k for k in groups if key in k or k in key or key in full_names[k]]
+    if not matches:
+        # An empty result reads as "there is no such festival", which is a claim about the
+        # world rather than about this dataset. The near misses say which it is (#87).
+        close = difflib.get_close_matches(key, list(groups), n=5, cutoff=0.5)
+        close += [k for k in groups if any(part in full_names[k] for part in key.split() if len(part) > 3)][:5]
+        raise Ambiguous(
+            f"{code}{'/' + subdiv if subdiv else ''} has no festival matching {str(wanted)!r} in {year}",
+            field="name",
+            options=sorted({groups[k][0][1] for k in (close or list(groups)[:8])}),
+        )
+    entries = sorted({(day, name) for k in matches for day, name in groups[k]})
+    days = [{"date": day.isoformat(), "name": name, "day": _day_name(name), "weekday": day.strftime("%A")} for day, name in entries]
+    shared = [d["date"] for d in days if [x["date"] for x in days].count(d["date"]) > 1]
+    warnings = []
+    if shared:
+        warnings.append(f"{len(set(shared))} date(s) carry more than one named day; tithis can overlap, but verify against a local calendar")
+    return ok(
+        {
+            "festival": entries[0][1].split(" (")[0],
+            "region": code, "subdiv": subdiv, "year": year,
+            "days": days, "count": len(days),
+            "span": {"start": days[0]["date"], "end": days[-1]["date"]},
+            "provenance": provenance(code, language, categories),
+        },
+        assumptions=notes,
+        warnings=warnings,
+    )
+
+
+def _mode_upcoming(p: dict[str, Any]) -> dict[str, Any]:
+    """What is coming up, across every category rather than only public holidays (#87)."""
+    from .datetimex import parse_dt
+
+    notes: list[str] = []
+    code = _region(p, notes)
+    subdiv = p.get("subdiv") or p.get("state")
+    language = _language(p, code, notes)
+    start, _, a = parse_dt(p.get("start") or p.get("date") or "today", locale=_date_locale(p, notes), field="start")
+    if p.get("end") is not None:
+        end, _, _ = parse_dt(p["end"], locale=_date_locale(p, notes), field="end")
+        end = end.date()
+    else:
+        end = date(start.year + 1, start.month, start.day) if start.month != 2 or start.day != 29 else date(start.year + 1, 3, 1)
+        notes.append("no 'end': the twelve months from 'start'")
+    categories = p.get("categories") or list(supported_categories(code))
+    if not p.get("categories"):
+        notes.append(f"every category searched ({', '.join(categories)})")
+    hm = holiday_map(code, {start.year, end.year}, subdiv, categories, notes, language)
+    n = whole(p.get("n", 20), "n", lo=1, hi=MAX_NEXT)
+    rows = []
+    for day, joined in sorted(hm.items()):
+        if start.date() <= day <= end:
+            for name in str(joined).split("; "):
+                rows.append({"date": day.isoformat(), "name": name, "day": _day_name(name), "weekday": day.strftime("%A"), "days_away": (day - start.date()).days})
+    warnings = [f"{len(rows) - n} more in the window; raise 'n'"] if len(rows) > n else []
+    return ok(
+        {"start": start.date().isoformat(), "end": end.isoformat(), "festivals": rows[:n], "count": min(len(rows), n),
+         "truncated": len(rows) > n, "provenance": provenance(code, language, categories)},
+        assumptions=a + notes, warnings=warnings,
+    )
+
+
+def _mode_compare(p: dict[str, Any]) -> dict[str, Any]:
+    """The same dates across regions, as a table rather than two lists to reconcile (#94)."""
+    notes: list[str] = []
+    where = p.get("subdivs") or p.get("regions")
+    if not where or not isinstance(where, list) or len(where) < 2:
+        raise ToolError("'subdivs' (or 'regions') needs two or more to compare")
+    year = whole(p.get("year", date.today().year), "year", lo=1, hi=9999)
+    month = _month(p["month"]) if p.get("month") is not None else None
+    across_regions = p.get("regions") is not None
+    base = _region(p, notes) if not across_regions else None
+    language = _language(p, base, notes) if base else None
+    # Categories are per country - `optional` exists for India and not for the US - so a shared
+    # default taken from the first one is refused by the rest. Each place gets its own unless
+    # the caller named a set explicitly.
+    asked = p.get("categories")
+    columns, maps, used = [], {}, {}
+    for one in where:
+        code = _country(one, notes) if across_regions else base
+        subdiv = None if across_regions else str(one).upper()
+        label = str(one).upper()
+        columns.append(label)
+        categories = asked or list(supported_categories(code))
+        used[label] = categories
+        maps[label] = holiday_map(code, {year}, subdiv, categories, notes, language)
+    if not asked and len({tuple(v) for v in used.values()}) > 1:
+        notes.append("every category searched in each place, and they differ: " + "; ".join(f"{k}: {', '.join(v)}" for k, v in used.items()))
+    elif not asked:
+        notes.append(f"every category searched ({', '.join(next(iter(used.values())))})")
+    categories = asked or sorted({c for v in used.values() for c in v})
+    every = sorted({d for m in maps.values() for d in m if month is None or d.month == month})
+    rows = []
+    for day in every:
+        observed = {c: maps[c].get(day) for c in columns}
+        rows.append({
+            "date": day.isoformat(),
+            "weekday": day.strftime("%A"),
+            "observed_in": [c for c in columns if observed[c]],
+            "not_in": [c for c in columns if not observed[c]],
+            "names": {c: observed[c] for c in columns if observed[c]},
+            "everywhere": all(observed.values()),
+        })
+    return ok(
+        {"compared": columns, "year": year, "month": month, "dates": rows, "count": len(rows),
+         "shared": sum(1 for r in rows if r["everywhere"]),
+         "provenance": provenance(base or _country(str(where[0])), language, categories)},
+        assumptions=notes,
+    )
+
+
 def _mode_categories(p: dict[str, Any]) -> dict[str, Any]:
     """Which category values this country accepts - the enum that cannot live in the schema."""
     notes: list[str] = []
     code = _region(p, notes)
     allowed = supported_categories(code)
     return ok(
-        {"region": code, "name": country_name(code), "categories": list(allowed), "default": DEFAULT_CATEGORY},
+        {"region": code, "name": country_name(code), "categories": list(allowed), "default": DEFAULT_CATEGORY,
+         "languages": list(coverage(code)["languages"]), "default_language": coverage(code)["default_language"],
+         "provenance": provenance(code)},
         assumptions=notes + [f"{DEFAULT_CATEGORY} is used when 'categories' is not given"],
     )
 
@@ -232,10 +667,12 @@ def _mode_check(p: dict[str, Any]) -> dict[str, Any]:
     code = _region(p, notes)
     subdiv = p.get("subdiv") or p.get("state")
     d, _, a = parse_dt(p.get("date") or p.get("value") or "today", locale=_date_locale(p, notes), field="date")
-    hm = holiday_map(code, {d.year}, subdiv, p.get("categories"), notes)
+    language = _language(p, code, notes)
+    hm = holiday_map(code, {d.year}, subdiv, p.get("categories"), notes, language)
     name = hm.get(d.date())
     # An empty calendar for the year is not the same as "not a holiday".
     warnings = [_no_data(code, [d.year])] if not hm else []
+    marked = observances(code, d.date(), subdiv, language)
     observed = None
     if name is None and not p.get("categories"):
         # A bare `false` for a date the dataset does know about is the worst answer this tool
@@ -251,7 +688,22 @@ def _mode_check(p: dict[str, Any]) -> dict[str, Any]:
                     f"({', '.join(c for c in wider if c != DEFAULT_CATEGORY)}), which the "
                     f"{DEFAULT_CATEGORY}-only default excluded; pass categories to include it"
                 )
-    out = {"date": d.date().isoformat(), "is_holiday": name is not None, "name": name, "weekday": d.strftime("%A"), "is_weekend": d.weekday() >= 5}
+    weekend = d.weekday() >= 5
+    closes = any(m["classification"] in CLOSES_OFFICES for m in marked)
+    out = {
+        "date": d.date().isoformat(),
+        "is_holiday": name is not None,  # unchanged: what the selected categories say
+        "name": name,
+        "weekday": d.strftime("%A"),
+        "is_weekend": weekend,
+        # `is_holiday` alone could not answer "is anything marked here" or "is the office
+        # shut", and a holiday landing on a Sunday was indistinguishable from one that did
+        # not. `day_off` is the question most callers actually mean (#95).
+        "is_observed": bool(marked),
+        "day_off": bool(weekend or closes),
+        "observances": marked,
+        "provenance": provenance(code, language, p.get("categories")),
+    }
     if observed:
         out["observed_elsewhere"] = observed
     return ok(out, assumptions=a + notes, warnings=warnings)
@@ -271,13 +723,14 @@ def _mode_next(p: dict[str, Any]) -> dict[str, Any]:
             details={"n": n, "limit": MAX_NEXT},
             hint=f"Ask for at most {MAX_NEXT}, or use mode 'list' with a year.",
         )
-    hm = holiday_map(code, {d.year, d.year + 1}, subdiv, p.get("categories"), notes)
+    language = _language(p, code, notes)
+    hm = holiday_map(code, {d.year, d.year + 1}, subdiv, p.get("categories"), notes, language)
     found = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A"), "days_away": (k - d.date()).days} for k, v in sorted(hm.items()) if k >= d.date()]
     upcoming = found[:n]
     # The window is this year and the next, so asking for more than it holds is not
     # an empty answer - say the list is short because the calendar ran out (#28 SS2f).
     short = [f"only {len(upcoming)} holidays fall in the {d.year}-{d.year + 1} window; {n} were asked for"] if len(upcoming) < n else []
-    return ok({"date": d.date().isoformat(), "next": upcoming, "count": len(upcoming)}, assumptions=a + notes, warnings=short)
+    return ok({"date": d.date().isoformat(), "next": upcoming, "count": len(upcoming), "provenance": provenance(code, language, p.get("categories"))}, assumptions=a + notes, warnings=short)
 
 
 def _month(raw: Any) -> int:
@@ -304,7 +757,8 @@ def _mode_list(p: dict[str, Any]) -> dict[str, Any]:
     else:
         raw_years = [date.today().year]
     years = [whole(y, "year", lo=1, hi=9999) for y in raw_years]
-    hm = holiday_map(code, set(years), subdiv, p.get("categories"), notes)
+    language = _language(p, code, notes)
+    hm = holiday_map(code, set(years), subdiv, p.get("categories"), notes, language)
     month = _month(p["month"]) if p.get("month") is not None else None
     items = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A")} for k, v in sorted(hm.items()) if (month is None or k.month == month)]
     long_weekends = []
@@ -313,7 +767,19 @@ def _mode_list(p: dict[str, Any]) -> dict[str, Any]:
     for k in sorted(k for k in hm if month is None or k.month == month):
         if k.weekday() == 4 or k.weekday() == 0:
             long_weekends.append({"date": k.isoformat(), "name": hm[k], "spans": f"{(k - timedelta(days=k.weekday() - 4 if k.weekday() == 4 else 2)).isoformat()} to {(k + timedelta(days=2 if k.weekday() == 4 else 0)).isoformat()}"})
-    out = {"region": code, "subdiv": subdiv, "years": years, "count": len(items), "holidays": items, "long_weekends": long_weekends}
+    fmt = str(p.get("format") or "json").lower()
+    if fmt not in FORMATS:
+        raise ToolError(f"format must be one of {', '.join(FORMATS)}")
+    out: dict[str, Any] = {"region": code, "subdiv": subdiv, "years": years, "count": len(items), "provenance": provenance(code, language, p.get("categories"))}
+    if fmt == "json":
+        out.update({"holidays": items, "long_weekends": long_weekends})
+    else:
+        # The thing people actually do with a holiday calendar is put it in a calendar, or
+        # open it in a spreadsheet. Both were the caller's job to write (#93).
+        out["format"] = fmt
+        out["content"] = _as_ics(items, code, subdiv) if fmt == "ics" else _as_csv(items)
+        out["media_type"] = "text/calendar" if fmt == "ics" else "text/csv"
+        out["filename"] = f"{code.lower()}{'-' + subdiv.lower() if subdiv else ''}-{'-'.join(str(y) for y in years)}.{fmt}"
     assumptions = list(notes) if subdiv else [*notes, "national holidays only; pass subdiv (e.g. state code) for regional ones" if _hol.list_supported_countries().get(code) else ""]
     # An empty list because the calendar has no data for that year reads exactly like an
     # empty list because there are no holidays. Say which (#28 SS3.13).
@@ -333,7 +799,8 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
     p = {k: v for k, v in params.items() if v is not None}
     check_params("holidays", mode, p, MODE_PARAMS)
     return {"list": _mode_list, "check": _mode_check, "next": _mode_next, "countries": _mode_countries,
-            "subdivisions": _mode_subdivisions, "categories": _mode_categories}[mode](p)
+            "subdivisions": _mode_subdivisions, "categories": _mode_categories, "festival": _mode_festival,
+            "upcoming": _mode_upcoming, "compare": _mode_compare}[mode](p)
 
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
@@ -412,6 +879,48 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Every supported country code.",
             "args": {"mode": "countries"},
+        },
+    ],
+    "festival": [
+        {
+            "caption": "Durga Puja's days, in order. The dataset files them under 'Dussehra'; the substitution is stated.",
+            "args": {"mode": "festival", "region": "IN", "subdiv": "WB", "name": "Durga Puja", "year": 2026},
+        },
+        {
+            "caption": "Kali Puja exists here only as 'Naraka Chaturdashi'.",
+            "args": {"mode": "festival", "region": "IN", "subdiv": "WB", "name": "Kali Puja", "year": 2026},
+        },
+        {
+            "caption": "A festival this dataset does not carry: refused with the near misses, not an empty list.",
+            "args": {"mode": "festival", "region": "IN", "subdiv": "WB", "name": "Jagadhatri Puja", "year": 2026},
+        },
+    ],
+    "upcoming": [
+        {
+            "caption": "What falls in October in West Bengal, across every category.",
+            "args": {"mode": "upcoming", "region": "IN", "subdiv": "WB", "start": "2026-10-01", "end": "2026-10-31"},
+        },
+        {
+            "caption": "The next few, from a date, over the following twelve months.",
+            "args": {"mode": "upcoming", "region": "IN", "subdiv": "WB", "start": "2026-06-01", "n": 5},
+        },
+        {
+            "caption": "A year the source does not reach is refused, because an empty list would read as 'nothing happens'.",
+            "args": {"mode": "upcoming", "region": "IN", "start": "2200-01-01", "end": "2200-12-31"},
+        },
+    ],
+    "compare": [
+        {
+            "caption": "October in West Bengal against Assam: which dates each observes.",
+            "args": {"mode": "compare", "region": "IN", "subdivs": ["WB", "AS"], "year": 2026, "month": 10},
+        },
+        {
+            "caption": "Across countries instead of states.",
+            "args": {"mode": "compare", "regions": ["IN", "US"], "year": 2026, "month": 1},
+        },
+        {
+            "caption": "One place is not a comparison.",
+            "args": {"mode": "compare", "region": "IN", "subdivs": ["WB"], "year": 2026},
         },
     ],
     "categories": [

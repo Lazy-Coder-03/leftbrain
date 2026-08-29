@@ -88,6 +88,7 @@ def math(
     mode: str = "eval",
     expr: str | None = None,
     angle: str | None = None,
+    percent: str | None = None,
     precision: int | None = None,
     var: str | None = None,
     vars: dict[str, Any] | list[str] | None = None,
@@ -119,8 +120,12 @@ def math(
     significant: int | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Use for ANY arithmetic or mathematics before stating a number - percentages, fractions,
-    powers, roots, trigonometry, complex numbers, algebra, calculus, matrices, statistics.
+    """Use for arithmetic and mathematics rather than working it out: percentages, fractions,
+    powers, roots, trigonometry, complex numbers, algebra, calculus, matrices, statistics -
+    each answered in exact form and decimal form together. Functions come from a named
+    allowlist (isprime and factorint are in, primepi is not) and a rejected name is answered
+    with the accepted set. Predicates return booleans that add up, so
+    is_prime(11)+is_prime(12) counts how many hold in one call.
 
     mode: eval | exact | simplify | expand | factor | solve | diff | integrate | limit | series | ode | matrix | stats | convert_form | plot_points
     - eval/exact: expr (e.g. "15% of 200", "(3+4i)*(1-2i)", "sin(30)" with angle="deg")
@@ -133,7 +138,7 @@ def math(
     angle is REQUIRED ('rad' or 'deg') whenever the expression contains trigonometry.
     Returns exact form, decimal form and LaTeX together.
     """
-    params = _clean(dict(expr=expr, angle=angle, precision=precision, var=var, vars=vars, equations=equations, domain=domain, order=order, at=at, lower=lower, upper=upper, point=point, form=form, side=side, equation=equation, func=func, ics=ics, op=op, A=A, B=B, b=b, n=n, data=data, y=y, weights=weights, percentile=percentile, value=value, predict=predict, range=range, tolerance=tolerance, significant=significant, timeout=timeout))
+    params = _clean(dict(expr=expr, angle=angle, percent=percent, precision=precision, var=var, vars=vars, equations=equations, domain=domain, order=order, at=at, lower=lower, upper=upper, point=point, form=form, side=side, equation=equation, func=func, ics=ics, op=op, A=A, B=B, b=b, n=n, data=data, y=y, weights=weights, percentile=percentile, value=value, predict=predict, range=range, tolerance=tolerance, significant=significant, timeout=timeout))
     return run_guarded("math", mode, params, timeout=timeout)
 
 
@@ -268,12 +273,20 @@ def holidays(
     n: int | None = None,
     categories: list[str] | None = None,
     locale: str | None = None,
+    date_locale: str | None = None,
+    language: str | None = None,
+    name: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    subdivs: list[str] | None = None,
+    regions: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Use for public holidays of any country/state (region="IN", subdiv="WB").
-    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions | categories.
+    """Use for public holidays and festivals of any country/state (region="IN", subdiv="WB").
+    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions |
+          categories | festival (name, year) | upcoming (start, end) | compare (subdivs/regions).
     The model's holiday knowledge is stale; this dataset is current.
     """
-    return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale)))
+    return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale, date_locale=date_locale, language=language, name=name, start=start, end=end, subdivs=subdivs, regions=regions)))
 
 
 @server.tool(name="numbers")
@@ -350,7 +363,8 @@ def finance(
     people: int | None = None,
 ) -> dict[str, Any]:
     """Use for any money arithmetic: loan EMIs with a full amortisation schedule, compound
-    growth and SIPs, CAGR, NPV and IRR of a cash-flow series, GST inclusive/exclusive splits
+    growth and SIPs (mode='compound' with 'contribution'; leave 'principal' out for a SIP
+    starting from zero), CAGR, NPV and IRR of a cash-flow series, GST inclusive/exclusive splits
     with CGST/SGST/IGST, and percentages (change vs percentage points, stacked discounts,
     bill splits). Exact decimals; the rate's period (annual|monthly) and whether an amount is
     GST-inclusive are never guessed.
@@ -586,6 +600,52 @@ def color(
     - grayscale (value, method, ramp, image) - the grey under rec709, rec601, lab, average or hsl, with an optional ramp
     """
     return color_mod.color(mode, **_clean(dict(value=value, spaces=spaces, other=other, ratio=ratio, space=space, kind=kind, palette=palette, size=size, method=method, ramp=ramp, image=image, level=level, decimals=decimals)))
+
+
+def _describe_parameters() -> int:
+    """Copy the reference's parameter docs onto the published JSON schema.
+
+    A client that defers tool schemas shows a preview when deciding whether to load the full
+    definition, and ours read as `A?: any, B?: any, angle?: any...` - thirty untyped optionals
+    with nothing to choose between them, next to rival tools showing real descriptions (#64).
+    #71 gave them types; this gives them meanings.
+
+    The text comes from `toolref`, which already has to describe every parameter for the
+    documentation site, so there is one source rather than two that drift. A parameter
+    documented per mode gets each mode's wording, because the schema is flat across modes and
+    a caller reading it cannot see which mode a sentence belongs to.
+    """
+    from . import toolref
+
+    described = 0
+    for doc in (*toolref.CATALOGUE, *toolref.EXTERNAL_CATALOGUE):
+        tool = server._tool_manager._tools.get(doc.name)
+        if tool is None:  # a tool this build does not ship
+            continue
+        properties = (tool.parameters or {}).get("properties", {})
+        per_name: dict[str, list[str]] = {}
+        for mode in doc.modes:
+            for param in mode.params:
+                if param.name in properties and param.doc:
+                    per_name.setdefault(param.name, [])
+                    line = f"{mode.name}: {param.doc}" if len(doc.modes) > 1 else param.doc
+                    if line not in per_name[param.name]:
+                        per_name[param.name].append(line)
+        for name, lines in per_name.items():
+            properties[name]["description"] = " ".join(lines) if len(lines) > 1 else lines[0]
+            described += 1
+        if "mode" in properties:
+            properties["mode"]["description"] = "What this call does: " + " | ".join(m.name for m in doc.modes)
+            described += 1
+    return described
+
+
+try:  # descriptions are worth having, never worth failing to start over
+    _describe_parameters()
+except Exception as _e:  # noqa: BLE001 - a tool with no descriptions still works
+    import logging
+
+    logging.getLogger("leftbrain").warning("parameter descriptions unavailable: %s", _e)
 
 
 def main(argv: list[str] | None = None) -> None:

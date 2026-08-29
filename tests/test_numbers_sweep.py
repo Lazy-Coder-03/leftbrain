@@ -282,7 +282,9 @@ def test_a_kind_that_reads_start_says_nothing_about_it(kind):
 
 
 def test_start_is_reported_alongside_the_others_it_was_missing_from():
-    r = numbers("sequence", kind="primes", n=5, start=50, end=80, step=2)
-    said = " ".join(r["assumptions"])
-    for name in ("'start'", "'end'", "'step'"):
-        assert name in said, (name, r["assumptions"])
+    """`primes` with an `end` is a bounded range now (#57), so this asks without one."""
+    said = " ".join(numbers("sequence", kind="primes", n=5, start=50, step=2)["assumptions"])
+    for name in ("'start'", "'step'"):
+        assert name in said, (name, said)
+    # and `end` is still reported by a kind that does not read it at all
+    assert "'end'" in " ".join(numbers("sequence", kind="geometric", start=2, ratio=2, n=4, end=99)["assumptions"])
