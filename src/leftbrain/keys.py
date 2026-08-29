@@ -466,9 +466,11 @@ class KeyStore:
             window = [t for t in self._rpm_window.get(h, []) if now - t < 60]
             if len(window) >= info.rpm:
                 self._rpm_window[h] = window
-                return Verdict(False, f"rate limit: {info.rpm} requests/minute", 429, info, retry_after=int(60 - (now - window[0])) + 1)
+                # `key=` by name: the fourth positional is `message`, and a KeyInfo landing
+                # there made every 429 a 500 when the response was serialised.
+                return Verdict(False, f"rate limit: {info.rpm} requests/minute", 429, key=info, retry_after=int(60 - (now - window[0])) + 1)
             if info.used_today >= info.daily_quota:
-                return Verdict(False, f"daily quota of {info.daily_quota} exhausted; resets at 00:00 UTC", 429, info, remaining=0, retry_after=self._seconds_to_midnight())
+                return Verdict(False, f"daily quota of {info.daily_quota} exhausted; resets at 00:00 UTC", 429, key=info, remaining=0, retry_after=self._seconds_to_midnight())
             window.append(now)
             self._rpm_window[h] = window
             self.db.run("INSERT INTO usage(key_hash, day, count) VALUES (?,?,1) ON CONFLICT(key_hash, day) DO UPDATE SET count = usage.count + 1", (h, _today()))

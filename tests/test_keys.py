@@ -39,6 +39,27 @@ def test_signup_limits(tmp_path):
     assert all(keys[:3]) and keys[3] is None  # 3 per IP per day
 
 
+def test_a_throttled_key_gets_429_over_http_not_500(tmp_path):
+    """The Verdict carrying the key positionally landed it in `message`, which is not
+    serialisable, so every rate limit and every exhausted quota answered 500."""
+    store = KeyStore(str(tmp_path / "k.sqlite3"))
+    quota_key, _ = store.create("a@b.co", daily_quota=1, rpm=100)
+    rpm_key, _ = store.create("a@b.co", daily_quota=100, rpm=1)
+    app = build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"),
+                    web_config=WebConfig(client_id=None, client_secret=None, secret=None,
+                                         base_url=None, open_signup=False))
+    with TestClient(app) as c:
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {quota_key}"}).status_code == 200
+        spent = c.get("/keys/me", headers={"Authorization": f"Bearer {quota_key}"})
+        assert spent.status_code == 429
+        assert "quota" in spent.json()["error"] and spent.headers["retry-after"]
+
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {rpm_key}"}).status_code == 200
+        limited = c.get("/keys/me", headers={"Authorization": f"Bearer {rpm_key}"})
+        assert limited.status_code == 429
+        assert "rate limit" in limited.json()["error"] and limited.headers["retry-after"]
+
+
 def test_the_key_cap_is_five_and_still_reads_the_environment(monkeypatch):
     """Five because a connector now takes a slot; still a number an operator can change."""
     import importlib
