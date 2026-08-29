@@ -33,6 +33,12 @@ from .views import consent_routes
 #: on the consent screen, so a second vocabulary here could only disagree with it.
 MCP_SCOPE = "mcp"
 OFFLINE = "offline_access"
+#: One list, used for all three of: what the metadata advertises, what a client may ask for
+#: at registration, and what a client that asks for nothing is given. They have to agree —
+#: Claude reads `scopes_supported` and requests all of it, and `/authorize` then refuses
+#: anything the client does not hold, so advertising a scope that is not in the default is
+#: advertising one we will reject. That is what `oauth_error=invalid_scope` was.
+SCOPES = [MCP_SCOPE, OFFLINE]
 
 #: RFC 8414's well-known path. The SDK names /authorize, /token, /register and /revoke as
 #: constants but hardcodes this one inside `create_auth_routes`, so we name it to match on.
@@ -70,7 +76,7 @@ def oauth_metadata(
         **base.model_dump(exclude_none=True, mode="json"),
         "client_id_metadata_document_supported": True,
         "token_endpoint_auth_methods_supported": methods,
-        "scopes_supported": [MCP_SCOPE, OFFLINE],
+        "scopes_supported": SCOPES,
         "grant_types_supported": grants,
         "device_authorization_endpoint": f"{str(issuer).rstrip('/')}{DEVICE_PATH}",
     })
@@ -98,7 +104,7 @@ def build_oauth_routes(keys: Any, cfg: Any) -> list[Route]:
         return []
 
     registration = ClientRegistrationOptions(
-        enabled=True, valid_scopes=[MCP_SCOPE, OFFLINE], default_scopes=[MCP_SCOPE]
+        enabled=True, valid_scopes=SCOPES, default_scopes=SCOPES
     )
     revocation = RevocationOptions(enabled=True)
     # Built through AuthSettings rather than AnyHttpUrl directly: that model carries

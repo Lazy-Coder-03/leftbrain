@@ -284,6 +284,43 @@ def approve(c, client_id, challenge, tools=("math",), redirect="http://localhost
 WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130"
 
 
+def test_a_client_may_request_every_scope_we_advertise(tmp_path):
+    """Claude reads scopes_supported and asks for all of it, offline_access included.
+
+    A client that registers without naming a scope is given `default_scopes`, and
+    /authorize then refuses anything the client does not hold — so advertising a scope
+    that is not in the default is advertising one we will reject. Live Claude web failed
+    here with oauth_error=invalid_scope.
+    """
+    with TestClient(make_app(tmp_path)) as c:
+        advertised = c.get("/.well-known/oauth-authorization-server").json()["scopes_supported"]
+        assert "offline_access" in advertised
+        client_id = register_client(c)  # no scope named, exactly as Claude registers
+        _, challenge = pkce()
+        r = c.get("/authorize", follow_redirects=False, params={
+            "client_id": client_id, "redirect_uri": "http://localhost:3118/callback",
+            "response_type": "code", "code_challenge": challenge,
+            "code_challenge_method": "S256", "state": "xyz",
+            "scope": " ".join(advertised),
+        })
+        assert r.status_code in (302, 303)
+        location = r.headers["location"]
+        assert "invalid_scope" not in location, location
+        assert location.startswith("/oauth/consent?")
+
+
+def test_a_scope_we_do_not_advertise_is_still_refused(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        client_id = register_client(c)
+        _, challenge = pkce()
+        r = c.get("/authorize", follow_redirects=False, params={
+            "client_id": client_id, "redirect_uri": "http://localhost:3118/callback",
+            "response_type": "code", "code_challenge": challenge,
+            "code_challenge_method": "S256", "state": "xyz", "scope": "mcp admin",
+        })
+        assert "invalid_scope" in r.headers["location"]
+
+
 def test_authorize_hands_the_browser_to_the_consent_screen(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         client_id = register_client(c)
