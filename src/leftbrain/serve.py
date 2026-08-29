@@ -173,10 +173,13 @@ def _bearer(scope: Any) -> str:
 class AuthMiddleware:
     """Static key and/or key-store check with quota metering. Public paths pass through."""
 
-    def __init__(self, app: Any, *, static_key: str | None, store: Any | None) -> None:
+    def __init__(self, app: Any, *, static_key: str | None, store: Any | None, base_url: str | None = None) -> None:
         self.app = app
         self.static = static_key.encode() if static_key else None
         self.store = store
+        #: set only when this server is an OAuth authorization server, so a 401 can point
+        #: at the discovery document and tell an agent what to do next (#34)
+        self.base_url = base_url
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http" or not _protected(scope.get("path", "")):
@@ -271,9 +274,33 @@ class AuthMiddleware:
 
         await self._with_headers(scope, replay, buffered, extra)
 
-    @staticmethod
-    async def _reject(scope: Any, receive: Any, send: Any, status: int, error: str, message: str, extra: dict[str, str] | None = None) -> None:
-        resp = JSONResponse({"ok": False, "error": error, "message": message}, status_code=status, headers={"WWW-Authenticate": "Bearer", **(extra or {})})
+    def _challenge(self) -> str:
+        """RFC 9728: point the client at the document that names our authorization server.
+
+        Claude Code probes the well-known paths before it ever reaches this, so the pointer
+        is not what starts discovery there — but ChatGPT and Claude's web connectors read it,
+        and the MCP spec requires the 401 to carry it.
+        """
+        if not self.base_url:
+            return "Bearer"
+        return f'Bearer realm="leftbrain", resource_metadata="{self.base_url}/.well-known/oauth-protected-resource/mcp"'
+
+    def _how_to_authorize(self) -> dict[str, str]:
+        """What an agent should do next, in fields it can act on and a line it can read aloud."""
+        return {
+            "if_you_have_a_browser": f"{self.base_url}/.well-known/oauth-protected-resource/mcp",
+            "if_you_have_no_browser": f"POST {self.base_url}/oauth/device_authorization",
+            "tell_your_user": f"leftbrain needs authorising. I can give you a short code to approve at {self.base_url}/device",
+            "static_key_alternative": f"{self.base_url}/dashboard",
+            "documentation": f"{self.base_url}/docs/agents/auth",
+        }
+
+    async def _reject(self, scope: Any, receive: Any, send: Any, status: int, error: str, message: str, extra: dict[str, str] | None = None) -> None:
+        # the three existing fields are untouched; a valid key never sees this body at all
+        body: dict[str, Any] = {"ok": False, "error": error, "message": message}
+        if self.base_url:
+            body["how_to_authorize"] = self._how_to_authorize()
+        resp = JSONResponse(body, status_code=status, headers={"WWW-Authenticate": self._challenge(), **(extra or {})})
         await resp(scope, receive, send)
 
 
@@ -442,10 +469,16 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
             return error_page(request, 404, "Page not found", "That page isn't here. Try the docs, or start from the home page.", user=web_auth.current_user(request, cfg))
         return JSONResponse({"ok": False, "error": "unsupported", "message": "no such endpoint; see / for the endpoint list"}, status_code=404)
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *mounts, Mount("", app=_McpOnly(root_app))]
+    from .oauth import build_oauth_routes
+
+    # before the catch-all mount, which 404s anything that is not /mcp-shaped: the discovery
+    # documents and /register must answer for their own sake (#34)
+    oauth_routes = build_oauth_routes(store, cfg)
+
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
-        app = AuthMiddleware(app, static_key=static_key, store=store)
+        app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None)
     return RequestMetaMiddleware(SecurityHeadersMiddleware(app))
 
 
