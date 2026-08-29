@@ -209,6 +209,7 @@ Five tables, added to `keys.py::_SCHEMA` so they are created on both SQLite and 
 | `oauth_codes` | `code_hash`, `client_id`, `key_hash`, `code_challenge`, `redirect_uri`, `scopes`, `expires_at` | Single use, 60 s |
 | `oauth_tokens` | `token_hash`, `kind` (access/refresh), `client_id`, `key_hash`, `scopes`, `expires_at` | Access 1 h, refresh 30 d, both rotated on refresh |
 | `oauth_devices` | `device_code_hash`, `user_code`, `client_id`, `status`, `key_hash`, `expires_at`, `last_polled` | RFC 8628; `status` is pending/approved/denied/expired |
+| `tool_usage` | `key_hash`, `tool`, `count`, `last_used` | Lifetime calls per key per tool. Not OAuth's own, but what makes narrowing a decision rather than a guess |
 
 Every token row carries the `key_hash` it is bound to. Resolution joins to `keys`, so a disabled,
 expired or revoked key kills its tokens with no extra bookkeeping.
@@ -259,8 +260,55 @@ consent, and the connector observes only that the tools it should not have are g
 `tools/list`. The documentation must actively recommend this rather than leaving it to be
 discovered; a scope editor nobody finds is the same as no scope editor. Widening later is
 equally possible and equally the owner's business: it is their key, on their dashboard, behind
-their session and CSRF token. What a client may never do is widen its own grant, and it cannot —
-scope lives on the key, and the key is only editable by the person who owns it.
+their session and CSRF token.
+
+### The editor shows what the connector actually called
+
+Advice to narrow a key is useless without the evidence to narrow it *by*. The scope editor puts
+a lifetime call count beside every tool, for that key:
+
+```
+Which tools may Claude Code · Windows use?
+  [x] math          412 calls
+  [x] convert        38 calls
+  [x] datetime        6 calls
+  [x] holidays        0 calls
+  [x] finance         0 calls
+```
+
+The zeroes are the answer, and the decision makes itself. leftbrain counts calls per key per
+*day* today (`usage`), not per tool, so this needs the `tool_usage` table above and one more
+contextvar: `AuthMiddleware` already sets `current_scope` from the resolved key, and now sets
+`current_key_hash` beside it. `scopes.enforce()` — which wraps every tool and already knows the
+tool's name — records the call after the scope check passes, so a refused call is not counted as
+usage.
+
+`enforce` runs in the server process, above the dispatch into the compute-isolation worker, so
+the write happens where the database connection already lives. It is one UPSERT per tool call,
+next to the one `verify_and_count` already performs per request. If that ever shows up in a
+profile the fix is to buffer and flush per request, not to drop the count — but it is not
+speculatively buffered now.
+
+### An agent may narrow its own key, and only narrow it
+
+`POST /keys/me/scope`, authenticated by the same credential the caller already uses — a `lblz_`
+key or an OAuth token, resolved identically. The body names the tools to keep. The change takes
+effect on the next call, because the server is stateless.
+
+**The proposed scope must be a subset of the current one.** Dropping a tool, or dropping modes
+within a tool, is allowed. Adding either is refused with `forbidden` and a message naming what
+was asked for and what is currently held. A key with no scope at all (every tool) can narrow to
+anything, since everything is a subset of everything.
+
+The asymmetry is the entire point. An agent voluntarily dropping privileges it does not need is
+the behaviour least-privilege guidance asks for and rarely gets; an agent that can *widen* its
+own grant makes the scope a suggestion rather than a ceiling, and hands anything that hijacks
+that agent a free escalation. So: an agent may put tools down, and only its owner — signed in,
+with a CSRF token, on the dashboard — may hand them back. That restoration stays a two-click
+edit rather than a revoke-and-reconnect, so the key keeps its name and its usage history.
+
+This is documented in the agent auth document as a thing an agent *should* do once it knows what
+it needs, not merely a thing it *can* do.
 
 It is named the way WhatsApp names a linked device — **what the app is, and where it runs**:
 
@@ -476,6 +524,14 @@ handlers are exercised rather than mocked.
   approver's OS; a `client_name` containing markup is escaped where rendered.
 - The minted key is revealable by its owner and refused to anyone else, exercising the existing
   `reveal` path rather than a new one.
+- Per-tool counts: a successful call increments that key's row for that tool and nothing else; a
+  call refused by scope increments nothing; two keys calling the same tool count separately; the
+  scope editor renders the counts beside the tools, zeroes included.
+- An agent narrowing its own key: a subset is accepted and the dropped tool returns `forbidden`
+  on the very next call; a superset is refused with `forbidden` and both scopes named; an
+  unscoped key may narrow to anything; the owner can widen it again from the dashboard
+  afterwards; the endpoint accepts an OAuth token and a `lblz_` key identically, and rejects an
+  unauthenticated call.
 
 `pytest -q` and `ruff check src tests` green. Skips are checked with `-rs` before the run is
 called green — the only legitimate skip is the opt-in Postgres one.
@@ -494,8 +550,13 @@ called green — the only legitimate skip is the opt-in Postgres one.
    loopback-aware redirect matching, and the `<app> · <where>` naming.
 6. Device grant.
 7. CIMD + SSRF guard, and pruning of unused DCR registrations.
-8. Both-doors documentation, agent document, ChatGPT / Claude Code / terminal client sections,
-   README, CHANGELOG.
+8. Per-tool call counts, and the scope editor that shows them.
+9. `POST /keys/me/scope`, narrowing only.
+10. Both-doors documentation, agent document, ChatGPT / Claude Code / terminal client sections,
+    README, CHANGELOG.
+
+Steps 8 and 9 are the smaller half of "connect, observe, narrow": without the counts the advice
+has no evidence behind it, and without the endpoint only a human can act on it.
 
 MCP Inspector against a local `leftbrain-serve` is the development loop, not ChatGPT. A Claude
 Code session pointed at the same local server is the second loop and the cheaper one, since it
