@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, localcontext
+from decimal import Decimal, DivisionByZero, InvalidOperation, Overflow, localcontext
 from typing import Any
 
 from ..contract import (
@@ -12,10 +12,12 @@ from ..contract import (
     Unsupported,
     check_params,
     exclusive,
+    flag,
     ok,
     tool,
+    whole,
 )
-from .numbers import _ROUND_MODES, _dec_str, parse_number
+from .numbers import _ROUND_MODES, _dec_str, parse_number, parse_percent
 
 MODES = ("emi", "compound", "cagr", "npv_irr", "gst", "percent")
 
@@ -40,12 +42,29 @@ _PERIODS_PER_YEAR = {"annual": 1, "yearly": 1, "semiannual": 2, "quarterly": 4, 
 _PREC = 40
 
 
-def _num(p: dict[str, Any], key: str, *, required: bool = True, positive: bool = False, nonneg: bool = False) -> Decimal | None:
+def _num(
+    p: dict[str, Any],
+    key: str,
+    *,
+    required: bool = True,
+    positive: bool = False,
+    nonneg: bool = False,
+    percent: bool = False,
+    notes: list[str] | None = None,
+) -> Decimal | None:
+    """A parsed amount. ``percent``: the value is a percentage already, so `"12%"` is 12.
+
+    ``notes`` collects how the value was read (`10L`, `1,10`), which used to be dropped here.
+    """
     if p.get(key) is None:
         if required:
             raise ToolError(f"'{key}' is required")
         return None
-    d, _ = parse_number(p[key])
+    d, how = (parse_percent if percent else parse_number)(p[key])
+    if notes is not None:
+        notes.extend(x for x in how if x not in notes)
+    if not d.is_finite():
+        raise ToolError(f"'{key}' is infinite; there is no answer for it", hint="Give a finite amount.")
     if positive and d <= 0:
         raise ToolError(f"'{key}' must be greater than zero")
     if nonneg and d < 0:
@@ -69,9 +88,7 @@ def _money(d: Decimal, decimals: int, rounding: str) -> Decimal:
 
 
 def _rounding(p: dict[str, Any]) -> tuple[int, str]:
-    decimals = int(p.get("decimals", 2))
-    if not 0 <= decimals <= 6:
-        raise ToolError("decimals must be between 0 and 6")
+    decimals = whole(p.get("decimals", 2), "decimals", lo=0, hi=6)
     rounding = str(p.get("rounding", "half_up")).lower()
     if rounding not in _ROUND_MODES:
         raise ToolError(f"rounding must be one of {', '.join(_ROUND_MODES)}")
@@ -80,7 +97,8 @@ def _rounding(p: dict[str, Any]) -> tuple[int, str]:
 
 def _rate_per_period(p: dict[str, Any], periods_per_year: int) -> tuple[Decimal, Decimal, list[str]]:
     """The stated rate as (annual %, per-period fraction), refusing to guess what the % is per."""
-    rate = _num(p, "rate", nonneg=True)
+    notes: list[str] = []
+    rate = _num(p, "rate", nonneg=True, percent=True, notes=notes)
     period = p.get("rate_period")
     if period is None:
         raise Ambiguous("'rate' could be per year or per month - say which with rate_period", "rate_period", ["annual", "monthly"])
@@ -89,7 +107,7 @@ def _rate_per_period(p: dict[str, Any], periods_per_year: int) -> tuple[Decimal,
         raise ToolError("rate_period must be annual or monthly")
     annual = rate if period != "monthly" else rate * 12
     per_period = (rate / 100 / periods_per_year) if period != "monthly" else (rate / 100 * 12 / periods_per_year)
-    return annual, per_period, [f"rate {_dec_str(rate)}% read as {'per year' if period != 'monthly' else 'per month'}"]
+    return annual, per_period, notes + [f"rate {_dec_str(rate)}% read as {'per year' if period != 'monthly' else 'per month'}"]
 
 
 def _term_months(p: dict[str, Any]) -> int:
@@ -114,8 +132,10 @@ def _term_months(p: dict[str, Any]) -> int:
 
 
 def _emi(p: dict[str, Any]) -> dict[str, Any]:
-    principal = _num(p, "principal", positive=True)
+    notes: list[str] = []
+    principal = _num(p, "principal", positive=True, notes=notes)
     _, r, assumptions = _rate_per_period(p, 12)
+    assumptions = notes + assumptions
     # `months=12 years=5` gave a one-year loan to a caller who described a five-year one,
     # with nothing in `assumptions` to say `years` had been dropped (#28 SS2b).
     clash = exclusive(p, "months", "years")
@@ -123,12 +143,16 @@ def _emi(p: dict[str, Any]) -> dict[str, Any]:
         assumptions.append(clash)
     n = _term_months(p)
     decimals, rounding = _rounding(p)
+    schedule = flag(p.get("schedule", False), "schedule")
     with localcontext() as ctx:
         ctx.prec = _PREC
-        if r == 0:
+        g = (1 + r) ** n
+        if r == 0 or g == 1:
+            if r != 0:  # 1e-45% a year: (1+r)^n rounds to 1 at 40 digits, and the formula divides by g - 1
+                assumptions.append(f"a rate of {_dec_str(r * 100)}% per month is below the precision of the calculation and is treated as 0")
+                r = Decimal(0)
             emi_exact = principal / n
         else:
-            g = (1 + r) ** n
             emi_exact = principal * r * g / (g - 1)
         emi = _money(emi_exact, decimals, rounding)
         rows: list[dict[str, Any]] = []
@@ -137,8 +161,11 @@ def _emi(p: dict[str, Any]) -> dict[str, Any]:
         total_paid = Decimal(0)
         for m in range(1, n + 1):
             interest = _money(opening * r, decimals, rounding)
-            if m == n:
-                repay = opening  # the last instalment clears whatever is left, so closing is exactly 0
+            if m == n or opening <= emi - interest:
+                # the last instalment clears whatever is left, so closing is exactly 0. Over a
+                # long term a rounded-up instalment gets there early; the schedule used to run
+                # on past zero into negative balances and a negative final payment.
+                repay = opening
                 payment = repay + interest
             else:
                 repay = emi - interest
@@ -148,6 +175,8 @@ def _emi(p: dict[str, Any]) -> dict[str, Any]:
             total_interest += interest
             total_paid += payment
             opening = closing
+            if closing == 0:
+                break
     out: dict[str, Any] = {
         "emi": _fmt(emi, decimals),
         "emi_exact": _dec_str(emi_exact.quantize(Decimal("1e-10"))),
@@ -157,7 +186,10 @@ def _emi(p: dict[str, Any]) -> dict[str, Any]:
         "total_interest": _fmt(total_interest, decimals),
         "last_payment": rows[-1]["payment"],
     }
-    if p.get("schedule"):
+    if len(rows) < n:
+        out["months_paid"] = len(rows)
+        assumptions.append(f"the rounded instalment clears the loan in month {len(rows)}, {n - len(rows)} months early; the schedule stops there")
+    if schedule:
         out["schedule"] = rows
     assumptions.append(f"instalments rounded {rounding} to {decimals} decimals; totals are the sum of the rounded schedule, and the last instalment absorbs the rounding")
     return ok(out, assumptions=assumptions)
@@ -168,9 +200,9 @@ def _fmt(d: Decimal, decimals: int) -> str:
 
 
 def _compound(p: dict[str, Any]) -> dict[str, Any]:
-    principal = _num(p, "principal", nonneg=True)
-    compounding = str(p.get("compounding", "annual")).lower()
     assumptions: list[str] = []
+    principal = _num(p, "principal", nonneg=True, notes=assumptions)
+    compounding = str(p.get("compounding", "annual")).lower()
     if compounding == "continuous":
         m = 1
     elif compounding in _PERIODS_PER_YEAR:
@@ -181,6 +213,9 @@ def _compound(p: dict[str, Any]) -> dict[str, Any]:
         assumptions.append("compounded annually (no compounding given)")
     annual, i, rate_notes = _rate_per_period(p, m)
     assumptions = rate_notes + assumptions
+    clash = exclusive(p, "years", "months")
+    if clash:
+        assumptions.append(clash)
     if p.get("years") is not None:
         years = _num(p, "years", positive=True)
     elif p.get("months") is not None:
@@ -196,7 +231,7 @@ def _compound(p: dict[str, Any]) -> dict[str, Any]:
             details={"years": float(years), "limit": MAX_YEARS},
             hint="Use a term of a few hundred years or less.",
         )
-    contribution = _num(p, "contribution", required=False, nonneg=True) or Decimal(0)
+    contribution = _num(p, "contribution", required=False, nonneg=True, notes=assumptions) or Decimal(0)
     timing = str(p.get("contribution_timing", "end")).lower()
     if timing not in ("end", "begin"):
         raise ToolError("contribution_timing must be end or begin")
@@ -243,46 +278,79 @@ def _compound(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _cagr(p: dict[str, Any]) -> dict[str, Any]:
-    start = _num(p, "start_value", positive=True)
-    end = _num(p, "end_value", positive=True)
-    years = _num(p, "years", positive=True)
+    notes: list[str] = []
+    start = _num(p, "start_value", positive=True, notes=notes)
+    end = _num(p, "end_value", positive=True, notes=notes)
+    years = _num(p, "years", positive=True, notes=notes)
     with localcontext() as ctx:
-        ctx.prec = _PREC
+        # enough digits for the ratio of the two values, however far apart they are
+        ctx.prec = max(_PREC, abs(end.adjusted() - start.adjusted()) + _PREC)
         multiple = end / start
-        cagr = multiple ** (1 / years) - 1
-        total = multiple - 1
-    return ok({
-        "cagr_percent": _dec_str((cagr * 100).quantize(Decimal("1e-4"))),
-        "total_growth_percent": _dec_str((total * 100).quantize(Decimal("1e-4"))),
-        "multiple": _dec_str(multiple.quantize(Decimal("1e-6"))),
+        cagr_pct = (multiple ** (1 / years) - 1) * 100
+        total_pct = (multiple - 1) * 100
+    # 1 -> 1e40 in a year is a 41-digit percentage; quantize refused it with a bare InvalidOperation
+    out = {
+        "cagr_percent": _dec_str(_places(cagr_pct, 4)),
+        "total_growth_percent": _dec_str(_places(total_pct, 4)),
+        "multiple": _dec_str(_places(multiple, 6)),
         "years": _dec_str(years),
-    }, steps=[f"({_dec_str(end)} / {_dec_str(start)}) ^ (1 / {_dec_str(years)}) - 1"])
+    }
+    return ok(out, steps=[f"({_dec_str(end)} / {_dec_str(start)}) ^ (1 / {_dec_str(years)}) - 1"], assumptions=notes)
+
+
+def _places(d: Decimal, places: int) -> Decimal:
+    """``d`` to ``places`` decimals, however many digits it has before the point."""
+    with localcontext() as ctx:
+        ctx.prec = max(_PREC, d.adjusted() + places + 2)
+        return d.quantize(Decimal(1).scaleb(-places))
 
 
 def _npv_at(flows: list[Decimal], r: Decimal) -> Decimal:
     return sum(cf / (1 + r) ** t for t, cf in enumerate(flows))
 
 
-def _irr(flows: list[Decimal]) -> Decimal | None:
-    """Bisection on NPV between -99.99% and 1000% per period - deterministic, no seed."""
-    lo, hi = Decimal("-0.9999"), Decimal("10")
-    f_lo, f_hi = _npv_at(flows, lo), _npv_at(flows, hi)
-    if f_lo == 0:
-        return lo
-    if f_hi == 0:
-        return hi
-    if (f_lo < 0) == (f_hi < 0):
-        return None
+#: Rates the IRR search samples, per period: dense where IRRs live, sparse out to 1000%.
+_IRR_GRID = [Decimal(x) / 10000 for x in range(-9999, -9000, 100)] + [Decimal(x) / 100 for x in range(-90, 101, 5)] + [Decimal(x) / 10 for x in range(15, 101, 5)]
+
+
+def _bisect(flows: list[Decimal], lo: Decimal, hi: Decimal, lo_negative: bool) -> Decimal:
+    """The rate in (lo, hi) where NPV crosses zero; ``lo_negative`` is NPV's sign at ``lo``."""
     for _ in range(200):
         mid = (lo + hi) / 2
         f_mid = _npv_at(flows, mid)
         if f_mid == 0 or hi - lo < Decimal("1e-12"):
             return mid
-        if (f_mid < 0) == (f_lo < 0):
-            lo, f_lo = mid, f_mid
+        if (f_mid < 0) == lo_negative:
+            lo = mid
         else:
             hi = mid
     return (lo + hi) / 2
+
+
+def _irrs(flows: list[Decimal]) -> list[Decimal]:
+    """Every rate between -99.99% and 1000% per period at which NPV is zero, ascending.
+
+    Bisection from the two ends alone answered "no IRR" for `[-100, 230, -132]`, whose NPV
+    is zero at both 10% and 20%: the same sign at both ends hid both roots. The grid is
+    scanned in float (cheap) and each sign change is then bisected in Decimal.
+    """
+    fl = [float(f) for f in flows]
+
+    def npv_f(r: float) -> float:
+        return sum(cf / (1 + r) ** t for t, cf in enumerate(fl))
+
+    values = [npv_f(float(r)) for r in _IRR_GRID]
+    eps = 1e-9 * max(abs(x) for x in fl)  # a grid point this close to zero is the root itself
+    roots: list[Decimal] = []
+    for i in range(1, len(_IRR_GRID)):
+        a, b = values[i - 1], values[i]
+        if abs(a) <= eps:
+            roots.append(_IRR_GRID[i - 1])
+        elif abs(b) > eps and (a < 0) != (b < 0):
+            roots.append(_bisect(flows, _IRR_GRID[i - 1], _IRR_GRID[i], a < 0))
+    if abs(values[-1]) <= eps:
+        roots.append(_IRR_GRID[-1])
+    return roots
 
 
 def _npv_irr(p: dict[str, Any]) -> dict[str, Any]:
@@ -291,43 +359,57 @@ def _npv_irr(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("'cashflows' must be a list of at least two amounts, the first at time 0")
     if len(raw) > MAX_CASHFLOWS:
         raise ToolError(f"cashflows are capped at {MAX_CASHFLOWS}")
-    flows = [parse_number(v)[0] for v in raw]
-    if not (any(f < 0 for f in flows) and any(f > 0 for f in flows)):
-        raise ToolError("cashflows never change sign, so there is no internal rate of return")
-    decimals, rounding = _rounding(p)
     assumptions = ["cashflows are one per period, the first at time 0; the rate is per period (use a monthly rate for monthly flows)"]
+    flows = []
+    for v in raw:
+        d, how = parse_number(v)
+        if not d.is_finite():
+            raise ToolError("a cashflow is infinite; there is no answer for it", hint="Give finite amounts.")
+        flows.append(d)
+        assumptions.extend(x for x in how if x not in assumptions)
+    decimals, rounding = _rounding(p)
     out: dict[str, Any] = {"periods": len(flows) - 1}
+    warnings: list[str] = []
+    changes = sum(1 for a, b in zip(flows, flows[1:], strict=False) if a and b and (a > 0) != (b > 0))
     with localcontext() as ctx:
         ctx.prec = _PREC
-        rate = _num(p, "rate", required=False)
+        rate = _num(p, "rate", required=False, percent=True, notes=assumptions)
         if rate is not None:
             r = rate / 100
             if r <= -1:
                 raise ToolError("rate must be above -100%")
             out["npv"] = _fmt(_money(_npv_at(flows, r), decimals, rounding), decimals)
             out["rate_percent"] = _dec_str(rate)
-        irr = _irr(flows)
-        if irr is None:
-            raise ToolError("no internal rate of return between -99.99% and 1000% per period")
-        out["irr_percent"] = _dec_str((irr * 100).quantize(Decimal("1e-4")))
-    # Descartes' rule of signs: a cashflow that changes sign k times can have up to k IRRs,
-    # and the one found is whichever the search reached first. Reporting it alone made a
-    # multi-root problem look like a single answer (#28 SS3.12).
-    changes = sum(1 for a, b in zip(flows, flows[1:], strict=False) if a and b and (a > 0) != (b > 0))
+        if not (any(f < 0 for f in flows) and any(f > 0 for f in flows)):
+            # the NPV asked for is still an answer; only the IRR is not
+            if rate is None:
+                raise ToolError("cashflows never change sign, so there is no internal rate of return", hint="Pass rate=… to get the NPV, which is defined.")
+            out["irr_percent"] = None
+            assumptions.append("cashflows never change sign, so there is no internal rate of return; the NPV is reported alone")
+        else:
+            irrs = _irrs(flows)
+            if not irrs:
+                raise ToolError("no internal rate of return between -99.99% and 1000% per period")
+            out["irr_percent"] = _dec_str((irrs[0] * 100).quantize(Decimal("1e-4")))
+            if len(irrs) > 1:
+                out["irrs_percent"] = [_dec_str((x * 100).quantize(Decimal("1e-4"))) for x in irrs]
+    # Descartes' rule of signs: a cashflow that changes sign k times can have up to k IRRs.
+    # Reporting one alone made a multi-root problem look like a single answer (#28 SS3.12).
     out["sign_changes"] = changes
-    warnings = []
     if changes > 1:
+        found = len(out.get("irrs_percent", [1]))
         warnings.append(
             f"the cashflows change sign {changes} times, so by Descartes' rule there may be up to "
-            f"{changes} IRRs; the one reported is the first the search found, and IRR is not a "
+            f"{changes} IRRs; {found} found ({'listed in irrs_percent' if found > 1 else 'the lowest is reported'}), and IRR is not a "
             f"reliable comparison here - use NPV at your cost of capital"
         )
     return ok(out, assumptions=assumptions, warnings=warnings)
 
 
 def _gst(p: dict[str, Any]) -> dict[str, Any]:
-    amount = _num(p, "amount", nonneg=True)
-    rate = _num(p, "rate", nonneg=True)
+    notes: list[str] = []
+    amount = _num(p, "amount", nonneg=True, notes=notes)
+    rate = _num(p, "rate", nonneg=True, percent=True, notes=notes)
     amount_is = p.get("amount_is")
     if amount_is is None:
         raise Ambiguous("is 'amount' inclusive or exclusive of GST? say which with amount_is", "amount_is", ["inclusive", "exclusive"])
@@ -338,7 +420,7 @@ def _gst(p: dict[str, Any]) -> dict[str, Any]:
     if supply not in ("intra", "inter"):
         raise ToolError("supply must be intra (CGST + SGST) or inter (IGST)")
     decimals, rounding = _rounding(p)
-    assumptions: list[str] = []
+    assumptions: list[str] = notes
     if "supply" not in p:
         assumptions.append("intra-state supply assumed (CGST + SGST); pass supply=inter for IGST")
     warnings: list[str] = []
@@ -373,29 +455,31 @@ def _gst(p: dict[str, Any]) -> dict[str, Any]:
 
 def _percent(p: dict[str, Any]) -> dict[str, Any]:
     op = str(p.get("op", "")).lower()
+    notes: list[str] = []
     if op == "change":
-        a, b = _num(p, "a"), _num(p, "b")
+        a, b = _num(p, "a", notes=notes), _num(p, "b", notes=notes)
         if a == 0:
             raise ToolError("percent change from zero is undefined; the difference is the only meaningful figure")
+        places = whole(p["decimals"], "decimals", lo=0, hi=20) if p.get("decimals") is not None else 6  # honoured, not ignored
         with localcontext() as ctx:
             ctx.prec = _PREC
             change = (b - a) / abs(a) * 100
-        out = {"a": _dec_str(a), "b": _dec_str(b), "difference": _dec_str(b - a), "percent_change": _dec_str(change.quantize(Decimal("1e-6"))), "percentage_points": _dec_str(b - a)}
-        return ok(out, assumptions=["if a and b are themselves percentages, 'percentage_points' is the honest figure and 'percent_change' is the relative one"])
+            out = {"a": _dec_str(a), "b": _dec_str(b), "difference": _dec_str(b - a), "percent_change": _dec_str(change.quantize(Decimal(1).scaleb(-places))), "percentage_points": _dec_str(b - a)}
+        return ok(out, assumptions=notes + ["if a and b are themselves percentages, 'percentage_points' is the honest figure and 'percent_change' is the relative one"])
     if op == "of":
-        pct, value = _num(p, "percent"), _num(p, "value")
+        pct, value = _num(p, "percent", percent=True, notes=notes), _num(p, "value", notes=notes)
         with localcontext() as ctx:
             ctx.prec = _PREC
             v = value * pct / 100
-        return ok({"value": _dec_str(v), "percent": _dec_str(pct), "of": _dec_str(value)})
+        return ok({"value": _dec_str(v), "percent": _dec_str(pct), "of": _dec_str(value)}, assumptions=notes)
     if op == "discount":
-        price = _num(p, "price", nonneg=True)
+        price = _num(p, "price", nonneg=True, notes=notes)
         raw = p.get("discounts")
         if raw is None and p.get("percent") is not None:
             raw = [p["percent"]]
         if not isinstance(raw, list) or not raw:
             raise ToolError("'discounts' must be a list of percentages, e.g. [20, 10]")
-        discounts = [parse_number(v)[0] for v in raw]
+        discounts = [parse_percent(v)[0] for v in raw]
         if any(d < 0 or d > 100 for d in discounts):
             raise ToolError("each discount must be between 0 and 100 percent")
         decimals, rounding = _rounding(p)
@@ -411,13 +495,13 @@ def _percent(p: dict[str, Any]) -> dict[str, Any]:
                 "stacked": {"final": _fmt(_money(stacked, decimals, rounding), decimals), "saved": _fmt(_money(price - stacked, decimals, rounding), decimals), "effective_percent": _dec_str(((1 - stacked / price) * 100).quantize(Decimal("1e-6"))) if price else "0"},
                 "additive": {"final": _fmt(_money(additive, decimals, rounding), decimals), "saved": _fmt(_money(price - additive, decimals, rounding), decimals), "effective_percent": _dec_str(min(sum(discounts), Decimal(100)))},
             }
-        return ok(out, assumptions=["'stacked' applies each discount to the already-discounted price (how shops do it); 'additive' adds the percentages first (how people expect it)"])
+        return ok(out, assumptions=notes + ["'stacked' applies each discount to the already-discounted price (how shops do it); 'additive' adds the percentages first (how people expect it)"])
     if op == "split":
-        total = _num(p, "total", nonneg=True)
+        total = _num(p, "total", nonneg=True, notes=notes)
         people = _num(p, "people")
         if people != people.to_integral() or people < 1:
             raise ToolError("people must be a whole number of at least 1")
-        tip = _num(p, "tip", required=False, nonneg=True) or Decimal(0)
+        tip = _num(p, "tip", required=False, nonneg=True, percent=True, notes=notes) or Decimal(0)
         decimals, rounding = _rounding(p)
         from .numbers import numbers as numbers_tool
 
@@ -429,7 +513,7 @@ def _percent(p: dict[str, Any]) -> dict[str, Any]:
         if not alloc["ok"]:
             raise ToolError(alloc["message"])
         shares = [item["share"] for item in alloc["result"]["items"]]
-        return ok({"total": _fmt(total, decimals), "tip_percent": _dec_str(tip), "tip_amount": _fmt(tip_amount, decimals), "total_with_tip": _fmt(grand, decimals), "people": int(people), "shares": shares, "sum_of_shares": alloc["result"]["sum_of_shares"]}, assumptions=["shares are split with the largest-remainder method so they add up to the bill exactly; the first shares carry any extra minor unit"])
+        return ok({"total": _fmt(total, decimals), "tip_percent": _dec_str(tip), "tip_amount": _fmt(tip_amount, decimals), "total_with_tip": _fmt(grand, decimals), "people": int(people), "shares": shares, "sum_of_shares": alloc["result"]["sum_of_shares"]}, assumptions=notes + ["shares are split with the largest-remainder method so they add up to the bill exactly; the first shares carry any extra minor unit"])
     raise ToolError("op must be one of change, of, discount, split")
 
 
@@ -440,7 +524,14 @@ def finance(mode: str = "emi", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     check_params("finance", mode, p, MODE_PARAMS)
-    return {"emi": _emi, "compound": _compound, "cagr": _cagr, "npv_irr": _npv_irr, "gst": _gst, "percent": _percent}[mode](p)
+    try:
+        return {"emi": _emi, "compound": _compound, "cagr": _cagr, "npv_irr": _npv_irr, "gst": _gst, "percent": _percent}[mode](p)
+    except (InvalidOperation, Overflow):
+        # `cagr years=1e-10` raises 2 to a power of 10^10: past what a 40-digit money
+        # calculation can carry, and a size rather than an internal error
+        raise TooLarge(f"the figures are past what a {_PREC}-digit money calculation can carry", hint="Use amounts, rates and terms of ordinary size.") from None
+    except DivisionByZero:
+        raise ToolError("the calculation divides by zero") from None
 
 
 #: Worked examples for the reference page, one list per mode. Every one of them is

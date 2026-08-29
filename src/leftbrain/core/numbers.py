@@ -12,17 +12,38 @@ from decimal import (
     ROUND_HALF_EVEN,
     ROUND_HALF_UP,
     Decimal,
+    DivisionByZero,
+    Inexact,
     InvalidOperation,
+    Overflow,
+    localcontext,
 )
 from fractions import Fraction
 from typing import Any
 
-from ..contract import TooLarge, ToolError, check_params, exclusive, ok, tool
+from ..contract import (
+    TooLarge,
+    ToolError,
+    Unsupported,
+    check_params,
+    exclusive,
+    flag,
+    ok,
+    tool,
+    whole,
+)
 
 #: Digits the largest term of a generated sequence may have.
 MAX_TERM_DIGITS = 1000
-#: Parts an allocation may be split into.
-MAX_PARTS = 10_000
+#: Significant digits any value here may carry. Decimal's default context is 28, and every
+#: operation past it rounded in silence: F(139) lost its last digit, `-d` on a 29-digit
+#: number lost one, `quantize` on a 30-digit one raised a bare InvalidOperation.
+MAX_DIGITS = 1200
+#: Parts an allocation may be split into. Each part is ~120 bytes of response and the
+#: response is capped at 256 KB, so 10,000 passed the pre-check and failed the size check.
+MAX_PARTS = 2000
+#: The spaces a French or Swiss document groups digits with.
+_THIN_SPACES = str.maketrans({" ": "", " ": "", " ": "", " ": ""})
 
 
 def _log10_abs(v: Any) -> float:
@@ -92,6 +113,36 @@ def saturate_to_float(d: Decimal, what: str = "value") -> tuple[float, str | Non
 
 def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     """Parse '1,23,456.78', '₹1.2L', '3.4 Cr', '2.5k', '12%', '(500)' into a Decimal."""
+    with localcontext() as ctx:
+        ctx.prec = MAX_DIGITS
+        ctx.traps[Inexact] = True  # nothing here may round: a number that would is too long
+        try:
+            return _parse_number(v)
+        except Inexact:
+            raise TooLarge(f"the number has more than {MAX_DIGITS:,} significant digits", hint=f"Use at most {MAX_DIGITS:,} digits.") from None
+        except Overflow:
+            raise TooLarge("the number's exponent is past what can be computed with (about 10^999999)", hint="Use a smaller exponent.") from None
+
+
+def parse_percent(v: Any) -> tuple[Decimal, list[str]]:
+    """A value that is a percentage already: `"12%"` is 12, not 0.12.
+
+    `finance.emi rate="12%"` was read as 0.12% - parse_number divided by 100 and the note
+    was dropped on the way - so an EMI at a fraction of the rate came back with nothing said.
+    """
+    if isinstance(v, str) and v.strip().endswith("%"):
+        d, notes = parse_number(v.strip()[:-1])
+        return d, notes + [f"{v.strip()} read as {_dec_str(d)} percent"]
+    return parse_number(v)
+
+
+def _finite(d: Decimal, name: str) -> Decimal:
+    if not d.is_finite():
+        raise ToolError(f"{name} is infinite; there is no answer for it", hint="Give a finite number.")
+    return d
+
+
+def _parse_number(v: Any) -> tuple[Decimal, list[str]]:
     assumptions: list[str] = []
     if isinstance(v, bool):
         raise ToolError("booleans are not numbers")
@@ -123,11 +174,14 @@ def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     if s.startswith("(") and s.endswith(")"):
         neg, s = True, s[1:-1].strip()
         assumptions.append("parentheses read as negative (accounting style)")
+    sign = ""
+    if s[:1] in "+-":  # `-₹500`: the sign may come before the symbol
+        sign, s = s[0], s[1:].strip()
     for sym in sorted(_CURRENCY_SYMBOLS, key=len, reverse=True):
         if s.startswith(sym):
             s = s[len(sym):].strip()
             break
-    s = s.replace("_", "").replace(" ", "")
+    s = sign + s.replace("_", "").translate(_THIN_SPACES)
     pct = s.endswith("%")
     if pct:
         s = s[:-1]
@@ -142,14 +196,8 @@ def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     if not m:
         raise ToolError(f"cannot parse number {v!r}")
     num, suf = m.group(1), m.group(2)
-    if num.count(",") and num.count(".") > 1:
-        raise ToolError(f"cannot parse number {v!r}")
-    if "," in num and "." not in num and re.fullmatch(r"[+-]?\d{1,3}(,\d{3})*", num) is None and re.fullmatch(r"[+-]?\d{1,2}(,\d{2})*,\d{3}", num) is None:
-        # European decimal comma e.g. 1234,56
-        if re.fullmatch(r"[+-]?\d+,\d{1,2}", num):
-            num = num.replace(",", ".")
-            assumptions.append("comma read as decimal separator")
-    num = num.replace(",", "")
+    num, notes = _separators(num, v)
+    assumptions += notes
     try:
         d = Decimal(num)
     except InvalidOperation:
@@ -167,8 +215,50 @@ def parse_number(v: Any) -> tuple[Decimal, list[str]]:
     return d, assumptions
 
 
+#: Digits grouped the Western way (`1,234,567`) or the Indian way (`12,34,567`).
+_WESTERN = re.compile(r"[+-]?\d{1,3}(?:[,.]\d{3})+")
+_INDIAN = re.compile(r"[+-]?\d{1,2}(?:,\d{2})*,\d{3}")
+
+
+def _separators(num: str, original: Any) -> tuple[str, list[str]]:
+    """Resolve `,` and `.` in a digit string to a plain decimal, or refuse.
+
+    `1.234,56` was read as 1.23456: the dot kept as a decimal point, the comma dropped as
+    grouping. `1,2345` and `10,000,00` were read as 12345 and 1000000 with nothing said,
+    though the first is at least as likely a typo for 1.2345.
+    """
+    if "," not in num and num.count(".") <= 1:
+        return num, []
+    if "," not in num:  # `12.345.678`: dots as grouping, the European way
+        if _WESTERN.fullmatch(num):
+            return num.replace(".", ""), ["dots read as digit grouping"]
+        raise ToolError(f"cannot parse number {original!r}: more than one decimal point")
+    if "." in num:
+        int_part, dot, frac = num.rpartition(".")
+        if "," not in frac and "," in int_part and (_WESTERN.fullmatch(int_part) or _INDIAN.fullmatch(int_part)):
+            return int_part.replace(",", "") + dot + frac, []  # `1,234.56` / `12,34,567.89`
+        int_part, comma, frac = num.rpartition(",")
+        if "," not in int_part and _WESTERN.fullmatch(int_part) and frac.isdigit():
+            return int_part.replace(".", "") + "." + frac, ["dots read as digit grouping and the comma as the decimal separator (European)"]
+        raise ToolError(f"cannot parse number {original!r}: commas and dots do not form a grouping this recognises (1,234.56 or 1.234,56)")
+    if _WESTERN.fullmatch(num) or _INDIAN.fullmatch(num):
+        return num.replace(",", ""), []
+    if re.fullmatch(r"[+-]?\d+,\d{1,2}", num):  # European decimal comma e.g. 1234,56
+        return num.replace(",", "."), ["comma read as decimal separator"]
+    raise ToolError(
+        f"cannot parse number {original!r}: the commas do not group the digits in threes (1,234,567) or twos-then-three (12,34,567)",
+        hint="Write the number without separators, or with a single decimal point.",
+    )
+
+
 def _dec_str(d: Decimal) -> str:
-    s = format(d.normalize(), "f") if d == d.to_integral() or abs(d) < Decimal("1e15") else format(d, "f")
+    if not d.is_finite():
+        return str(d)
+    if not d:
+        return "0"  # never "-0"
+    with localcontext() as ctx:
+        ctx.prec = max(ctx.prec, len(d.as_tuple().digits) + 1)  # normalize() is a context operation and would round
+        s = format(d.normalize(), "f") if d == d.to_integral() or abs(d) < Decimal("1e15") else format(d, "f")
     if "." in s:
         s = s.rstrip("0").rstrip(".")
     return s or "0"
@@ -208,9 +298,13 @@ def _compare(p: dict[str, Any]) -> dict[str, Any]:
     if len(parsed) == 2:
         a, b = parsed[0][0], parsed[1][0]
         out["relation"] = "a < b" if a < b else ("a > b" if a > b else "a = b")
-        out["difference"] = _dec_str(b - a)
-        if a != 0:
-            out["percent_change_a_to_b"] = _dec_str(((b - a) / a * 100).quantize(Decimal("0.0001")))
+        if a.is_finite() and b.is_finite():
+            out["difference"] = _dec_str(b - a)
+            if a != 0:
+                # over |a|, as finance.percent does, so -100 -> -50 is +50% in both places
+                out["percent_change_a_to_b"] = _dec_str(((b - a) / abs(a) * 100).quantize(Decimal("0.0001")))
+            else:
+                assumptions.append("percent change from zero is undefined, so it is omitted; the difference is the only meaningful figure")
     return ok(out, assumptions=assumptions)
 
 
@@ -219,11 +313,16 @@ _SEMVER_RE = re.compile(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-([0-9A-Za-z.-]+))?
 
 def parse_semver(v: Any) -> tuple[dict[str, Any], list[str]]:
     """``"v1.10"`` -> the parsed fields and the assumptions made (missing minor/patch read as 0)."""
+    if isinstance(v, bool) or isinstance(v, (int, float)):
+        # 1.10 as a number is 1.1, and this mode exists to keep 1.10 above 1.9
+        raise ToolError(f"pass versions as strings: {v!r} as a number cannot tell 1.10 from 1.1")
     s = str(v).strip()
     m = _SEMVER_RE.match(s)
     if not m:
         raise ToolError(f"{s!r} is not a version (expected MAJOR.MINOR.PATCH with optional -prerelease and +build)")
     major, minor, patch, pre, build = m.groups()
+    if any(part and len(part) > 1 and part.startswith("0") for part in (major, minor, patch)):
+        raise ToolError(f"{s!r}: SemVer forbids a leading zero in a numeric part")
     assumptions = []
     if minor is None or patch is None:
         assumptions.append(f"{s} read as {major}.{minor or 0}.{patch or 0}")
@@ -283,7 +382,8 @@ _ROUND_MODES = {"half_up": ROUND_HALF_UP, "half_even": ROUND_HALF_EVEN, "bankers
 
 def _round(p: dict[str, Any]) -> dict[str, Any]:
     d, assumptions = parse_number(p.get("value"))
-    mode = (p.get("rounding") or p.get("method") or "half_up").lower()
+    _finite(d, "value")
+    mode = str(p.get("rounding") or p.get("method") or "half_up").lower()
     if mode not in _ROUND_MODES:
         raise ToolError(f"rounding must be one of {', '.join(_ROUND_MODES)}")
     rm = _ROUND_MODES[mode]
@@ -291,9 +391,7 @@ def _round(p: dict[str, Any]) -> dict[str, Any]:
     if clash:
         assumptions.append(clash)
     if p.get("significant") is not None:
-        sig = int(p["significant"])
-        if sig < 1:
-            raise ToolError("significant must be >= 1")
+        sig = whole(p["significant"], "significant", lo=1, hi=MAX_DIGITS)
         if d == 0:
             res = Decimal(0)
         else:
@@ -307,10 +405,13 @@ def _round(p: dict[str, Any]) -> dict[str, Any]:
         res = (d / step).quantize(Decimal(1), rounding=rm) * step
         assumptions.append(f"to nearest {_dec_str(step)}, {mode}")
     else:
-        decimals = int(p.get("decimals", 0))
+        decimals = whole(p.get("decimals", 0), "decimals", lo=-MAX_DIGITS, hi=MAX_DIGITS)
         res = d.quantize(Decimal(1).scaleb(-decimals), rounding=rm)
         assumptions.append(f"{decimals} decimals, {mode}" + (" (Python's round() uses half_even; pass rounding='half_even' to match)" if mode == "half_up" else ""))
-    return ok({"value": _dec_str(res), "number": float(res), "original": _dec_str(d)}, assumptions=assumptions)
+    number, note = saturate_to_float(res, "rounded value")
+    if note:
+        assumptions.append(note)
+    return ok({"value": _dec_str(res), "number": number, "original": _dec_str(d)}, assumptions=assumptions)
 
 
 _LOCALE = {
@@ -339,8 +440,12 @@ def _group(int_part: str, sizes: tuple[int, int], sep: str) -> str:
     return sep.join(chunks + [tail])
 
 
+_STYLES = ("number", "currency", "percent", "compact")
+
+
 def _format(p: dict[str, Any]) -> dict[str, Any]:
     d, assumptions = parse_number(p.get("value"))
+    _finite(d, "value")
     locale = str(p.get("locale") or "en_US")
     lk = locale.replace("-", "_")
     if lk not in _LOCALE:
@@ -349,9 +454,16 @@ def _format(p: dict[str, Any]) -> dict[str, Any]:
             raise ToolError(f"unsupported locale {locale!r}; try en_IN, en_US, en_GB, de_DE, fr_FR")
         lk = lk2
     sizes, gsep, dsep = _LOCALE[lk]
-    style = (p.get("style") or "number").lower()
+    style = str(p.get("style") or "number").lower()
+    if style not in _STYLES:
+        raise ToolError(f"style must be one of {', '.join(_STYLES)}, not {style!r}")
     decimals = p.get("decimals")
-    currency = (p.get("currency") or "").upper()
+    if decimals is not None:
+        decimals = whole(decimals, "decimals", lo=0, hi=MAX_DIGITS)
+    currency = str(p.get("currency") or "").upper()
+    if currency and style not in ("currency", "compact"):
+        assumptions.append(f"currency {currency} is not shown with style='{style}'; use style='currency'")
+    accounting = flag(p.get("accounting", False), "accounting")
     if style == "currency" and decimals is None:
         decimals = 0 if currency in ("JPY", "KRW", "VND") else 2
     if style == "percent":
@@ -365,9 +477,12 @@ def _format(p: dict[str, Any]) -> dict[str, Any]:
             table = [(Decimal(10**7), "Cr"), (Decimal(10**5), "L"), (Decimal(10**3), "K")]
         else:
             table = [(Decimal(10**12), "T"), (Decimal(10**9), "B"), (Decimal(10**6), "M"), (Decimal(10**3), "K")]
-        for div, suf in table:
+        for i, (div, suf) in enumerate(table):
             if absd >= div:
                 v = (d / div).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if i and abs(v) * div >= table[i - 1][0]:  # 999,999 rounds to 1000K, which is 1M
+                    div, suf = table[i - 1]
+                    v = (d / div).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
                 txt = _dec_str(v) + suf
                 if currency:
                     txt = _CCY_SYMBOL.get(currency, currency + " ") + txt
@@ -388,7 +503,7 @@ def _format(p: dict[str, Any]) -> dict[str, Any]:
     if style == "currency":
         sym = _CCY_SYMBOL.get(currency, currency)
         body = f"{sym}{body}" if len(sym) <= 2 else f"{sym} {body}"
-    if p.get("accounting") and sign:
+    if accounting and sign:
         formatted = f"({body})"
     else:
         formatted = sign + body
@@ -398,33 +513,35 @@ def _format(p: dict[str, Any]) -> dict[str, Any]:
 
 def _allocate(p: dict[str, Any]) -> dict[str, Any]:
     total, assumptions = parse_number(p.get("total"))
-    decimals = int(p.get("decimals", 2))
+    _finite(total, "total")
+    decimals = whole(p.get("decimals", 2), "decimals", lo=0, hi=20)
     unit = Decimal(1).scaleb(-decimals)
-    weights_in = p.get("weights") or p.get("ratios") or p.get("percentages")
+    clash = exclusive(p, "weights", "ratios", "percentages", "parts", "n")
+    if clash:
+        assumptions.append(clash)
+    source = next((k for k in ("weights", "ratios", "percentages") if p.get(k) is not None), None)
+    weights_in = p.get(source) if source else None
     labels = p.get("labels")
     if weights_in is None:
-        n = int(p.get("parts") or p.get("n") or 0)
-        if n < 1:
+        if p.get("parts") is None and p.get("n") is None:
             raise ToolError("allocate needs 'weights' (list) or 'parts' (int)")
-        if n > MAX_PARTS:
-            raise TooLarge(
-                f"{n:,} parts; the most that can be returned is {MAX_PARTS:,}",
-                details={"parts": n, "limit": MAX_PARTS},
-                hint=f"Split into at most {MAX_PARTS:,} parts.",
-            )
+        n = whole(p["parts"] if p.get("parts") is not None else p["n"], "parts", lo=1, hi=MAX_PARTS)
         weights = [Fraction(1)] * n
         assumptions.append(f"split equally into {n} parts")
     else:
         if isinstance(weights_in, dict):
             labels = list(weights_in.keys())
             weights_in = list(weights_in.values())
+        if not isinstance(weights_in, list) or not weights_in:
+            raise ToolError(f"{source} must be a non-empty list of numbers, not {weights_in!r}")
         weights = []
         for w in weights_in:
-            dw, _ = parse_number(w)
+            dw, _ = parse_percent(w) if source == "percentages" else parse_number(w)
+            _finite(dw, source)
             if dw < 0:
                 raise ToolError("weights must be non-negative")
             weights.append(Fraction(dw))
-        if p.get("percentages") is not None and abs(sum(weights) - 100) > Fraction(1, 1000):
+        if source == "percentages" and abs(sum(weights) - 100) > Fraction(1, 1000):
             raise ToolError(f"percentages sum to {float(sum(weights))}, not 100")
     if sum(weights) == 0:
         raise ToolError("weights sum to zero")
@@ -461,31 +578,47 @@ def _allocate(p: dict[str, Any]) -> dict[str, Any]:
     return ok(out, assumptions=assumptions + [f"shares sum exactly to the total; leftover {unit} units went to the parts with the largest fractional remainder" if method == "largest_remainder" else f"leftover units given to the {method} part"])
 
 
+MAX_TERMS = 10_000
+#: log10 of the golden ratio: F(n) has about n·0.209 digits.
+_LOG10_PHI = math.log10((1 + 5**0.5) / 2)
+
+
 def _sequence(p: dict[str, Any]) -> dict[str, Any]:
-    kind = (p.get("kind") or p.get("type") or "arithmetic").lower()
-    n = p.get("n") or p.get("count")
+    kind = str(p.get("kind") or p.get("type") or "arithmetic").lower()
+    assumptions: list[str] = []
+    warnings: list[str] = []
+    n = p.get("n") if p.get("n") is not None else p.get("count")
     if n is not None:
-        n = int(n)
-        if n < 1 or n > 10000:
-            raise ToolError("n must be 1..10000")
+        n = whole(n, "n", lo=1, hi=MAX_TERMS)
+    for name, kinds in (("step", ("arithmetic", "range")), ("ratio", ("geometric",)), ("end", ("arithmetic", "range"))):
+        if p.get(name) is not None and kind not in kinds:
+            assumptions.append(f"'{name}' is not used by a {kind} sequence; ignored")
+
+    def num(value: Any, key: str) -> Decimal:
+        d, notes = parse_number(value)
+        assumptions.extend(x for x in notes if x not in assumptions)
+        return _finite(d, key)
+
     if kind == "arithmetic":
-        start, _ = parse_number(p.get("start", 0))
-        step, _ = parse_number(p.get("step", 1))
+        start, step = num(p.get("start", 0), "start"), num(p.get("step", 1), "step")
         if n is None and p.get("end") is None:
             raise ToolError("arithmetic needs 'n' or 'end'")
+        clash = exclusive(p, "n", "count", "end")
+        if clash:
+            assumptions.append(clash)
         if n is None:
-            end, _ = parse_number(p["end"])
+            end = num(p["end"], "end")
             if step == 0:
                 raise ToolError("step cannot be zero")
             n = int(((end - start) / step).to_integral_value(rounding=ROUND_FLOOR)) + 1
             if n < 1:
                 n = 0
-            if n > 10000:
-                raise ToolError("sequence longer than 10000 terms")
+                warnings.append(f"step {_dec_str(step)} points away from end {_dec_str(end)}, so there are no terms")
+            if n > MAX_TERMS:
+                raise TooLarge(f"the sequence would have {n:,} terms; the most that can be returned is {MAX_TERMS:,}", details={"terms": n, "limit": MAX_TERMS}, hint="Use a larger step or a nearer end.")
         seq = [start + step * i for i in range(n)]
     elif kind == "geometric":
-        start, _ = parse_number(p.get("start", 1))
-        ratio, _ = parse_number(p.get("ratio", 2))
+        start, ratio = num(p.get("start", 1), "start"), num(p.get("ratio", 2), "ratio")
         if n is None:
             raise ToolError("geometric needs 'n'")
         # `n` is capped at 10 000 but the *terms* are not: 2, ratio 2, n 10 000 ends at
@@ -504,6 +637,13 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
             cur *= ratio
     elif kind == "fibonacci":
         n = n or 10
+        last_digits = (n - 1) * _LOG10_PHI
+        if last_digits > MAX_TERM_DIGITS:
+            raise TooLarge(
+                f"F({n - 1}) would have about {int(last_digits):,} digits; the limit is {MAX_TERM_DIGITS:,}",
+                details={"estimated_digits": int(last_digits), "limit_digits": MAX_TERM_DIGITS, "n": n},
+                hint="Lower 'n'.",
+            )
         seq = [Decimal(0), Decimal(1)]
         while len(seq) < n:
             seq.append(seq[-1] + seq[-2])
@@ -519,17 +659,25 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
         n = n or 10
         seq = [Decimal(i * i) for i in range(1, n + 1)]
     elif kind == "range":
-        start, _ = parse_number(p.get("start", 0))
-        end, _ = parse_number(p.get("end", 10))
-        step, _ = parse_number(p.get("step", 1))
-        seq, cur = [], start
-        while (cur <= end if step > 0 else cur >= end) and len(seq) <= 10000:
-            seq.append(cur)
-            cur += step
+        start, end, step = num(p.get("start", 0), "start"), num(p.get("end", 10), "end"), num(p.get("step", 1), "step")
+        if step == 0:
+            raise ToolError("step cannot be zero")
+        count = int(((end - start) / step).to_integral_value(rounding=ROUND_FLOOR)) + 1
+        if count < 1:
+            count = 0
+            warnings.append(f"step {_dec_str(step)} points away from end {_dec_str(end)}, so there are no terms")
+        if count > MAX_TERMS:
+            # used to stop quietly at 10,001 terms, as though that were the whole range
+            raise TooLarge(f"the range would have {count:,} terms; the most that can be returned is {MAX_TERMS:,}", details={"terms": count, "limit": MAX_TERMS}, hint="Use a larger step or a nearer end.")
+        seq = [start + step * i for i in range(count)]
     else:
         raise ToolError("kind must be arithmetic, geometric, fibonacci, primes, squares or range")
     total = sum(seq, Decimal(0))
-    return ok({"kind": kind, "count": len(seq), "terms": [_dec_str(x) for x in seq], "sum": _dec_str(total), "last": _dec_str(seq[-1]) if seq else None})
+    return ok(
+        {"kind": kind, "count": len(seq), "terms": [_dec_str(x) for x in seq], "sum": _dec_str(total), "last": _dec_str(seq[-1]) if seq else None},
+        assumptions=assumptions,
+        warnings=warnings,
+    )
 
 
 _ONES = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
@@ -550,15 +698,24 @@ def _below_thousand(n: int) -> str:
     return " ".join(parts)
 
 
+#: The short scale, as far as it has everyday names.
+_SCALES = ["", "thousand", "million", "billion", "trillion", "quadrillion", "quintillion", "sextillion", "septillion", "octillion", "nonillion", "decillion"]
+
+
 def _words_international(n: int) -> str:
     if n == 0:
         return "zero"
-    scales = ["", "thousand", "million", "billion", "trillion", "quadrillion"]
+    if n >= 1000 ** len(_SCALES):
+        # used to be an IndexError past quadrillion
+        raise Unsupported(
+            f"numbers of 10^{3 * len(_SCALES)} and above have no name in the short scale here (it stops at decillion); system='indian' names any size in crores of crores",
+            hint="Pass system='indian'.",
+        )
     parts, i = [], 0
     while n:
         n, chunk = divmod(n, 1000)
         if chunk:
-            parts.insert(0, (_below_thousand(chunk) + (" " + scales[i] if scales[i] else "")).strip())
+            parts.insert(0, (_below_thousand(chunk) + (" " + _SCALES[i] if _SCALES[i] else "")).strip())
         i += 1
     return " ".join(parts)
 
@@ -581,9 +738,17 @@ def _words_indian(n: int) -> str:
     return " ".join(parts)
 
 
+#: Currency words: (major, minor, plural of minor). None: the unit has no minor.
+_CURRENCY_WORDS = {"INR": ("rupee", "paise", "paise"), "USD": ("dollar", "cent", "cents"), "EUR": ("euro", "cent", "cents"), "GBP": ("pound", "penny", "pence"), "AED": ("dirham", "fils", "fils"), "SGD": ("dollar", "cent", "cents"), "JPY": ("yen", None, None)}
+_INVARIANT = ("yen",)
+
+
 def _to_words(p: dict[str, Any]) -> dict[str, Any]:
     d, assumptions = parse_number(p.get("value"))
-    system = (p.get("system") or "international").lower()
+    _finite(d, "value")
+    if len(d.as_tuple().digits) > MAX_TERM_DIGITS:
+        raise TooLarge(f"the number has more than {MAX_TERM_DIGITS:,} digits; that is past what can be spelled out", hint=f"Use at most {MAX_TERM_DIGITS:,} digits.")
+    system = str(p.get("system") or "international").lower()
     if system in ("indian", "in", "lakh"):
         fn = _words_indian
     elif system in ("international", "western", "us", "short"):
@@ -592,30 +757,31 @@ def _to_words(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("system must be 'international' or 'indian'")
     neg = d < 0
     d = abs(d)
-    whole = int(d)
-    frac = d - whole
-    currency = (p.get("currency") or "").upper()
+    whole_part = int(d)
+    frac = d - whole_part
+    currency = str(p.get("currency") or "").upper()
     if currency:
-        major, minor = {"INR": ("rupee", "paise"), "USD": ("dollar", "cent"), "EUR": ("euro", "cent"), "GBP": ("pound", "pence"), "AED": ("dirham", "fils"), "SGD": ("dollar", "cent"), "JPY": ("yen", None)}.get(currency, (currency, "cent"))
+        known = currency in _CURRENCY_WORDS
+        major, minor, minors = _CURRENCY_WORDS.get(currency, (currency, "cent", "cents"))
         minor_n = int((frac * 100).quantize(Decimal(1), rounding=ROUND_HALF_UP))
         if minor_n == 100:
-            whole, minor_n = whole + 1, 0
-        text = f"{fn(whole)} {major}{'s' if whole != 1 and major not in ('yen', 'pence', 'paise') else ''}"
+            whole_part, minor_n = whole_part + 1, 0
+        plural = whole_part != 1 and major not in _INVARIANT and known  # a code like XYZ is not pluralised
+        text = f"{fn(whole_part)} {major}{'s' if plural else ''}"
         if minor_n and minor:
-            text += f" and {fn(minor_n)} {minor}"
-        text = text.capitalize()
-        if p.get("suffix_only", True):
+            text += f" and {fn(minor_n)} {minor if minor_n == 1 else minors}"
+        if flag(p.get("suffix_only", True), "suffix_only"):
             text += " only"
-        if currency == "INR":
-            text = text.replace("Rupee", "Rupees") if whole != 1 else text
         assumptions.append(f"minor units rounded to 2 decimals ({currency})")
     else:
-        text = fn(whole)
+        text = fn(whole_part)
         if frac:
             digits = _dec_str(frac)[2:]
             text += " point " + " ".join(_ONES[int(c)] if c != "0" else "zero" for c in digits)
     if neg:
         text = "minus " + text
+    if currency:
+        text = text[0].upper() + text[1:]  # not .capitalize(), which would lower-case a code
     return ok({"words": text, "value": _dec_str(d if not neg else -d), "system": system}, assumptions=assumptions)
 
 
@@ -628,8 +794,9 @@ def _parse(p: dict[str, Any]) -> dict[str, Any]:
     assumptions: list[str] = []
     for v in vals:
         d, a = parse_number(v)
-        out.append({"input": v, "value": _dec_str(d), "number": float(d)})
-        assumptions += [x for x in a if x not in assumptions]
+        number, note = saturate_to_float(d, "value")  # `1e400` used to be `Infinity` with nothing said
+        out.append({"input": v, "value": _dec_str(d), "number": number})
+        assumptions += [x for x in a + ([note] if note else []) if x not in assumptions]
     return ok(out[0] if single else out, assumptions=assumptions)
 
 
@@ -640,7 +807,15 @@ def numbers(mode: str = "compare", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     check_params("numbers", mode, p, MODE_PARAMS)
-    return {"compare": _compare, "round": _round, "format": _format, "allocate": _allocate, "sequence": _sequence, "parse": _parse, "to_words": _to_words, "semver": _semver}[mode](p)
+    with localcontext() as ctx:
+        ctx.prec = MAX_DIGITS
+        try:
+            return {"compare": _compare, "round": _round, "format": _format, "allocate": _allocate, "sequence": _sequence, "parse": _parse, "to_words": _to_words, "semver": _semver}[mode](p)
+        except (InvalidOperation, Overflow):
+            # past 1,200 digits even quantize gives up; that is a size, not an internal error
+            raise TooLarge(f"the result would have more than {MAX_DIGITS:,} significant digits", hint="Use smaller numbers or fewer decimals.") from None
+        except DivisionByZero:
+            raise ToolError("the calculation divides by zero") from None
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
 #: executed when /docs/tools/numbers is built and sorted by the result into
