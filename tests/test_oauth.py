@@ -167,3 +167,94 @@ def test_revoking_clears_every_token_of_that_client_and_key(tmp_path):
     assert oauth.load_token("ref", "refresh") is None
     assert oauth.load_token("other-client", "access") is not None
     assert oauth.load_token("other-key", "access") is not None
+
+
+# -- a token meters exactly as a key does -----------------------------------
+
+
+def hash_of(keys, prefix):
+    return keys.db.one("SELECT key_hash FROM keys WHERE prefix=?", (prefix,))["key_hash"]
+
+
+def a_key_and_token(tmp_path, token="tok", **create):
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    oauth = OAuthStore(keys)
+    raw, info = keys.create("a@b.co", **create)
+    oauth.save_token(token, kind="access", client_id="c1", key_hash=hash_of(keys, info.prefix),
+                     scopes=["mcp"], resource=None, ttl=3600)
+    return keys, oauth, raw, info
+
+
+def test_a_token_and_its_key_draw_down_one_quota(tmp_path):
+    keys, _, raw, _ = a_key_and_token(tmp_path, daily_quota=3, rpm=100)
+    assert keys.verify_oauth_token_and_count("tok").remaining == 2
+    assert keys.verify_and_count(raw).remaining == 1
+    assert keys.verify_oauth_token_and_count("tok").remaining == 0
+    spent = keys.verify_oauth_token_and_count("tok")
+    assert not spent.ok and spent.status == 429 and "quota" in spent.reason
+
+
+def test_a_token_is_rate_limited_like_its_key(tmp_path):
+    keys, _, _, _ = a_key_and_token(tmp_path, daily_quota=100, rpm=2)
+    assert keys.verify_oauth_token_and_count("tok").ok
+    assert keys.verify_oauth_token_and_count("tok").ok
+    limited = keys.verify_oauth_token_and_count("tok")
+    assert not limited.ok and limited.status == 429 and limited.retry_after
+
+
+def test_a_token_carries_the_keys_scope(tmp_path):
+    from leftbrain.scopes import parse_scope
+
+    keys, _, _, _ = a_key_and_token(tmp_path, scope=parse_scope(["math"]))
+    verdict = keys.verify_oauth_token_and_count("tok")
+    assert verdict.ok
+    assert verdict.key.scope.allows("math", "eval")
+    assert not verdict.key.scope.allows("convert", "units")
+
+
+def test_disabling_or_revoking_the_key_kills_its_token(tmp_path):
+    keys, _, _, info = a_key_and_token(tmp_path)
+    assert keys.verify_oauth_token_and_count("tok").ok
+    keys.set_disabled(info.prefix, True)
+    assert keys.verify_oauth_token_and_count("tok").status == 403
+    keys.set_disabled(info.prefix, False)
+    assert keys.verify_oauth_token_and_count("tok").ok
+    keys.revoke(info.prefix)
+    assert keys.verify_oauth_token_and_count("tok").status == 401
+
+
+def test_an_expired_token_is_refused_even_though_its_key_is_fine(tmp_path):
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    oauth = OAuthStore(keys)
+    raw, info = keys.create("a@b.co")
+    oauth.save_token("stale", kind="access", client_id="c1", key_hash=hash_of(keys, info.prefix),
+                     scopes=["mcp"], resource=None, ttl=-1)
+    assert keys.verify_oauth_token_and_count("stale").status == 401
+    assert keys.verify_and_count(raw).ok  # the key itself is untouched
+
+
+def test_a_refresh_token_is_not_a_credential(tmp_path):
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    oauth = OAuthStore(keys)
+    _, info = keys.create("a@b.co")
+    oauth.save_token("refresh-only", kind="refresh", client_id="c1",
+                     key_hash=hash_of(keys, info.prefix), scopes=["mcp"], resource=None, ttl=86400)
+    assert keys.verify_oauth_token_and_count("refresh-only").status == 401
+
+
+def test_an_unknown_or_empty_token_is_refused(tmp_path):
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    assert keys.verify_oauth_token_and_count("nope").status == 401
+    assert keys.verify_oauth_token_and_count("").status == 401
+
+
+def test_the_key_path_is_unchanged(tmp_path):
+    """The first acceptance criterion: `lblz_` behaves exactly as it did before OAuth."""
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    raw, info = keys.create("a@b.co", daily_quota=2, rpm=100)
+    first = keys.verify_and_count(raw)
+    assert first.ok and first.remaining == 1 and first.key.prefix == info.prefix
+    assert keys.verify_and_count(raw).remaining == 0
+    assert keys.verify_and_count(raw).status == 429
+    assert keys.verify_and_count("lblz_nope").status == 401
+    assert keys.verify_and_count("not-even-a-key").status == 401  # wrong prefix, not a token lookup

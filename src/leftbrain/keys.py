@@ -426,10 +426,36 @@ class KeyStore:
     def verify_and_count(self, raw_key: str) -> Verdict:
         if not raw_key or not raw_key.startswith(KEY_PREFIX):
             return Verdict(False, "invalid key", 401)
-        h = _hash(raw_key)
-        row = self.db.one("SELECT * FROM keys WHERE key_hash = ?", (h,))
+        row = self.db.one("SELECT * FROM keys WHERE key_hash = ?", (_hash(raw_key),))
         if not row:
             return Verdict(False, "unknown key", 401)
+        return self._meter(row)
+
+    def verify_oauth_token_and_count(self, token: str) -> Verdict:
+        """An OAuth access token, resolved to the key it was issued against and metered as one.
+
+        The join is the revocation mechanism: a disabled key fails the same check a key does,
+        and a revoked one has no row at all, so its tokens stop working on the next call with
+        no second piece of bookkeeping to keep in step (#34).
+        """
+        if not token:
+            return Verdict(False, "invalid token", 401)
+        row = self.db.one(
+            "SELECT k.* FROM oauth_tokens t JOIN keys k ON k.key_hash = t.key_hash "
+            "WHERE t.token_hash = ? AND t.kind = 'access' AND t.expires_at > ?",
+            (_hash(token), _now()),
+        )
+        if not row:
+            return Verdict(False, "invalid token", 401)
+        return self._meter(row)
+
+    def _meter(self, row: dict[str, Any]) -> Verdict:
+        """Quota, rate limit and usage counting for one key row, whichever credential named it.
+
+        Both credential kinds run this, so the headers a caller sees, the daily counter and
+        the rpm window cannot drift apart: there is only one copy of them.
+        """
+        h = row["key_hash"]
         if row["disabled"]:
             return Verdict(False, "key disabled", 403)
         info = self._info(row)
