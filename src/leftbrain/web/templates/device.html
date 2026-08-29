@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Connect a device · leftbrain{% endblock %}
+{% block content %}
+<main class="panel narrow">
+{% if approved %}
+  <h2 class="sec">Connected</h2>
+  <p class="lede sm">You can go back to your terminal — it should pick this up within a few seconds.</p>
+  <p><a class="btn primary" href="/dashboard">See the key it created</a></p>
+{% else %}
+  <h2 class="sec">Enter the code from your app</h2>
+  <p class="lede sm">An app running somewhere without a browser is asking to use your leftbrain
+     tools. It showed you a short code — type it here. The code alone grants nothing until you
+     approve it.</p>
+  {% if error %}<p class="notice bad" role="alert">{{ error }}</p>{% endif %}
+  <form class="scopeform" method="post" action="/device">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label class="field">Code
+      <input class="mono" name="user_code" value="{{ user_code }}" autocomplete="off"
+             autocapitalize="characters" spellcheck="false" placeholder="WXYZ-1234" required>
+    </label>
+    <p class="lede sm">Everything is ticked to start with. Come back to the key on your
+       dashboard afterwards and untick whatever it never called.</p>
+    {% include "_scope_grid.html" %}
+    <div class="cta">
+      <button class="btn primary" type="submit" name="approve" value="1">Approve</button>
+      <button class="btn ghost" type="submit">Decline</button>
+    </div>
+  </form>
+{% endif %}
+</main>
+{% endblock %}

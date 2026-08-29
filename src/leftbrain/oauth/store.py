@@ -148,3 +148,47 @@ class OAuthStore:
         """RFC 7009: revoking one credential revokes its sibling, so both kinds go together."""
         with self.keys._lock:
             self.db.run("DELETE FROM oauth_tokens WHERE client_id=? AND key_hash=?", (client_id, key_hash))
+
+    # -- device grant (RFC 8628) ---------------------------------------------
+
+    def save_device(self, device_code: str, *, user_code: str, client_id: str,
+                    scopes: list[str], ttl: int) -> None:
+        with self.keys._lock:
+            self.db.run(
+                "INSERT INTO oauth_devices(device_hash, user_code, client_id, status, scopes, expires_at) "
+                "VALUES (?,?,?,'pending',?,?)",
+                (_hash(device_code), user_code, client_id, json.dumps(scopes), self._expiry(ttl)),
+            )
+
+    def device_by_user_code(self, user_code: str) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT * FROM oauth_devices WHERE user_code=? AND status='pending' AND expires_at > ?",
+            (user_code, _now()),
+        )
+        return {**row, "scopes": json.loads(row["scopes"])} if row else None
+
+    def settle_device(self, user_code: str, *, status: str, owner: str | None = None,
+                      key_hash: str | None = None) -> bool:
+        """Record the human's decision. Only a pending, unexpired code can be settled."""
+        with self.keys._lock:
+            return self.db.run(
+                "UPDATE oauth_devices SET status=?, owner=?, key_hash=? "
+                "WHERE user_code=? AND status='pending' AND expires_at > ?",
+                (status, owner, key_hash, user_code, _now()),
+            ) > 0
+
+    def take_device(self, device_code: str, client_id: str) -> dict[str, Any] | None:
+        """This client's device record; a settled one is consumed so it grants once.
+
+        The client is checked before anything is deleted, so another client polling with a
+        stolen device code cannot destroy the record its owner is waiting on.
+        """
+        h = _hash(device_code)
+        with self.keys._lock:
+            row = self.db.one("SELECT * FROM oauth_devices WHERE device_hash = ?", (h,))
+            if not row or row["client_id"] != client_id:
+                return None
+            if row["status"] in ("approved", "denied"):
+                self.db.run("DELETE FROM oauth_devices WHERE device_hash = ?", (h,))
+        status = "expired" if row["expires_at"] <= _now() else row["status"]
+        return {**row, "status": status, "scopes": json.loads(row["scopes"])}
