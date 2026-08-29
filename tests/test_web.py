@@ -59,6 +59,32 @@ def test_the_docs_offer_both_ways_to_connect():
     assert "cloudflare worker" not in clients.lower()
 
 
+def test_every_client_section_documents_both_routes():
+    """A client whose section only shows the key path reads as one that cannot do OAuth."""
+    from pathlib import Path
+
+    clients = Path("src/leftbrain/web/docs/clients.md").read_text(encoding="utf-8")
+    for heading in ("## Connect Claude Code", "## Claude Desktop, Cursor, VS Code",
+                    "## Connect Claude on the web", "## Connect ChatGPT",
+                    "## Connect from a terminal"):
+        assert heading in clients, heading
+    # Claude Code and the IDEs get theirs as an alternative beside the header they already had
+    assert "Or connect with OAuth" in clients
+    assert "Or leave the `headers` block out" in clients
+    # and the web connector's fields are explained rather than left to guesswork
+    assert "Client ID and Secret fields empty" in clients
+
+
+def test_the_clients_page_renders(tmp_path):
+    """The `:::` containers are hand-written; a malformed one silently mangles the page."""
+    from leftbrain.web.docs import load_page
+
+    title, html = load_page("clients")
+    assert title == "MCP clients"
+    assert ":::" not in html  # every container was consumed
+    assert html.count("<h2") >= 8
+
+
 def test_the_quickstart_says_a_key_can_be_skipped_entirely():
     """It is the first page anyone reads; a second way in that it never mentions is hidden."""
     from pathlib import Path

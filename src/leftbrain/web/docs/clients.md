@@ -28,6 +28,19 @@ claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp \
 :::
 :::
 
+**Or connect with OAuth**, if you would rather not handle a key at all. Add it with no header:
+
+:::command
+```
+claude mcp add --transport http leftbrain https://leftbrain.idlesync.in/mcp
+```
+:::
+
+`claude mcp list` will show it as **Needs authentication**. Run `/mcp` in a session, pick
+leftbrain, and authenticate — a browser opens leftbrain's consent page. Approve, and the tools
+appear. Your config holds only the URL; the credential lives with Claude Code, and the key it
+created is on your [dashboard](/dashboard) as `Claude Code · <your OS>`.
+
 ## Claude Desktop, Cursor, VS Code
 
 Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/mcp.json`, or `.vscode/mcp.json` (VS Code uses `"servers"` instead of `"mcpServers"`):
@@ -45,6 +58,25 @@ Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/m
 }
 ```
 :::
+
+**Or leave the `headers` block out.** Cursor, VS Code and Windsurf will find leftbrain's OAuth
+metadata, and offer to sign you in the first time they connect:
+
+:::request
+```json
+{
+  "mcpServers": {
+    "leftbrain": {
+      "type": "http",
+      "url": "https://leftbrain.idlesync.in/mcp"
+    }
+  }
+}
+```
+:::
+
+Where the prompt appears differs between them — a notification, a "needs authentication" badge on
+the server, or a button in the MCP panel. All three end at the same leftbrain consent page.
 
 <h2 id="two-ways-to-connect">Two ways to connect</h2>
 
@@ -70,6 +102,20 @@ this need?" is not a question anyone can answer before they have watched it work
 | Claude Desktop, Cursor, VS Code | ✅ | ✅ |
 | Claude on the **web** | a header entered by an org admin (beta) | ✅ |
 | ChatGPT | ❌ — no key field, no header editor | ✅ |
+
+## Connect Claude on the web
+
+Claude.ai → **Settings → Connectors → Add custom connector**, and enter
+`https://leftbrain.idlesync.in/mcp`. Leave the OAuth Client ID and Secret fields empty — they are
+for a server that issues you credentials by hand, and leftbrain does not need them. Claude reads
+the discovery documents itself.
+
+Approve the leftbrain page that opens. The key it creates reads `Claude · web`, because the
+connector runs on Anthropic's servers rather than on the machine you approved from.
+
+An organisation admin can instead paste a key as a request header when adding the connector —
+Anthropic's `static_headers`, in beta at the time of writing — which shares one credential across
+the whole organisation. OAuth gives each person their own, revocable on its own.
 
 ## Connect ChatGPT
 
