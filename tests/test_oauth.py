@@ -1,12 +1,21 @@
 """OAuth 2.1 authorization server for MCP clients (#34)."""
 
+import asyncio
+
+from mcp.server.auth.provider import AuthorizationParams
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 from leftbrain.keys import KeyStore
 from leftbrain.oauth.naming import connector_key_name, os_from_user_agent
+from leftbrain.oauth.provider import LeftbrainOAuthProvider
 from leftbrain.oauth.redirects import is_loopback, redirect_uri_matches
 from leftbrain.oauth.store import OAuthStore
+
+
+def run(coro):
+    """Drive one provider coroutine. The suite is otherwise sync; this keeps it that way."""
+    return asyncio.run(coro)
 
 
 def make_store(tmp_path):
@@ -368,3 +377,113 @@ def test_an_attacker_supplied_name_cannot_forge_a_second_line():
     forged = connector_key_name("Evil\n<script>", CLOUD, WINDOWS)
     assert forged.startswith("Evil <script>")
     assert "\n" not in forged and "\r" not in forged
+
+
+# -- the provider -----------------------------------------------------------
+
+
+def a_provider(tmp_path):
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    return LeftbrainOAuthProvider(OAuthStore(keys), keys), keys
+
+
+def params(redirect="https://app.example/cb", state="st"):
+    return AuthorizationParams(
+        state=state, scopes=["mcp"], code_challenge="chal",
+        redirect_uri=AnyUrl(redirect), redirect_uri_provided_explicitly=True, resource=None,
+    )
+
+
+def a_bound_code(provider, keys, owner="a@b.co", scopes=("mcp",)):
+    _, info = keys.create(owner)
+    return provider.issue_code(
+        client_id="c1", key_hash=hash_of(keys, info.prefix), owner=owner, scopes=list(scopes),
+        code_challenge="chal", redirect_uri="https://app.example/cb",
+        redirect_uri_provided=True, resource=None,
+    ), info
+
+
+def test_registering_then_loading_a_client(tmp_path):
+    provider, _ = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    assert run(provider.get_client("c1")).client_name == "ChatGPT"
+    assert run(provider.get_client("missing")) is None
+
+
+def test_authorize_sends_the_browser_to_the_consent_page(tmp_path):
+    """Nothing is granted and no cookie is set here: consent must come first (#34)."""
+    provider, _ = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    url = run(provider.authorize(a_client(), params()))
+    assert url.startswith("/oauth/consent?")
+    for field in ("client_id=c1", "code_challenge=chal", "state=st", "redirect_uri="):
+        assert field in url
+
+
+def test_a_code_exchanges_once_for_a_token_pair(tmp_path):
+    provider, keys = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    code, _ = a_bound_code(provider, keys)
+
+    loaded = run(provider.load_authorization_code(a_client(), code))
+    assert loaded is not None and loaded.code_challenge == "chal"
+    token = run(provider.exchange_authorization_code(a_client(), loaded))
+    assert token.access_token and token.refresh_token
+    assert token.expires_in == 3600
+    assert keys.verify_oauth_token_and_count(token.access_token).ok
+    assert run(provider.load_authorization_code(a_client(), code)) is None  # spent
+
+
+def test_a_code_belonging_to_another_client_is_not_loaded(tmp_path):
+    provider, keys = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    code, _ = a_bound_code(provider, keys)
+    assert run(provider.load_authorization_code(a_client(client_id="c2"), code)) is None
+
+
+def test_a_refresh_rotates_both_tokens(tmp_path):
+    provider, keys = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    code, _ = a_bound_code(provider, keys)
+    first = run(provider.exchange_authorization_code(
+        a_client(), run(provider.load_authorization_code(a_client(), code))))
+
+    loaded = run(provider.load_refresh_token(a_client(), first.refresh_token))
+    second = run(provider.exchange_refresh_token(a_client(), loaded, ["mcp"]))
+    assert second.access_token != first.access_token
+    assert second.refresh_token != first.refresh_token
+    # OAuth 2.1 requires rotation for a public client: the presented one is dead
+    assert run(provider.load_refresh_token(a_client(), first.refresh_token)) is None
+    assert keys.verify_oauth_token_and_count(second.access_token).ok
+
+
+def test_a_refresh_token_of_another_client_is_not_loaded(tmp_path):
+    provider, keys = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    code, _ = a_bound_code(provider, keys)
+    pair = run(provider.exchange_authorization_code(
+        a_client(), run(provider.load_authorization_code(a_client(), code))))
+    assert run(provider.load_refresh_token(a_client(client_id="c2"), pair.refresh_token)) is None
+
+
+def test_load_access_token_returns_the_binding(tmp_path):
+    provider, keys = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    code, info = a_bound_code(provider, keys)
+    pair = run(provider.exchange_authorization_code(
+        a_client(), run(provider.load_authorization_code(a_client(), code))))
+    loaded = run(provider.load_access_token(pair.access_token))
+    assert loaded is not None and loaded.client_id == "c1"
+    assert loaded.key_hash == hash_of(keys, info.prefix)
+    assert run(provider.load_access_token("never-issued")) is None
+
+
+def test_revoking_a_token_takes_its_sibling_with_it(tmp_path):
+    provider, keys = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    code, _ = a_bound_code(provider, keys)
+    pair = run(provider.exchange_authorization_code(
+        a_client(), run(provider.load_authorization_code(a_client(), code))))
+    run(provider.revoke_token(run(provider.load_access_token(pair.access_token))))
+    assert run(provider.load_access_token(pair.access_token)) is None
+    assert run(provider.load_refresh_token(a_client(), pair.refresh_token)) is None
