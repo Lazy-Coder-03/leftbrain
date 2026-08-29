@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Connect {{ client_name }} · leftbrain{% endblock %}
+{% block content %}
+<main class="panel narrow">
+  <h2 class="sec">Connect {{ client_name }}?</h2>
+  <p class="lede sm"><strong>{{ client_name }}</strong> is asking to use your leftbrain tools as
+     <strong>{{ user.email }}</strong>.</p>
+
+  <dl class="facts">
+    <dt>Sends the result to</dt><dd><span class="mono">{{ redirect_host }}</span></dd>
+    <dt>Creates</dt>
+    <dd>an API key called <span class="mono">{{ proposed_name }}</span>, using
+        {{ slots_used + 1 }} of your {{ max_keys }} key slots. You can see it, read it,
+        change its tools or revoke it at <a href="/dashboard">your dashboard</a> like any other key.</dd>
+  </dl>
+
+  {% if loopback %}
+  <p class="notice bad" role="alert">This sends the result to <span class="mono">{{ redirect_host }}</span>,
+     an address on this computer. Only approve if you started {{ client_name }} here yourself —
+     any program running on this machine could ask for this.</p>
+  {% endif %}
+
+  {% if error %}<p class="notice bad" role="alert">{{ error }}</p>{% endif %}
+
+  <form class="scopeform" method="post" action="/oauth/consent">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% for name, value in passthrough.items() %}<input type="hidden" name="{{ name }}" value="{{ value }}">
+    {% endfor %}
+    <p class="lede sm">Everything is ticked to start with. Use it for a day, then come back to
+       the key on your dashboard and untick whatever it never called.</p>
+    {% include "_scope_grid.html" %}
+    <div class="cta">
+      <button class="btn primary" type="submit" name="approve" value="1">Approve</button>
+      <button class="btn ghost" type="submit">Cancel</button>
+    </div>
+  </form>
+</main>
+{% endblock %}

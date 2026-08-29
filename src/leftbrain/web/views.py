@@ -41,6 +41,24 @@ def error_page(request: Request, status: int, title: str, message: str, user: An
     return no_store(render(request, "error.html", status, title=title, message=message, page="error", user=user))
 
 
+def fail_page_for(request: Request, cfg: WebConfig, status: int, title: str, message: str) -> Response:
+    """`fail_page` for callers outside `routes()`: an error page that keeps the nav signed in."""
+    return error_page(request, status, title, message, user=auth.current_user(request, cfg))
+
+
+def parse_grid_scope(form: Any) -> Scope | None:
+    """The tool grid as posted, read the same way wherever the grid appears.
+
+    An empty tick-list is **not** "every tool". `parse_scope([])` raises and the caller
+    renders that as a form error; substituting `None` here would read "the user chose
+    nothing" as "the user chose everything", which is a one-word mistake that fails open.
+    """
+    values = [str(v) for v in form.getlist("scope")]
+    ticked = {v for v in values if ":" not in v}
+    values = [v for v in values if ":" not in v or v.partition(":")[0] in ticked]
+    return parse_scope(values)
+
+
 def routes(store: Any, cfg: WebConfig) -> list[Any]:
     from ..serve import _client_ip  # a module-level import would be circular
     from . import demo as demo_mod

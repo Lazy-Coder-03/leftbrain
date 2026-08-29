@@ -18,6 +18,7 @@ from starlette.routing import Route
 
 from .provider import LeftbrainOAuthProvider
 from .store import OAuthStore
+from .views import consent_routes
 
 #: One coarse OAuth scope. leftbrain's real per-tool scoping lives on the key and is chosen
 #: on the consent screen, so a second vocabulary here could only disagree with it.
@@ -68,7 +69,10 @@ def build_oauth_routes(keys: Any, cfg: Any) -> list[Route]:
         required_scopes=[MCP_SCOPE],
     )
     issuer, resource = settings.issuer_url, settings.resource_server_url
-    provider = LeftbrainOAuthProvider(OAuthStore(keys), keys)
+    # one store instance, shared by the provider and the consent views, so they cannot
+    # end up looking at the tables through two different connections
+    oauth = OAuthStore(keys)
+    provider = LeftbrainOAuthProvider(oauth, keys)
 
     amended = oauth_metadata(issuer, registration, revocation)
     routes: list[Route] = []
@@ -91,4 +95,5 @@ def build_oauth_routes(keys: Any, cfg: Any) -> list[Route]:
         # RFC 9728's own field for "where an agent reads how to authenticate here"
         resource_documentation=AnyHttpUrl(f"{cfg.base_url}/docs/agents/auth"),
     )
+    routes += consent_routes(keys, cfg, provider, oauth)
     return routes
