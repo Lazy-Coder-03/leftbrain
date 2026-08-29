@@ -270,7 +270,7 @@ def holidays(
     locale: str | None = None,
 ) -> dict[str, Any]:
     """Use for public holidays of any country/state (region="IN", subdiv="WB").
-    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions.
+    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions | categories.
     The model's holiday knowledge is stale; this dataset is current.
     """
     return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale)))

@@ -82,7 +82,7 @@ def test_parse_scope_none_means_every_tool():
     assert parse_scope(",".join(CATALOGUE)) is None
     assert parse_scope([f"{t}:{m}" for t, modes in CATALOGUE.items() for m in modes] + list(CATALOGUE)) is None
     # naming all of one tool's modes is the same as naming the tool
-    assert parse_scope("holidays:list+check+next+countries+subdivisions") == Scope({"holidays": None})
+    assert parse_scope("holidays:list+check+next+countries+subdivisions+categories") == Scope({"holidays": None})
 
 
 @pytest.mark.parametrize(
