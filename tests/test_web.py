@@ -243,6 +243,38 @@ def login_via_github(c: TestClient) -> None:
     assert "lb_session" in c.cookies
 
 
+def test_safe_next_accepts_only_a_path_on_this_server():
+    """An unchecked `next` is an open redirect, so anything not a bare path is dropped."""
+    from leftbrain.web.auth import safe_next
+
+    assert safe_next("/oauth/consent?client_id=c1&state=st") == "/oauth/consent?client_id=c1&state=st"
+    assert safe_next("/dashboard") == "/dashboard"
+    for hostile in ("//evil.example/x", "https://evil.example/x", "http://evil.example",
+                    "/\\evil.example", "\\\\evil.example", "evil.example", "",
+                    "/x\nLocation: https://evil.example", "/x\r\nSet-Cookie: a=b", None, 42):
+        assert safe_next(hostile) is None, hostile
+
+
+def test_signing_in_returns_to_where_you_were_sent_from(tmp_path):
+    """A sign-in detour that forgets the pending authorization kills the whole OAuth flow."""
+    from urllib.parse import quote
+
+    with TestClient(oauth_app(tmp_path)) as c:
+        target = "/oauth/consent?client_id=c1&state=st"
+        r = c.get(f"/login?next={quote(target)}", follow_redirects=False)
+        state = r.headers["location"].split("state=")[1].split("&")[0]
+        r = c.get(f"/auth/github/callback?code=ok&state={state}", follow_redirects=False)
+        assert r.status_code == 302 and r.headers["location"] == target
+
+
+def test_an_off_site_next_is_ignored_rather_than_followed(tmp_path):
+    with TestClient(oauth_app(tmp_path)) as c:
+        r = c.get("/login?next=https://evil.example/steal", follow_redirects=False)
+        state = r.headers["location"].split("state=")[1].split("&")[0]
+        r = c.get(f"/auth/github/callback?code=ok&state={state}", follow_redirects=False)
+        assert r.headers["location"] == "/dashboard"
+
+
 def test_callback_happy_path_sets_session(tmp_path):
     with TestClient(oauth_app(tmp_path)) as c:
         login_via_github(c)

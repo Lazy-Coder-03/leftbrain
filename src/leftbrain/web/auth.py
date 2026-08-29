@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 from dataclasses import asdict, dataclass
+from typing import Any
 
 from itsdangerous import BadSignature, URLSafeSerializer, URLSafeTimedSerializer
 from starlette.requests import Request
@@ -82,17 +83,49 @@ def new_state() -> str:
     return secrets.token_urlsafe(24)
 
 
-def sign_state(secret: str, state: str) -> str:
-    return URLSafeTimedSerializer(secret, salt="lb-oauth").dumps(state)
+def safe_next(path: Any) -> str | None:
+    """A page on this server to return to after signing in, or None.
+
+    Only a bare path is accepted. `//evil.example` is protocol-relative and a browser
+    resolves it off-site; a full URL could point anywhere; a backslash is treated as a
+    separator by some browsers; and a newline could split the `Location` header. All are
+    refused outright rather than sanitised, because a rewritten redirect target is far
+    harder to reason about than a rejected one.
+    """
+    if not isinstance(path, str) or not path.startswith("/") or path.startswith("//"):
+        return None
+    if any(c in path for c in ("\\", "\n", "\r")):
+        return None
+    return path
 
 
-def read_state(secret: str, value: str | None) -> str | None:
+def sign_state(secret: str, state: str, next_path: str | None = None) -> str:
+    """Sign the CSRF state, and where to go once the identity provider has answered.
+
+    `next_path` rides in the signed cookie rather than through the provider, so it cannot
+    be swapped between leaving and coming back.
+    """
+    return URLSafeTimedSerializer(secret, salt="lb-oauth").dumps(
+        {"s": state, "n": safe_next(next_path)}
+    )
+
+
+def read_state(secret: str, value: str | None) -> tuple[str | None, str | None]:
+    """The signed state and its return path, or ``(None, None)``."""
     if not value:
-        return None
+        return None, None
     try:
-        return str(URLSafeTimedSerializer(secret, salt="lb-oauth").loads(value, max_age=OAUTH_MAX_AGE))
+        data = URLSafeTimedSerializer(secret, salt="lb-oauth").loads(value, max_age=OAUTH_MAX_AGE)
     except BadSignature:
-        return None
+        return None, None
+    if isinstance(data, str):  # a cookie signed before there was anywhere to come back to
+        return data, None
+    if not isinstance(data, dict):
+        return None, None
+    state = data.get("s")
+    # re-checked on the way out: the cookie is ours, but the path inside it was a query
+    # parameter once, and the rule is cheap enough to apply at both ends
+    return (str(state) if state else None), safe_next(data.get("n"))
 
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import secrets
 from typing import Any
+from urllib.parse import quote
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, RedirectResponse, Response
@@ -67,7 +68,9 @@ def device_routes(keys: Any, cfg: Any, provider: Any, oauth: Any) -> list[Route]
     async def verification_page(request: Request) -> Response:
         user = auth.current_user(request, cfg)
         if user is None:
-            return armoured(RedirectResponse("/login", status_code=302))
+            # keep the code across the sign-in detour, or they have to fetch it again
+            here = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+            return armoured(RedirectResponse(f"/login?next={quote(here)}", status_code=302))
         return page(request, user, code=request.query_params.get("code", ""))
 
     async def settle(request: Request) -> Response:
