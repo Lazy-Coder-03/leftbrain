@@ -554,9 +554,25 @@ def _hidden_characters(t: str) -> list[str]:
     return out
 
 
+#: `what` values that read the caller's needle; anything else must say it ignored one.
+_WHAT_READS_NEEDLE = frozenset({"occurrences", "substring", "occurrence", "char", "character"})
+
+
+def _count_accepts(stats: dict[str, Any]) -> list[str]:
+    """Every `what` the branch table below answers to, so the refusal can name them all."""
+    return ["all", *sorted(_WHAT_READS_NEEDLE), *stats]
+
+
 def _count(p: dict[str, Any]) -> dict[str, Any]:
     t = _text(p)
-    what = (p.get("what") or "all").lower()
+    # A needle supplied without `what` used to be dropped in silence, and the reply was the
+    # dozen summary counts - so "how many r in blueberry" came back as `words: 1`, and
+    # whichever number the caller then picked was the wrong answer they reported (#65).
+    # Supplying a needle is unambiguous intent, and this mode already has a counter for it.
+    needle = p.get("substring") if p.get("substring") is not None else p.get("needle")
+    chose_occurrences = p.get("what") is None and needle is not None and str(needle) != ""
+    what = ("occurrences" if chose_occurrences else str(p.get("what") or "all")).lower()
+    ignored_needle = [f"'{needle}' was given but what={what!r} does not count a substring; ignored"] if needle is not None and not chose_occurrences and what not in _WHAT_READS_NEEDLE else []
     words = re.findall(r"\b[\w'’-]+\b", t, re.UNICODE)
     sentences = [s for s in re.split(r"(?<=[.!?])\s+|\n{2,}", t.strip()) if s.strip()]
     paragraphs = [x for x in re.split(r"\n\s*\n", t.strip()) if x.strip()]
@@ -581,27 +597,30 @@ def _count(p: dict[str, Any]) -> dict[str, Any]:
     assumptions = ["tokens_estimate ≈ chars/4 (model-specific tokenizers differ)"]
     hidden = _hidden_characters(t)
     if what == "all":
-        return ok(stats, assumptions=assumptions, warnings=hidden)
+        return ok(stats, assumptions=assumptions + ignored_needle, warnings=hidden)
     if what in ("occurrences", "substring", "occurrence"):
-        sub = p.get("substring") or p.get("needle")
-        if not sub:
+        if needle is None or str(needle) == "":
             raise ToolError("'substring' is required for occurrences")
-        sub = str(sub)
+        sub = str(needle)
         cs = flag(p.get("case_sensitive", True), "case_sensitive")
         overlapping = flag(p.get("overlapping", False), "overlapping")
         # matched on the caller's text with IGNORECASE, not on `t.lower()`: lower-casing
         # changes the length of İ, and positions belong to the caller's string
         rx = re.compile(f"(?={re.escape(sub)})" if overlapping else re.escape(sub), 0 if cs else re.IGNORECASE)
         found = [m.start() for m in rx.finditer(t)]
-        return ok({"count": len(found), "substring": sub, "positions": found[:500]}, assumptions=[f"case-{'sensitive' if cs else 'insensitive'}"])
-    if what in ("char", "character") and p.get("substring"):
-        return ok({"count": t.count(p["substring"])})
+        picked = [f"counted occurrences of {sub!r}; pass what=\"all\" for the summary counts"] if chose_occurrences else []
+        return ok({"count": len(found), "substring": sub, "positions": found[:500]}, assumptions=picked + [f"case-{'sensitive' if cs else 'insensitive'}"])
+    if what in ("char", "character") and needle is not None:
+        return ok({"count": t.count(str(needle))})
     if what in stats:
-        return ok({what: stats[what]}, assumptions=assumptions if what == "tokens_estimate" else [])
+        return ok({what: stats[what]}, assumptions=(assumptions if what == "tokens_estimate" else []) + ignored_needle)
     if what.rstrip("s") in stats:
         k = what.rstrip("s")
-        return ok({k: stats[k]})
-    raise ToolError(f"what must be one of all, occurrences, {', '.join(stats)}")
+        return ok({k: stats[k]}, assumptions=ignored_needle)
+    # Every value that reaches a branch above, named in the order they are tried. The old
+    # message omitted `substring` - the spelling that actually worked - so an agent reading
+    # it was told the working value did not exist (#65).
+    raise ToolError(f"what must be one of {', '.join(_count_accepts(stats))}")
 
 
 def _regex_match(p: dict[str, Any]) -> dict[str, Any]:

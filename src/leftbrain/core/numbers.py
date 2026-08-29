@@ -612,7 +612,9 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
     n = p.get("n") if p.get("n") is not None else p.get("count")
     if n is not None:
         n = whole(n, "n", lo=1, hi=MAX_TERMS)
-    for name, kinds in (("step", ("arithmetic", "range")), ("ratio", ("geometric",)), ("end", ("arithmetic", "range"))):
+    # `start` belongs in this list as much as the others do: a caller asking for the primes
+    # from 50 got the primes from 2, and only the `end` line hinted anything was dropped (#56).
+    for name, kinds in (("start", ("arithmetic", "geometric", "range")), ("step", ("arithmetic", "range")), ("ratio", ("geometric",)), ("end", ("arithmetic", "range"))):
         if p.get(name) is not None and kind not in kinds:
             assumptions.append(f"'{name}' is not used by a {kind} sequence; ignored")
 

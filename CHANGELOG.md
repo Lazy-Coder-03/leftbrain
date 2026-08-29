@@ -43,6 +43,51 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ### Fixed
 
+- **Degrees were discarded the moment a trig argument contained `pi`.** `sin(pi)` with
+  `angle="deg"` returned `0` — the radian answer, as an exact integer, with nothing in
+  `assumptions` to say the parameter had been dropped. SymPy folds `sin(pi)` to `0` while the
+  expression is still being parsed, and the degree conversion ran afterwards, on a tree with no
+  `sin` left in it to convert; a plain numeric argument survives parsing, which is why `sin(30)`
+  was right the whole time. Degrees are now applied as the expression is built, so the fold
+  happens on the already-converted argument: `sin(pi)` is `sin(π°) ≈ 0.0548`. `cos(pi)`,
+  `sin(pi/2)`, `tan(pi/4)`, `cos(2·pi)` and `asin(1)` were all wrong the same way. (#66)
+- **The mandatory `angle` refusal was skipped for exactly those expressions.** `math` refuses
+  trigonometry without an `angle` rather than guessing between two readings that differ by a
+  factor of 57 — but the check looked for trig in the *parsed* tree, so `sin(pi)` with no `angle`
+  at all answered `0` instead of asking. Trigonometry is now detected in the source, which the
+  parse cannot erase. (#69)
+- **`text.count` ignored a `substring` it was given and answered a different question.** "how
+  many r in blueberry" reaches the tool as `count(text="blueberry", substring="r")`; `substring`
+  is in that mode's own accepted-parameter list, was supplied, and was dropped without a word —
+  the reply was a dozen unrelated summary counts, and whichever one a model then picked was the
+  wrong answer. A needle with no `what` now counts that needle and says so; a needle given
+  alongside a `what` that cannot read it is reported rather than dropped. The `what` refusal also
+  omitted `substring` — the spelling that actually worked — from the values it listed. (#65)
+- **`numbers.sequence` ignored `start` in silence.** `end`, `step` and `ratio` were already
+  reported when the kind did not read them; `start` was left off that list, so asking for the
+  primes from 50 returned the primes from 2 with nothing said. (#56)
+- **The daily quota billed HTTP requests, not tool calls — twice per call, and for calls it
+  refused.** Metering ran in the auth middleware, before the tool and once per request, so a
+  hosted connector that re-`initialize`s before each `tools/call` spent two units on every one, a
+  connect spent four before any work, and a call refused for bad input had already been charged.
+  Quota and rate limiting are now separate concerns: the per-minute limit still sees every
+  request, because it is abuse protection, while a unit of the daily quota is spent once, after
+  the tool has run, and only when it did work. `X-RateLimit-Remaining-Today` and
+  `meta.quota.remaining_today` are the same number by construction, and both now count the call
+  they ride on: an MCP `POST` holds its response start until there is a body to send with it,
+  because a streamed reply would otherwise write its headers before the tool had run. (#62)
+- **`simplify` removed a point from the domain without saying so.** `(x^2-1)/(x-1)` came back as
+  `x + 1` with an empty `assumptions` list — but the input is undefined at `x = 1` and `x + 1` is
+  2 there, so the two are not the same function. SymPy is behaving as documented; the silence was
+  ours. Any answer that cancelled a factor now carries `restrictions` (`["x != 1"]`) and says in
+  prose which points it gained. It covers every mode that can cancel, not just `simplify` —
+  `eval` and `factor` do it too — and the denominators are read off an *unevaluated* parse,
+  because `x*(x-2)/(x-2)` is already `x` by the time an evaluated tree exists. `expand`, which
+  keeps the denominator, says nothing. (#68)
+- **`math.convert_form` refused `value`, which the tool's own signature advertises.** The mode
+  re-renders a quantity, so `value` is the word a caller reaches for, and the flat schema lists it
+  because `stats` takes one; it is an alias for `expr` here, and giving both different values is
+  refused rather than silently picking one. (#67)
 - **Every string argument was uncallable on five parameters, and latent on 27 more.** A
   parameter annotated `Any` renders as `anyOf: [{}, {"type": "null"}]` — an empty schema with no
   type in it. An MCP client serialises its arguments against that schema, so with nothing to

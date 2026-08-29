@@ -176,7 +176,7 @@ def test_store_create_set_and_list_with_a_scope(tmp_path):
     raw, info = store.create("a@b.co", scope=scope)
     assert info.scope == scope and info.to_dict()["tools"] == {"math": None, "holidays": ["list", "check"]}
     assert store.get_by_prefix(info.prefix).scope == scope
-    assert store.verify_and_count(raw).key.scope == scope
+    assert store.verify(raw).key.scope == scope
     _, open_info = store.create("a@b.co")
     assert open_info.scope is None and open_info.to_dict()["tools"] is None
     assert {k.prefix: k.scope for k in store.list("a@b.co")} == {info.prefix: scope, open_info.prefix: None}

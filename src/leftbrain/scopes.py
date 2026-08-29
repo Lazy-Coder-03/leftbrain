@@ -26,7 +26,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .contract import fail
+from .contract import billable, fail
 
 
 def _catalogue() -> dict[str, tuple[str, ...]]:
@@ -204,8 +204,9 @@ def parse_scope(value: Any, *, strict: bool = True) -> Scope | None:
 #: The calling key's scope for the current request; ``None`` when the key (or the auth mode) has none.
 current_scope: contextvars.ContextVar[Scope | None] = contextvars.ContextVar("leftbrain_scope", default=None)
 
-#: Set per request by `AuthMiddleware` to a callable taking the tool's name, so `enforce`
-#: can count a call without this module importing `keys` — which imports this one.
+#: Set per request by `AuthMiddleware` to a callable taking the tool's name and whether the
+#: call should spend a unit of the daily quota, so `enforce` can count a call without this
+#: module importing `keys` - which imports this one.
 current_tool_recorder: contextvars.ContextVar[Any] = contextvars.ContextVar("leftbrain_tool_recorder", default=None)
 
 
@@ -252,14 +253,18 @@ def enforce(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]
                 denied = denial(scope, tool_name, mode)
                 if denied is not None:
                     return denied
-            # after the scope check, so a refused call is not counted as usage: it never ran
+            result = fn(*args, **kwargs)
+            # After the call, not before it: the daily quota sells work done, and whether
+            # this call did any is only knowable from what it returned. A refusal - bad
+            # input, an ambiguity the server would not guess - had already been billed by
+            # the middleware, which charged per HTTP request instead (#62).
             recorder = current_tool_recorder.get()
             if recorder is not None:
                 try:
-                    recorder(tool_name)
+                    recorder(tool_name, billable(result))
                 except Exception:  # noqa: BLE001 - counting is never worth a failed call
                     pass
-            return fn(*args, **kwargs)
+            return result
 
         return wrapper
 

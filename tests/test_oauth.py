@@ -197,19 +197,23 @@ def a_key_and_token(tmp_path, token="tok", **create):
 
 
 def test_a_token_and_its_key_draw_down_one_quota(tmp_path):
-    keys, _, raw, _ = a_key_and_token(tmp_path, daily_quota=3, rpm=100)
-    assert keys.verify_oauth_token_and_count("tok").remaining == 2
-    assert keys.verify_and_count(raw).remaining == 1
-    assert keys.verify_oauth_token_and_count("tok").remaining == 0
-    spent = keys.verify_oauth_token_and_count("tok")
+    """Still one budget between them; spending it is now `charge`, not the check (#62)."""
+    keys, _, raw, info = a_key_and_token(tmp_path, daily_quota=3, rpm=100)
+    assert keys.verify_oauth_token("tok").remaining == 3
+    keys.charge(info.prefix)
+    assert keys.verify(raw).remaining == 2
+    keys.charge(info.prefix)
+    assert keys.verify_oauth_token("tok").remaining == 1
+    keys.charge(info.prefix)
+    spent = keys.verify_oauth_token("tok")
     assert not spent.ok and spent.status == 429 and "quota" in spent.reason
 
 
 def test_a_token_is_rate_limited_like_its_key(tmp_path):
     keys, _, _, _ = a_key_and_token(tmp_path, daily_quota=100, rpm=2)
-    assert keys.verify_oauth_token_and_count("tok").ok
-    assert keys.verify_oauth_token_and_count("tok").ok
-    limited = keys.verify_oauth_token_and_count("tok")
+    assert keys.verify_oauth_token("tok").ok
+    assert keys.verify_oauth_token("tok").ok
+    limited = keys.verify_oauth_token("tok")
     assert not limited.ok and limited.status == 429 and limited.retry_after
 
 
@@ -217,7 +221,7 @@ def test_a_token_carries_the_keys_scope(tmp_path):
     from leftbrain.scopes import parse_scope
 
     keys, _, _, _ = a_key_and_token(tmp_path, scope=parse_scope(["math"]))
-    verdict = keys.verify_oauth_token_and_count("tok")
+    verdict = keys.verify_oauth_token("tok")
     assert verdict.ok
     assert verdict.key.scope.allows("math", "eval")
     assert not verdict.key.scope.allows("convert", "units")
@@ -225,13 +229,13 @@ def test_a_token_carries_the_keys_scope(tmp_path):
 
 def test_disabling_or_revoking_the_key_kills_its_token(tmp_path):
     keys, _, _, info = a_key_and_token(tmp_path)
-    assert keys.verify_oauth_token_and_count("tok").ok
+    assert keys.verify_oauth_token("tok").ok
     keys.set_disabled(info.prefix, True)
-    assert keys.verify_oauth_token_and_count("tok").status == 403
+    assert keys.verify_oauth_token("tok").status == 403
     keys.set_disabled(info.prefix, False)
-    assert keys.verify_oauth_token_and_count("tok").ok
+    assert keys.verify_oauth_token("tok").ok
     keys.revoke(info.prefix)
-    assert keys.verify_oauth_token_and_count("tok").status == 401
+    assert keys.verify_oauth_token("tok").status == 401
 
 
 def test_an_expired_token_is_refused_even_though_its_key_is_fine(tmp_path):
@@ -240,8 +244,8 @@ def test_an_expired_token_is_refused_even_though_its_key_is_fine(tmp_path):
     raw, info = keys.create("a@b.co")
     oauth.save_token("stale", kind="access", client_id="c1", key_hash=hash_of(keys, info.prefix),
                      scopes=["mcp"], resource=None, ttl=-1)
-    assert keys.verify_oauth_token_and_count("stale").status == 401
-    assert keys.verify_and_count(raw).ok  # the key itself is untouched
+    assert keys.verify_oauth_token("stale").status == 401
+    assert keys.verify(raw).ok  # the key itself is untouched
 
 
 def test_a_refresh_token_is_not_a_credential(tmp_path):
@@ -250,25 +254,27 @@ def test_a_refresh_token_is_not_a_credential(tmp_path):
     _, info = keys.create("a@b.co")
     oauth.save_token("refresh-only", kind="refresh", client_id="c1",
                      key_hash=hash_of(keys, info.prefix), scopes=["mcp"], resource=None, ttl=86400)
-    assert keys.verify_oauth_token_and_count("refresh-only").status == 401
+    assert keys.verify_oauth_token("refresh-only").status == 401
 
 
 def test_an_unknown_or_empty_token_is_refused(tmp_path):
     keys = KeyStore(str(tmp_path / "k.sqlite3"))
-    assert keys.verify_oauth_token_and_count("nope").status == 401
-    assert keys.verify_oauth_token_and_count("").status == 401
+    assert keys.verify_oauth_token("nope").status == 401
+    assert keys.verify_oauth_token("").status == 401
 
 
 def test_the_key_path_is_unchanged(tmp_path):
     """The first acceptance criterion: `lblz_` behaves exactly as it did before OAuth."""
     keys = KeyStore(str(tmp_path / "k.sqlite3"))
     raw, info = keys.create("a@b.co", daily_quota=2, rpm=100)
-    first = keys.verify_and_count(raw)
-    assert first.ok and first.remaining == 1 and first.key.prefix == info.prefix
-    assert keys.verify_and_count(raw).remaining == 0
-    assert keys.verify_and_count(raw).status == 429
-    assert keys.verify_and_count("lblz_nope").status == 401
-    assert keys.verify_and_count("not-even-a-key").status == 401  # wrong prefix, not a token lookup
+    first = keys.verify(raw)
+    assert first.ok and first.remaining == 2 and first.key.prefix == info.prefix
+    keys.charge(info.prefix)
+    assert keys.verify(raw).remaining == 1
+    keys.charge(info.prefix)
+    assert keys.verify(raw).status == 429
+    assert keys.verify("lblz_nope").status == 401
+    assert keys.verify("not-even-a-key").status == 401  # wrong prefix, not a token lookup
 
 
 # -- redirect URIs ----------------------------------------------------------
@@ -467,7 +473,7 @@ def test_a_code_exchanges_once_for_a_token_pair(tmp_path):
     token = run(provider.exchange_authorization_code(a_client(), loaded))
     assert token.access_token and token.refresh_token
     assert token.expires_in == 3600
-    assert keys.verify_oauth_token_and_count(token.access_token).ok
+    assert keys.verify_oauth_token(token.access_token).ok
     assert run(provider.load_authorization_code(a_client(), code)) is None  # spent
 
 
@@ -491,7 +497,7 @@ def test_a_refresh_rotates_both_tokens(tmp_path):
     assert second.refresh_token != first.refresh_token
     # OAuth 2.1 requires rotation for a public client: the presented one is dead
     assert run(provider.load_refresh_token(a_client(), first.refresh_token)) is None
-    assert keys.verify_oauth_token_and_count(second.access_token).ok
+    assert keys.verify_oauth_token(second.access_token).ok
 
 
 def test_a_refresh_token_of_another_client_is_not_loaded(tmp_path):

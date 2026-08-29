@@ -257,3 +257,32 @@ def test_to_words_grammar():
     assert numbers("to_words", value=0.99, currency="USD")["result"]["words"] == "Zero dollars and ninety-nine cents only"
     assert numbers("to_words", value=-5, currency="INR")["result"]["words"] == "Minus five rupees only"
     assert numbers("to_words", value=5, currency="XYZ")["result"]["words"] == "Five XYZ only"
+
+
+# --- #56: `start` was ignored without a word by the kinds that do not read it ----------
+#
+# `end`, `step` and `ratio` were already reported when the kind did not read them; `start`
+# was left out of that list. `sequence kind=primes n=5 start=50` returned the primes from 2
+# and said nothing, so "the primes from 50" came back as 2, 3, 5, 7, 11.
+
+
+@pytest.mark.parametrize("kind", ["primes", "fibonacci", "squares"])
+def test_a_kind_that_ignores_start_says_so(kind):
+    r = numbers("sequence", kind=kind, n=5, start=50)
+    assert r["ok"]
+    assert f"'start' is not used by a {kind} sequence; ignored" in r["assumptions"], r["assumptions"]
+
+
+@pytest.mark.parametrize("kind", ["arithmetic", "geometric", "range"])
+def test_a_kind_that_reads_start_says_nothing_about_it(kind):
+    r = numbers("sequence", kind=kind, start=10, n=4, **({"end": 20} if kind == "range" else {}))
+    assert r["ok"]
+    assert not any("'start'" in a for a in r["assumptions"]), r["assumptions"]
+    assert r["result"]["terms"][0] == "10", r["result"]
+
+
+def test_start_is_reported_alongside_the_others_it_was_missing_from():
+    r = numbers("sequence", kind="primes", n=5, start=50, end=80, step=2)
+    said = " ".join(r["assumptions"])
+    for name in ("'start'", "'end'", "'step'"):
+        assert name in said, (name, r["assumptions"])
