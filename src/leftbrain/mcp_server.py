@@ -354,7 +354,8 @@ def finance(
     people: int | None = None,
 ) -> dict[str, Any]:
     """Use for any money arithmetic: loan EMIs with a full amortisation schedule, compound
-    growth and SIPs, CAGR, NPV and IRR of a cash-flow series, GST inclusive/exclusive splits
+    growth and SIPs (mode='compound' with 'contribution'; leave 'principal' out for a SIP
+    starting from zero), CAGR, NPV and IRR of a cash-flow series, GST inclusive/exclusive splits
     with CGST/SGST/IGST, and percentages (change vs percentage points, stacked discounts,
     bill splits). Exact decimals; the rate's period (annual|monthly) and whether an amount is
     GST-inclusive are never guessed.

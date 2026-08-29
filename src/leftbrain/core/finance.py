@@ -200,6 +200,13 @@ def _fmt(d: Decimal, decimals: int) -> str:
 
 def _compound(p: dict[str, Any]) -> dict[str, Any]:
     assumptions: list[str] = []
+    # A SIP is a run of contributions, and the ordinary one starts from nothing: "5,000 a month
+    # for ten years" names no opening balance because there isn't one. `principal` was required
+    # anyway, so the case this tool advertises - "growth and SIPs" - was refused outright.
+    # It stays required when there is no contribution either, because then there is no question.
+    if p.get("principal") is None and p.get("contribution") is not None:
+        p = {**p, "principal": 0}
+        assumptions.append("no 'principal': a SIP starting from zero, so only the contributions compound")
     principal = _num(p, "principal", nonneg=True, notes=assumptions)
     compounding = str(p.get("compounding", "annual")).lower()
     if compounding == "continuous":
@@ -570,6 +577,10 @@ EXAMPLES: dict[str, list[dict[str, Any]]] = {
         {
             "caption": "Monthly compounding, with the effective annual rate it implies.",
             "args": {"mode": "compound", "principal": 100000, "rate": 12, "rate_period": "annual", "years": 1, "compounding": "monthly"},
+        },
+        {
+            "caption": "A SIP from zero: ₹5,000 a month for ten years. No 'principal' - there is no opening balance to name.",
+            "args": {"mode": "compound", "contribution": 5000, "rate": 12, "rate_period": "annual", "years": 10, "compounding": "monthly"},
         },
         {
             "caption": "A SIP: ₹1,000 a month for a year on top of the opening balance.",
