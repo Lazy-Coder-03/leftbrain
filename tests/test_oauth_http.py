@@ -194,10 +194,10 @@ def test_a_key_and_a_token_share_one_quota(tmp_path):
     work = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
             "params": {"name": "math", "arguments": {"mode": "eval", "expr": "1+1"}}}
     with TestClient(make_app(tmp_path)) as c:
-        # the header is the budget as the call arrived, so two calls spend it and the third
-        # is refused - whichever credential made them (#62)
-        assert call(c, "tok-1", work).headers["x-ratelimit-remaining-today"] == "2"
-        assert call(c, raw, work).headers["x-ratelimit-remaining-today"] == "1"
+        # the header counts the call it rides on, so two calls spend the budget and the
+        # third is refused - whichever credential made them (#62)
+        assert call(c, "tok-1", work).headers["x-ratelimit-remaining-today"] == "1"
+        assert call(c, raw, work).headers["x-ratelimit-remaining-today"] == "0"
         assert call(c, "tok-1", work).status_code == 429
 
 

@@ -211,16 +211,11 @@ class AuthMiddleware:
                 scope.setdefault("state", {})["auth"] = {"kind": "key", "key": verdict.key, "remaining": verdict.remaining}
                 key_scope = verdict.key.scope
                 # The same numbers the headers carry, so `meta.quota` can show them and an
-                # agent can back off before it hits a 429 (#28 SS6).
-                #
-                # `remaining_today` is what was left when this call was authorised, and the
-                # header and `meta.quota` are deliberately the same number. A streamed
-                # response has already sent its headers by the time the tool runs, so a
-                # post-charge header is not reachable there - and one response quoting two
-                # different figures for the same budget is worse than a snapshot that says
-                # what it is. Billing is still exactly one per tool call (#62); an agent
-                # watching this across calls sees it fall by one each time it did work, and
-                # not at all when the call was refused.
+                # agent can back off before it hits a 429 (#28 SS6). Mutable, and read at
+                # response time rather than copied now: `remaining_today` is only settled
+                # once the tool has run and either spent a unit or not (#62). `_with_headers`
+                # holds the response start back so the header reads the same settled figure
+                # that `meta.quota` does.
                 quota = {"remaining_today": verdict.remaining, "daily_quota": verdict.key.daily_quota, "rpm": verdict.key.rpm}
                 quota_token = observe.current_quota.set(quota)
                 token = current_scope.set(key_scope)  # what enforce() reads inside every tool
@@ -229,10 +224,11 @@ class AuthMiddleware:
                 # the daily unit, which is a tool call rather than an HTTP request (#62).
                 prefix = verdict.key.prefix
 
-                def record(tool: str, spends: bool, prefix: str = prefix) -> None:
+                def record(tool: str, spends: bool, prefix: str = prefix, quota: dict[str, int] = quota) -> None:
                     self.store.record_tool_call(prefix, tool)
                     if spends:
                         self.store.charge(prefix)
+                        quota["remaining_today"] = max(0, quota["remaining_today"] - 1)
 
                 recorder = current_tool_recorder.set(record)
                 try:
@@ -259,11 +255,36 @@ class AuthMiddleware:
         }
 
     async def _with_headers(self, scope: Any, receive: Any, send: Any, quota: dict[str, int]) -> None:
+        """Run the app, adding the quota headers to whatever it answers.
+
+        On an MCP `POST` the response start is held back until there is a body to send with
+        it. A streamed reply starts its response *before* the tool runs, so a header written
+        then would quote the budget from before the call while `meta.quota` in the body
+        quotes it from after - one response, two figures for the same thing (#62). Waiting
+        for the first chunk costs nothing here, because that chunk is the result.
+
+        `POST` only: a long-lived `GET` stream may legitimately have nothing to say for
+        minutes, and its headers must not wait for that.
+        """
+        defer = scope.get("method") == "POST" and _under(scope.get("path", ""), MCP_PREFIXES)
+        pending: Any = None
+
+        async def start(message: Any) -> None:
+            headers = list(message.get("headers", []))
+            headers.extend((k.encode(), v.encode()) for k, v in self._quota_headers(quota).items())
+            await send({**message, "headers": headers})
+
         async def send_wrapper(message: Any) -> None:
+            nonlocal pending
             if message["type"] == "http.response.start":
-                headers = list(message.get("headers", []))
-                headers.extend((k.encode(), v.encode()) for k, v in self._quota_headers(quota).items())
-                message = {**message, "headers": headers}
+                if defer:
+                    pending = message
+                    return
+                await start(message)
+                return
+            if pending is not None:
+                held, pending = pending, None
+                await start(held)
             await send(message)
 
         await self.app(scope, receive, send_wrapper)

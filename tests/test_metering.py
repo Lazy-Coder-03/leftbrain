@@ -166,15 +166,29 @@ def test_the_daily_quota_still_stops_calls(keyed):
         assert spent.status_code == 429 and "quota" in spent.text
 
 
-def test_the_header_and_meta_never_quote_two_different_budgets(keyed):
-    """Both are the snapshot taken when the call was authorised; a streamed response has
-    already sent its headers by the time the tool runs, so they cannot both be post-charge."""
+def test_the_header_and_meta_both_count_the_call_they_ride_on(keyed):
+    """The response start is held until the body, so the header cannot quote the budget from
+    before the tool ran while `meta.quota` quotes it from after."""
     app, store, key, prefix = keyed(daily_quota=10)
     with TestClient(app) as c:
         r = rpc(c, key, "tools/call", name="math", arguments={"mode": "eval", "expr": "1+1"})
-        assert envelope(r)["meta"]["quota"]["remaining_today"] == 10
-        assert r.headers["x-ratelimit-remaining-today"] == "10"
+        assert envelope(r)["meta"]["quota"]["remaining_today"] == 9
+        assert r.headers["x-ratelimit-remaining-today"] == "9"
         assert used(store, prefix) == 1
+
+
+@pytest.mark.parametrize("json_response", [False, True])
+def test_the_two_agree_on_both_wire_forms(tmp_path, json_response):
+    """SSE sends its headers before the body and plain JSON does not; neither may disagree
+    with itself, which is the whole reason the start message is deferred."""
+    db = str(tmp_path / "k.sqlite3")
+    app = build_app(include_external=False, keys_db=db, json_response=json_response,
+                    web_config=WebConfig(None, None, "s" * 20, None, True))
+    key, _ = KeyStore(db).create("a@b.co", daily_quota=10, rpm=1000)
+    with TestClient(app) as c:
+        r = rpc(c, key, "tools/call", name="math", arguments={"mode": "eval", "expr": "1+1"})
+        assert envelope(r)["meta"]["quota"]["remaining_today"] == 9
+        assert r.headers["x-ratelimit-remaining-today"] == "9"
 
 
 def test_the_reported_budget_falls_by_one_per_billed_call(keyed):
@@ -185,7 +199,7 @@ def test_the_reported_budget_falls_by_one_per_billed_call(keyed):
         for _ in range(3):
             r = rpc(c, key, "tools/call", name="math", arguments={"mode": "eval", "expr": "1+1"})
             seen.append(envelope(r)["meta"]["quota"]["remaining_today"])
-        assert seen == [10, 9, 8], seen
+        assert seen == [9, 8, 7], seen
 
 
 def test_a_refused_call_does_not_move_the_reported_budget(keyed):
@@ -194,4 +208,11 @@ def test_a_refused_call_does_not_move_the_reported_budget(keyed):
         for _ in range(2):
             r = rpc(c, key, "tools/call", name="math", arguments={"mode": "eval", "expr": "2+"})
             assert envelope(r)["meta"]["quota"]["remaining_today"] == 10
+            assert r.headers["x-ratelimit-remaining-today"] == "10"
         assert used(store, prefix) == 0
+
+
+def test_protocol_traffic_reports_an_untouched_budget(keyed):
+    app, store, key, prefix = keyed(daily_quota=10)
+    with TestClient(app) as c:
+        assert rpc(c, key, "tools/list").headers["x-ratelimit-remaining-today"] == "10"

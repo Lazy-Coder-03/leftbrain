@@ -66,7 +66,17 @@ All notable changes to leftbrain are recorded here. The format follows
   Quota and rate limiting are now separate concerns: the per-minute limit still sees every
   request, because it is abuse protection, while a unit of the daily quota is spent once, after
   the tool has run, and only when it did work. `X-RateLimit-Remaining-Today` and
-  `meta.quota.remaining_today` are the same number by construction. (#62)
+  `meta.quota.remaining_today` are the same number by construction, and both now count the call
+  they ride on: an MCP `POST` holds its response start until there is a body to send with it,
+  because a streamed reply would otherwise write its headers before the tool had run. (#62)
+- **`simplify` removed a point from the domain without saying so.** `(x^2-1)/(x-1)` came back as
+  `x + 1` with an empty `assumptions` list — but the input is undefined at `x = 1` and `x + 1` is
+  2 there, so the two are not the same function. SymPy is behaving as documented; the silence was
+  ours. Any answer that cancelled a factor now carries `restrictions` (`["x != 1"]`) and says in
+  prose which points it gained. It covers every mode that can cancel, not just `simplify` —
+  `eval` and `factor` do it too — and the denominators are read off an *unevaluated* parse,
+  because `x*(x-2)/(x-2)` is already `x` by the time an evaluated tree exists. `expand`, which
+  keeps the denominator, says nothing. (#68)
 - **`math.convert_form` refused `value`, which the tool's own signature advertises.** The mode
   re-renders a quantity, so `value` is the word a caller reaches for, and the flat schema lists it
   because `stats` takes one; it is an alias for `expr` here, and giving both different values is

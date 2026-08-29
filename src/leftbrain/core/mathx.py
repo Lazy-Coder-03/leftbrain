@@ -764,6 +764,80 @@ def _parse(
     return expr, assumptions
 
 
+#: A source that cannot divide by anything cannot lose a point from its domain, and the
+#: check costs a second parse - so it only runs when one of these appears.
+_DIVIDES = re.compile(r"/|\*\*\s*-|\^\s*-")
+
+#: Denominator factors past this degree are not solved for their roots: finding them can
+#: cost more than the simplification did. The condition itself is reported instead.
+MAX_DOMAIN_DEGREE = 12
+
+
+def _undefined_where(expr: Any) -> list[tuple[str, str]]:
+    """Where ``expr`` *as written* is undefined, as (restriction, point) pairs.
+
+    Read off the negative powers rather than from ``denom()``: ``together()`` cancels on the
+    way, and cancelling is precisely what this exists to detect.
+    """
+    out: dict[str, str] = {}
+    if not isinstance(expr, sp.Basic):
+        return []
+    for power in expr.atoms(sp.Pow):
+        if not (power.exp.is_number and power.exp.is_negative):
+            continue
+        base = sp.expand(power.base)
+        syms = sorted(base.free_symbols, key=str)
+        if not syms:
+            continue
+        roots: list[Any] = []
+        if len(syms) == 1:
+            try:
+                if sp.degree(base, syms[0]) <= MAX_DOMAIN_DEGREE:
+                    roots = [r for r in sp.solve(base, syms[0]) if r.is_number]
+            except Exception:  # noqa: BLE001 - a factor we cannot solve is named as a condition
+                roots = []
+        for r in roots:
+            out[f"{syms[0]} != {r}"] = f"{syms[0]} = {r}"
+        if not roots:
+            out[f"{sp.sstr(base)} != 0"] = f"{sp.sstr(base)} = 0"
+    return list(out.items())
+
+
+def _lost_domain(src: str, result: Any, *, angle: str | None) -> list[tuple[str, str]]:
+    """Points the input was undefined at that the answer is defined at (#68).
+
+    `(x^2-1)/(x-1)` simplifies to `x + 1`, which is a different function at `x = 1`: the
+    input is undefined there and `x + 1` is 2. SymPy is behaving as documented - it works
+    over the field of rational functions and does not track removable singularities - but an
+    empty `assumptions` list on an answer whose domain changed reads as "nothing was
+    dropped", and a caller's next step is often the one that trips over it.
+
+    The input has to come from an *unevaluated* parse: `x*(x-2)/(x-2)` is already `x` by the
+    time an evaluated tree exists, so the denominator would be gone before it could be seen -
+    the same trap as #66.
+    """
+    if not isinstance(result, sp.Basic) or not result.free_symbols or not _DIVIDES.search(src):
+        return []
+    try:
+        written, _ = _parse(src, angle=angle, numeric=True)
+    except Exception:  # noqa: BLE001 - never lose a correct answer over a footnote about it
+        return []
+    kept = {r for r, _ in _undefined_where(result)}
+    return [(r, point) for r, point in _undefined_where(written) if r not in kept]
+
+
+def _note_domain(d: dict[str, Any], src: str, result: Any, assumptions: list[str], *, angle: str | None = None) -> None:
+    """Record, in the result and in prose, any point the answer quietly gained."""
+    lost = _lost_domain(src, result, angle=angle)
+    if not lost:
+        return
+    d["restrictions"] = [r for r, _ in lost]
+    assumptions.append(
+        f"{d.get('value', sp.sstr(result))} equals the input everywhere except "
+        f"{', '.join(point for _, point in lost)}, where the input is undefined"
+    )
+
+
 def _angle_notes(trig: bool, *, explicit_deg: bool, degrees: bool, angle: str | None) -> list[str]:
     """Insist on an `angle` where one is needed, and say which way it was read.
 
@@ -1045,6 +1119,8 @@ def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
     d = _describe(expr, precision)
     if exact_only:
         d.pop("decimal", None)
+    if not subs:  # with `vars` bound, the answer is no longer the function the caller wrote
+        _note_domain(d, p["expr"], expr, assumptions, angle=p.get("angle"))
     return ok(d, assumptions=assumptions)
 
 
@@ -1098,7 +1174,9 @@ def _mode_transform(p: dict[str, Any], *, mode: str) -> dict[str, Any]:
             assumptions.append("already in simplest form, as far as simplify() can tell")
     if held:
         assumptions.append(f"{', '.join(held)} left as is: log(a*b) = log(a) + log(b) only holds for positive a, b, and no sign is known")
-    return ok(_describe(res, precision), assumptions=assumptions)
+    d = _describe(res, precision)
+    _note_domain(d, p["expr"], res, assumptions, angle=p.get("angle") or "rad")
+    return ok(d, assumptions=assumptions)
 
 
 def _split_eq(s: str) -> Any:

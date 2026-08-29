@@ -226,3 +226,69 @@ def test_convert_form_refuses_two_different_inputs():
 def test_stats_still_reads_value_as_its_own_parameter():
     r = math_tool("stats", op="zscore", data=[1, 2, 3, 4], value=4)
     assert r["ok"], r
+
+
+# --- #68: cancelling a factor removed a point from the domain, in silence ---------------
+#
+# `(x^2-1)/(x-1)` is undefined at x = 1; `x + 1` is 2 there. SymPy is behaving as documented,
+# working over the field of rational functions - but an empty `assumptions` list on an answer
+# whose domain changed reads as "nothing was dropped", which is the one thing this tool is
+# supposed never to do.
+
+
+def test_a_cancelled_factor_is_reported_not_dropped():
+    r = math_tool("simplify", expr="(x^2-1)/(x-1)")
+    assert r["ok"] and r["result"]["value"] == "x + 1"
+    assert r["result"]["restrictions"] == ["x != 1"], r["result"]
+    assert any("x = 1" in a and "undefined" in a for a in r["assumptions"]), r["assumptions"]
+
+
+def test_the_removed_point_is_the_root_of_what_was_cancelled():
+    """Not always 1: the issue's own second example cancels too, at x = -1."""
+    r = math_tool("simplify", expr="(x^2-1)/(x+1)")
+    assert r["ok"] and r["result"]["value"] == "x - 1"
+    assert r["result"]["restrictions"] == ["x != -1"], r["result"]
+
+
+def test_every_point_removed_is_named_not_just_the_first():
+    r = math_tool("simplify", expr="(x^3-x)/(x^2-x)")
+    assert r["ok"] and r["result"]["value"] == "x + 1"
+    assert r["result"]["restrictions"] == ["x != 0", "x != 1"], r["result"]
+
+
+def test_a_factor_sympy_cancels_while_parsing_is_still_caught():
+    """`x*(x-2)/(x-2)` is already `x` by the time the parsed tree exists, so the denominator
+    has to be read off an unevaluated parse - the same trap as #66."""
+    r = math_tool("eval", expr="x*(x-2)/(x-2)")
+    assert r["ok"] and r["result"]["value"] == "x"
+    assert r["result"]["restrictions"] == ["x != 2"], r["result"]
+
+
+@pytest.mark.parametrize("expr", ["(x^2+1)/(x+1)", "x + 1", "(x^2-1)/(y-1)", "2/x"])
+def test_an_answer_that_kept_its_domain_says_nothing_extra(expr):
+    r = math_tool("simplify", expr=expr)
+    assert r["ok"] and "restrictions" not in r["result"], r["result"]
+    assert not any("undefined" in a for a in r["assumptions"]), r["assumptions"]
+
+
+def test_expand_keeps_the_denominator_and_so_says_nothing():
+    r = math_tool("expand", expr="(x^2-1)/(x-1)")
+    assert r["ok"] and "restrictions" not in r["result"], r["result"]
+
+
+@pytest.mark.parametrize("mode", ["simplify", "factor", "eval"])
+def test_every_mode_that_can_cancel_reports_it(mode):
+    """Not only `simplify`: anything that can cancel a factor can do this."""
+    r = math_tool(mode, expr="(x^2-1)/(x-1)")
+    assert r["ok"] and r["result"]["restrictions"] == ["x != 1"], (mode, r["result"])
+
+
+def test_exact_does_not_cancel_and_so_reports_nothing():
+    r = math_tool("exact", expr="(x^2-1)/(x-1)")
+    assert r["ok"] and "restrictions" not in r["result"], r["result"]
+
+
+def test_a_purely_numeric_answer_is_untouched():
+    for mode in ("eval", "simplify"):
+        r = math_tool(mode, expr="1/2 + 1/3")
+        assert r["ok"] and "restrictions" not in r["result"], (mode, r["result"])
