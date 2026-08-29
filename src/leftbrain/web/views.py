@@ -190,7 +190,9 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         )
         resp.set_cookie(
             auth.OAUTH_COOKIE,
-            auth.sign_state(cfg.secret or "", state),
+            # where to come back to, when sign-in was a detour from somewhere — an OAuth
+            # consent page, say, whose request is lost if we land on the dashboard instead
+            auth.sign_state(cfg.secret or "", state, request.query_params.get("next")),
             max_age=auth.OAUTH_MAX_AGE,
             httponly=True,
             samesite="lax",
@@ -202,7 +204,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
     async def callback(request: Request) -> Response:
         if not cfg.oauth_ready:
             return fail_page(request, 404, "Sign-in unavailable", "Sign-in is not configured on this server.")
-        expected = auth.read_state(cfg.secret or "", request.cookies.get(auth.OAUTH_COOKIE))
+        expected, came_from = auth.read_state(cfg.secret or "", request.cookies.get(auth.OAUTH_COOKIE))
         got = request.query_params.get("state")
         code = request.query_params.get("code")
         if not expected or not got or expected != got or not code:
@@ -220,7 +222,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             user = await auth.fetch_github_user(cfg, code, auth.base_url(request, cfg) + "/auth/github/callback")
         except auth.OAuthError as e:
             return no_store(render(request, "login.html", e.status, page="login", user=None, notice=e.message))
-        resp = RedirectResponse("/dashboard", status_code=302)
+        resp = RedirectResponse(came_from or "/dashboard", status_code=302)
         resp.delete_cookie(auth.OAUTH_COOKIE, path="/")
         auth.set_session_cookie(resp, request, cfg, user)
         return no_store(resp)

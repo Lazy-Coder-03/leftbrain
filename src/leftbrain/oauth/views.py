@@ -71,7 +71,10 @@ def consent_routes(keys: Any, cfg: Any, provider: Any, oauth: Any) -> list[Route
         user = auth.current_user(request, cfg)
         fields = fields_from(request.query_params)
         if user is None:
-            return armoured(RedirectResponse(f"/login?next={quote(str(request.url))}", status_code=302))
+            # a path, not the absolute URL: /login only honours a same-site path, and the
+            # authorization request is lost if sign-in lands on the dashboard instead
+            here = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+            return armoured(RedirectResponse(f"/login?next={quote(here)}", status_code=302))
         client, problem = await resolve(request, fields)
         if problem is not None:
             return problem

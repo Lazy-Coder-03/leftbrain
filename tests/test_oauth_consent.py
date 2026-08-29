@@ -73,6 +73,21 @@ def test_consent_requires_signing_in(tmp_path):
         assert r.status_code in (302, 303) and "/login" in r.headers["location"]
 
 
+def test_consent_sends_a_signed_out_visitor_to_login_and_asks_to_come_back(tmp_path):
+    """Without this the sign-in detour loses the authorization and the client just fails."""
+    from urllib.parse import parse_qs, urlparse
+
+    register(tmp_path)
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get(consent_url(), follow_redirects=False)
+        target = urlparse(r.headers["location"])
+        assert target.path == "/login"
+        # a path, because /login only honours a same-site path — a full URL is dropped
+        came_from = parse_qs(target.query)["next"][0]
+        assert came_from.startswith("/oauth/consent?")
+        assert "client_id=c1" in came_from and "code_challenge=chal" in came_from
+
+
 def test_the_consent_page_names_the_client_and_where_the_code_goes(tmp_path):
     register(tmp_path)
     with signed_in(make_app(tmp_path)) as c:

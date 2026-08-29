@@ -20,6 +20,10 @@ from leftbrain import runner  # noqa: E402
 #: 62-digit semiprime is not in the size of any number written down, so the digit estimate
 #: has nothing to measure. This is the shape the worker exists to catch.
 UNESTIMABLE_BOMB = "factorint(10000000000000000000000000000603000000000000000000000000001881)"
+#: Slack on a wall-clock lower bound. Two `time.monotonic()` readings taken seconds apart
+#: are large floats, so their difference is exact only to within an ULP or so of their
+#: magnitude; 10 ms is far below anything a returned-too-early bug would show.
+CLOCK_SLOP = 0.01
 
 #: A tower multiplied by a symbol. Layer 0 sizes every literal subtree, so this one is
 #: refused before a worker is asked for.
@@ -64,8 +68,14 @@ def test_an_uninterruptible_call_is_stopped_at_the_deadline(isolated):
     assert r["details"]["limit_seconds"] == 3
     # Terminating a worker inside a C call costs a little more than the deadline itself,
     # which is why the envelope reports both numbers.
-    assert 3 <= elapsed < 6, elapsed
-    assert r["details"]["elapsed_seconds"] >= 3
+    #
+    # The lower bound carries a tolerance. `elapsed` is the difference of two large
+    # `time.monotonic()` floats — a machine up for a day gives them an ULP of a few
+    # nanoseconds — so a run stopped exactly on the deadline can measure a hair *under* it.
+    # CI failed once at 2.9999999999999716, which is 3 seconds by any measure that matters.
+    # What this bound is for is catching a call that returned early, not the last digit.
+    assert 3 - CLOCK_SLOP <= elapsed < 6, elapsed
+    assert r["details"]["elapsed_seconds"] >= 3 - CLOCK_SLOP
 
 
 def test_the_pool_survives_a_killed_worker(isolated):
