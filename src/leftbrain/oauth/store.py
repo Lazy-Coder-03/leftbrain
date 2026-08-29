@@ -53,6 +53,21 @@ class OAuthStore:
             return None
         return LoopbackTolerantClient.model_validate_json(row["metadata"])
 
+    def prune_clients(self, *, older_than_days: int = 30) -> int:
+        """Drop registrations nobody ever consented to.
+
+        Anthropic's docs warn that a client falling back to dynamic registration registers
+        afresh on every connection, so these accumulate without bound. A row with a consent
+        against it is somebody's live connector and is never touched.
+        """
+        cutoff = self._expiry(-older_than_days * 86400)
+        with self.keys._lock:
+            return self.db.run(
+                "DELETE FROM oauth_clients WHERE created_at < ? AND client_id NOT IN "
+                "(SELECT client_id FROM oauth_consents)",
+                (cutoff,),
+            )
+
     # -- consent -------------------------------------------------------------
 
     @staticmethod

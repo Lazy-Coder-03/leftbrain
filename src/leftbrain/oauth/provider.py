@@ -23,6 +23,7 @@ from mcp.server.auth.provider import (
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from pydantic import AnyUrl
 
+from .cimd import fetch_client_metadata
 from .store import OAuthStore
 
 ACCESS_TTL = 3600  # one hour
@@ -46,15 +47,37 @@ class _StoredAccess(AccessToken):
 class LeftbrainOAuthProvider:
     """Implements the SDK's `OAuthAuthorizationServerProvider` over `OAuthStore`."""
 
-    def __init__(self, oauth: OAuthStore, keys: Any, *, consent_path: str = "/oauth/consent") -> None:
+    def __init__(self, oauth: OAuthStore, keys: Any, *, consent_path: str = "/oauth/consent",
+                 allow_insecure_cimd: bool = False) -> None:
         self.oauth = oauth
         self.keys = keys
         self.consent_path = consent_path
+        self.allow_insecure_cimd = allow_insecure_cimd
+        self._cimd_cache: dict[str, OAuthClientInformationFull] = {}
 
     # -- clients -------------------------------------------------------------
 
     async def get_client(self, client_id: str) -> OAuthClientInformationFull | None:
-        return self.oauth.load_client(client_id)
+        """A stored registration, or — for a URL-shaped id — the document it names.
+
+        Registrations win, so a dynamically registered client id is never mistaken for a
+        URL worth visiting. A fetched document is cached for the process because Claude
+        allows ten seconds for the whole token call and the token leg would otherwise
+        fetch it again; a *failure* is not cached, so a client whose host was briefly
+        down is not locked out until restart.
+        """
+        registered = self.oauth.load_client(client_id)
+        if registered is not None:
+            return registered
+        if "://" not in client_id:
+            return None
+        cached = self._cimd_cache.get(client_id)
+        if cached is not None:
+            return cached
+        client = await fetch_client_metadata(client_id, allow_insecure=self.allow_insecure_cimd)
+        if client is not None:
+            self._cimd_cache[client_id] = client
+        return client
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         self.oauth.save_client(client_info)

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
 
 from mcp.server.auth.handlers.metadata import MetadataHandler
@@ -115,7 +117,12 @@ def build_oauth_routes(keys: Any, cfg: Any) -> list[Route]:
     # one store instance, shared by the provider and the views, so they cannot end up
     # looking at the same tables through two different connections
     oauth = OAuthStore(keys)
-    provider = LeftbrainOAuthProvider(oauth, keys)
+    # Local development only: lets a client metadata document be fetched over http, or from
+    # a loopback or private address. Announced at startup because it removes the SSRF fence.
+    allow_insecure = os.environ.get("LEFTBRAIN_CIMD_ALLOW_INSECURE", "0") in ("1", "true", "yes")
+    if allow_insecure:
+        print(json.dumps({"warning": "LEFTBRAIN_CIMD_ALLOW_INSECURE is on; client metadata may be fetched from private addresses"}), flush=True)
+    provider = LeftbrainOAuthProvider(oauth, keys, allow_insecure_cimd=allow_insecure)
 
     amended = oauth_metadata(issuer, registration, revocation)
     routes: list[Route] = []

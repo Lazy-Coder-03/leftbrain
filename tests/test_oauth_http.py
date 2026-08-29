@@ -101,6 +101,16 @@ def test_a_registered_client_survives_a_restart(tmp_path):
         }).status_code == 400  # reaches the handler rather than "invalid client"
 
 
+def test_the_cimd_escape_hatch_is_off_and_announces_itself_when_on(tmp_path, monkeypatch, capsys):
+    make_app(tmp_path)
+    assert "CIMD_ALLOW_INSECURE" not in capsys.readouterr().out
+    monkeypatch.setenv("LEFTBRAIN_CIMD_ALLOW_INSECURE", "1")
+    make_app(tmp_path)
+    printed = capsys.readouterr().out
+    assert "LEFTBRAIN_CIMD_ALLOW_INSECURE is on" in printed
+    assert "private addresses" in printed
+
+
 def test_oauth_is_absent_without_a_secret(tmp_path):
     with TestClient(make_app(tmp_path, secret=None)) as c:
         assert c.get("/.well-known/oauth-authorization-server").status_code == 404

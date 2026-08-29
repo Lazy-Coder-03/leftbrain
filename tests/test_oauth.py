@@ -524,3 +524,85 @@ def test_revoking_a_token_takes_its_sibling_with_it(tmp_path):
     run(provider.revoke_token(run(provider.load_access_token(pair.access_token))))
     assert run(provider.load_access_token(pair.access_token)) is None
     assert run(provider.load_refresh_token(a_client(), pair.refresh_token)) is None
+
+
+# -- CIMD, as the provider reaches it ---------------------------------------
+
+
+CIMD_URL = "https://app.example/client.json"
+
+
+def stub_cimd(monkeypatch, client=None, calls=None):
+    async def fetch(client_id, *, allow_insecure, transport=None):
+        if calls is not None:
+            calls.append(client_id)
+        return client
+
+    monkeypatch.setattr("leftbrain.oauth.provider.fetch_client_metadata", fetch)
+
+
+def test_a_url_client_id_is_fetched_when_it_is_not_registered(tmp_path, monkeypatch):
+    provider, _ = a_provider(tmp_path)
+    stub_cimd(monkeypatch, a_client(client_id=CIMD_URL, secret=None))
+    fetched = run(provider.get_client(CIMD_URL))
+    assert fetched is not None and fetched.client_id == CIMD_URL
+
+
+def test_a_registered_client_is_never_fetched(tmp_path, monkeypatch):
+    """A stored registration wins, so a DCR client id is never treated as a URL to visit."""
+    provider, _ = a_provider(tmp_path)
+    run(provider.register_client(a_client()))
+    calls = []
+    stub_cimd(monkeypatch, None, calls)
+    assert run(provider.get_client("c1")).client_name == "ChatGPT"
+    assert calls == []
+
+
+def test_a_plain_unknown_client_id_is_not_fetched(tmp_path, monkeypatch):
+    provider, _ = a_provider(tmp_path)
+    calls = []
+    stub_cimd(monkeypatch, None, calls)
+    assert run(provider.get_client("not-a-url")) is None
+    assert calls == []  # only something URL-shaped is worth a request
+
+
+def test_a_fetched_document_is_cached_for_the_process(tmp_path, monkeypatch):
+    """Claude allows 10 s for the whole token call; the token leg must not re-fetch."""
+    provider, _ = a_provider(tmp_path)
+    calls = []
+    stub_cimd(monkeypatch, a_client(client_id=CIMD_URL, secret=None), calls)
+    run(provider.get_client(CIMD_URL))
+    run(provider.get_client(CIMD_URL))
+    run(provider.get_client(CIMD_URL))
+    assert calls == [CIMD_URL]
+
+
+def test_a_document_that_cannot_be_fetched_is_not_cached(tmp_path, monkeypatch):
+    provider, _ = a_provider(tmp_path)
+    calls = []
+    stub_cimd(monkeypatch, None, calls)
+    assert run(provider.get_client(CIMD_URL)) is None
+    assert run(provider.get_client(CIMD_URL)) is None
+    assert calls == [CIMD_URL, CIMD_URL]  # a failure is retried, not remembered
+
+
+# -- registration housekeeping ----------------------------------------------
+
+
+def test_pruning_drops_unconsented_registrations_only(tmp_path):
+    """Claude registers a fresh client on every connection when it falls back to DCR."""
+    oauth = make_store(tmp_path)
+    oauth.save_client(a_client(client_id="stale"))
+    oauth.save_client(a_client(client_id="consented"))
+    oauth.record_consent("a@b.co", "consented", "lblz_AAAAAAAA")
+    oauth.db.run("UPDATE oauth_clients SET created_at=?", ("2020-01-01T00:00:00+00:00",))
+    assert oauth.prune_clients(older_than_days=30) == 1
+    assert oauth.load_client("stale") is None
+    assert oauth.load_client("consented") is not None
+
+
+def test_pruning_keeps_a_recent_registration(tmp_path):
+    oauth = make_store(tmp_path)
+    oauth.save_client(a_client(client_id="fresh"))
+    assert oauth.prune_clients(older_than_days=30) == 0
+    assert oauth.load_client("fresh") is not None
