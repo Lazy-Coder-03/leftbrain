@@ -356,6 +356,23 @@ def _strip_grouping_commas(s: str) -> tuple[str, list[str]]:
     return out, ([f"commas in {', '.join(seen)} read as digit grouping"] if seen else [])
 
 
+def _top_level_comma(s: str) -> bool:
+    """Whether a comma sits outside every bracket, which is what makes an expression a tuple.
+
+    A call's arguments are separated by commas inside its brackets; `primefactors(360)`
+    returns a list and is not one.
+    """
+    depth = 0
+    for ch in s:
+        if ch in "([{":
+            depth += 1
+        elif ch in ")]}":
+            depth -= 1
+        elif ch == "," and depth <= 0:
+            return True
+    return False
+
+
 def _preprocess(src: str) -> tuple[str, list[str]]:
     """Normalise human/LLM-written math into parser-friendly text."""
     s, assumptions = _strip_grouping_commas(src.strip())
@@ -697,7 +714,7 @@ def _parse(
     except Exception as e:  # tokenizer errors etc.
         raise ToolError(f"could not parse {src!r}: {type(e).__name__}: {e}") from None
 
-    if isinstance(expr, (tuple, list, sp.Tuple)):
+    if isinstance(expr, (tuple, list, sp.Tuple)) and _top_level_comma(s):
         raise ToolError(
             f"{src!r} is {len(expr)} comma-separated values, not one expression",
             hint="A comma is read as a list separator. Write a decimal with a point (3.14); digits grouped in threes (3,140 or 1,20,000) are read as one number.",

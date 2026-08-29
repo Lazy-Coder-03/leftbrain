@@ -272,3 +272,14 @@ def test_a_constant_that_shadows_a_variable_name_says_which_it_read():
     r = math_tool("eval", expr="phi", precision=8)
     assert r["result"]["decimal"] == "1.618034" and any("golden ratio" in a for a in r["assumptions"]), r
     assert any("Euler" in a for a in math_tool("eval", expr="e")["assumptions"])
+
+
+def test_a_function_that_returns_a_list_is_not_a_tuple_of_values():
+    """`primefactors` and `divisors` return lists; only a comma outside every bracket makes
+    an expression a tuple."""
+    r = math_tool("eval", expr="primefactors(360)")
+    assert r["ok"] and [i["value"] for i in r["result"]["items"]] == ["2", "3", "5"], r
+    r = math_tool("eval", expr="divisors(28)")
+    assert r["ok"] and [i["value"] for i in r["result"]["items"]] == ["1", "2", "4", "7", "14", "28"], r
+    assert math_tool("eval", expr="factorint(360)")["result"]["type"] == "mapping"
+    assert math_tool("eval", expr="3,14 * 2")["ok"] is False  # still refused
