@@ -571,9 +571,33 @@ def _allocate(p: dict[str, Any]) -> dict[str, Any]:
     items = []
     for i, s in enumerate(shares):
         amt = Decimal(s) * unit
-        items.append({"label": labels[i] if labels else f"part{i + 1}", "weight": _dec_str(Decimal(weights[i].numerator) / Decimal(weights[i].denominator)), "share": _dec_str(amt), "amount": float(amt), "exact_unrounded": _dec_str(Decimal(raw[i].numerator) / Decimal(raw[i].denominator) * unit), "adjusted": s != floors[i]})
+        items.append({"label": labels[i] if labels else f"part{i + 1}", "weight": _exact(weights[i]), "share": _dec_str(amt), "amount": float(amt), "exact_unrounded": _exact(raw[i] * Fraction(unit)), "adjusted": s != floors[i]})
     out = {"total": _dec_str(total), "sum_of_shares": _dec_str(sum(Decimal(s) for s in shares) * unit), "items": items, "leftover_units_distributed": remainder, "method": method}
     return ok(out, assumptions=assumptions + [f"shares sum exactly to the total; leftover {unit} units went to the parts with the largest fractional remainder" if method == "largest_remainder" else f"leftover units given to the {method} part"])
+
+
+def _terminates(denominator: int) -> bool:
+    """Whether a fraction in lowest terms has a finite decimal expansion."""
+    for prime in (2, 5):
+        while denominator % prime == 0:
+            denominator //= prime
+    return denominator == 1
+
+
+def _exact(value: Fraction) -> str:
+    """A value written exactly, and briefly.
+
+    `allocate` used to render these as decimals, which for a 7-way split meant ~1,100 digits of
+    `142.857142857...` per share and ~8 KB for the response - every byte of it landing in the
+    caller's context, none of it usable, and `truncated` reporting false because nothing had
+    been cut (#74). A third is `1/3`: exact, and four bytes. Expansions that do terminate are
+    still written as decimals, because `250` reads better than `250/1`.
+    """
+    if value.denominator == 1:
+        return str(value.numerator)
+    if _terminates(value.denominator):
+        return _dec_str(Decimal(value.numerator) / Decimal(value.denominator))
+    return f"{value.numerator}/{value.denominator}"
 
 
 MAX_TERMS = 10_000

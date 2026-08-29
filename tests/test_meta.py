@@ -44,8 +44,14 @@ def test_a_failure_carries_meta_too():
     assert meta["tool"] == "math" and isinstance(meta["latency_ms"], int)
 
 
-def test_a_call_without_a_mode_does_not_invent_one():
-    assert "mode" not in meta_of("math", {"expr": "1+1"})
+def test_a_call_without_a_mode_reports_the_one_that_ran():
+    """This used to assert the opposite - that `meta` stayed quiet rather than inventing a
+    mode. Quiet turned out to be the worse failure: the schema applies a default anyway, so
+    the mode *was* invented, just not reported, and a refusal phrased in the default's
+    vocabulary sent an agent looking for a parameter its intended mode has never had (#79).
+    Reporting what actually ran is the honest version of not inventing anything."""
+    assert meta_of("math", {"expr": "1+1"})["mode"] == "eval"
+    assert meta_of("math", {"mode": "exact", "expr": "1+1"})["mode"] == "exact"
 
 
 def test_truncated_is_lifted_out_of_the_result():

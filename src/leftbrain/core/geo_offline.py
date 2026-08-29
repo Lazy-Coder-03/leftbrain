@@ -146,10 +146,18 @@ def _tables() -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, list
             zone = parts[2]
             comment = parts[3].strip() if len(parts) > 3 else ""
             if zone not in zones:
-                zones[zone] = {"zone": zone, "countries": codes, "lat": lat, "lon": lon, "comment": comment}
+                # `shared_note` is zone1970.tab's own comment on a zone spanning several
+                # countries. It is the only thing upstream says about why the extra ones are
+                # there, and it is kept apart from `comment` because it is not about the zone's
+                # primary country - see the blanking rule just below (#77).
+                zones[zone] = {"zone": zone, "countries": codes, "lat": lat, "lon": lon, "comment": comment,
+                               "shared_note": comment if len(codes) > 1 else ""}
             elif fname == "zone.tab" and codes[0] == zones[zone]["countries"][0]:
                 # zone1970.tab shares Asia/Dubai between AE, OM, RE, SC and TF and comments on
-                # the islands; zone.tab's own line for the first country is about that country
+                # the islands; zone.tab's own line for the first country is about that country.
+                # Blanking it when zone.tab has no comment is deliberate: "Crozet" is not an
+                # answer to a question about Dubai. What that loses is any explanation of the
+                # *extra* countries, which `shared_note` carries instead (#77).
                 zones[zone]["comment"] = comment
             for c in codes:
                 by_country.setdefault(c, [])
@@ -290,7 +298,7 @@ def _zone_entry(z: str) -> dict[str, Any]:
     from zoneinfo import ZoneInfo
 
     zones, countries, _ = _tables()
-    meta = zones.get(z, {"zone": z, "countries": [], "lat": None, "lon": None, "comment": ""})
+    meta = zones.get(z, {"zone": z, "countries": [], "lat": None, "lon": None, "comment": "", "shared_note": ""})
     now = datetime.now(ZoneInfo(z))
     off = now.utcoffset()
     secs = int(off.total_seconds()) if off else 0
@@ -302,8 +310,21 @@ def _zone_entry(z: str) -> dict[str, Any]:
         "abbreviation_now": now.tzname(),
         "is_dst_now": bool(now.dst()),
         "countries": [{"code": c, "name": countries.get(c, c)} for c in meta["countries"]],
-        "coordinates": {"lat": meta["lat"], "lon": meta["lon"]} if meta["lat"] is not None else None,
+        # Named for what it is. This is the zone's own reference city out of zone.tab - not the
+        # place the caller asked about, which is how `tz_for_place("Mumbai")` came back holding
+        # Kolkata's coordinates under a field called `coordinates` (#73). Every non-namesake
+        # city in a zone had the same problem, and the answer read as authoritative.
+        "zone_reference": {"lat": meta["lat"], "lon": meta["lon"]} if meta["lat"] is not None else None,
         "note": meta["comment"] or None,
+        # Why a zone lists a country nobody expects. `Asia/Tokyo` really is `JP,AU` upstream -
+        # Eyre Bird Observatory is a Western Australian station on UTC+9 - and with no
+        # explanation the pair read as a bad reverse lookup rather than as tzdata's own data
+        # (#77). Quoted rather than paraphrased: the note explains the shared entry, and does
+        # not necessarily account for every country on it.
+        "countries_note": (
+            f"tzdata lists this zone for {', '.join(meta['countries'])}; its note on that shared "
+            f"entry reads {meta['shared_note']!r}"
+        ) if len(meta["countries"]) > 1 and meta.get("shared_note") else None,
         "local_time_now": now.isoformat(),
     }
 
@@ -455,18 +476,27 @@ def _tz_for_coords(p: dict[str, Any]) -> dict[str, Any]:
     lat, lon = _point({"lat": p.get("lat"), "lon": p.get("lon", p.get("lng"))} if given else p.get("point"), "point", assumptions)
     zones, _, _ = _tables()
     refs = [(m["lat"], m["lon"], z) for z, m in zones.items() if m["lat"] is not None] + _EXTRA_REFERENCES
-    ranked = sorted((haversine_km(lat, lon, rlat, rlon), z) for rlat, rlon, z in refs)
-    best: list[tuple[float, str]] = []
-    for d, z in ranked:  # the three nearest *distinct* zones
-        if all(z != b for _, b in best):
-            best.append((d, z))
+    ranked = sorted((haversine_km(lat, lon, rlat, rlon), z, rlat, rlon) for rlat, rlon, z in refs)
+    best: list[tuple[float, str, float, float]] = []
+    for d, z, rlat, rlon in ranked:  # the three nearest *distinct* zones
+        if all(z != b for _, b, _rla, _rlo in best):
+            best.append((d, z, rlat, rlon))
         if len(best) == 3:
             break
     if not best:
         raise ToolError("no zone data available")
     entry = _zone_entry(best[0][1])
-    entry["distance_to_reference_km"] = round(best[0][0], 1)
-    entry["alternatives"] = [{"zone": z, "km": round(d, 1)} for d, z in best[1:]]
+    # The point the caller asked about, which is the one `distance_to_reference_km` is measured
+    # from. Without it the response held the zone city's coordinates beside a distance to
+    # somewhere else entirely, and looked self-contradictory because it was (#73).
+    entry["coordinates"] = {"lat": lat, "lon": lon}
+    # Which reference point actually chose the zone, so the distance beside it can be checked.
+    # It is often not the zone's own city: Mumbai matches a reference 0.5 km away and lands in
+    # Asia/Kolkata, whose reference city is 1,650 km off. Reporting only the distance left the
+    # response looking like it contradicted itself (#73).
+    entry["nearest_reference"] = {"lat": best[0][2], "lon": best[0][3], "km": round(best[0][0], 1)}
+    entry["distance_to_reference_km"] = round(best[0][0], 1)  # to `nearest_reference`, not to `zone_reference`
+    entry["alternatives"] = [{"zone": z, "km": round(d, 1)} for d, z, _rlat, _rlon in best[1:]]
     return ok(entry, assumptions=assumptions, warnings=["nearest-reference-city heuristic; near borders verify with a boundary-aware lookup"])
 
 
