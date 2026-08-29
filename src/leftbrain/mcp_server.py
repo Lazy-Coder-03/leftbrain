@@ -119,8 +119,12 @@ def math(
     significant: int | None = None,
     timeout: float | None = None,
 ) -> dict[str, Any]:
-    """Use for ANY arithmetic or mathematics before stating a number - percentages, fractions,
-    powers, roots, trigonometry, complex numbers, algebra, calculus, matrices, statistics.
+    """Use for arithmetic and mathematics rather than working it out: percentages, fractions,
+    powers, roots, trigonometry, complex numbers, algebra, calculus, matrices, statistics -
+    each answered in exact form and decimal form together. Functions come from a named
+    allowlist (isprime and factorint are in, primepi is not) and a rejected name is answered
+    with the accepted set. Predicates return booleans that add up, so
+    is_prime(11)+is_prime(12) counts how many hold in one call.
 
     mode: eval | exact | simplify | expand | factor | solve | diff | integrate | limit | series | ode | matrix | stats | convert_form | plot_points
     - eval/exact: expr (e.g. "15% of 200", "(3+4i)*(1-2i)", "sin(30)" with angle="deg")

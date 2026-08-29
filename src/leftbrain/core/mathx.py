@@ -12,6 +12,7 @@ attribute access) and evaluated under a timeout.
 from __future__ import annotations
 
 import ast
+import difflib
 import math as _pymath
 import re
 import sys
@@ -19,6 +20,7 @@ import threading
 import tokenize
 from collections.abc import Callable
 from fractions import Fraction
+from functools import lru_cache
 from typing import Any
 
 import sympy as sp
@@ -72,21 +74,21 @@ MAX_EXPR_LEN = 5000
 RENAMED_PARAMS = {"from": "'lower'", "from_": "'lower'", "to": "'upper' (bounds), 'point' (limit) or 'form' (convert_form)"}
 
 MODE_PARAMS: dict[str, frozenset[str]] = {
-    "eval": frozenset({"angle", "expr", "expression", "precision", "vars"}),
-    "exact": frozenset({"angle", "expr", "expression", "precision", "vars"}),
-    "simplify": frozenset({"angle", "expr", "expression", "precision"}),
-    "expand": frozenset({"angle", "expr", "expression", "precision"}),
-    "factor": frozenset({"angle", "expr", "expression", "precision"}),
+    "eval": frozenset({"angle", "expr", "expression", "percent", "precision", "vars"}),
+    "exact": frozenset({"angle", "expr", "expression", "percent", "precision", "vars"}),
+    "simplify": frozenset({"angle", "expr", "expression", "percent", "precision"}),
+    "expand": frozenset({"angle", "expr", "expression", "percent", "precision"}),
+    "factor": frozenset({"angle", "expr", "expression", "percent", "precision"}),
     "solve": frozenset({"domain", "equations", "expr", "expression", "precision", "vars"}),
-    "diff": frozenset({"angle", "at", "expr", "expression", "order", "precision", "var"}),
-    "integrate": frozenset({"angle", "expr", "expression", "lower", "precision", "upper", "var"}),
-    "limit": frozenset({"angle", "expr", "expression", "point", "precision", "side", "var"}),
-    "series": frozenset({"angle", "at", "expr", "expression", "order", "precision", "var"}),
+    "diff": frozenset({"angle", "at", "expr", "expression", "order", "percent", "precision", "var"}),
+    "integrate": frozenset({"angle", "expr", "expression", "lower", "percent", "precision", "upper", "var"}),
+    "limit": frozenset({"angle", "expr", "expression", "percent", "point", "precision", "side", "var"}),
+    "series": frozenset({"angle", "at", "expr", "expression", "order", "percent", "precision", "var"}),
     "ode": frozenset({"equation", "expr", "expression", "func", "ics", "precision"}),
     "matrix": frozenset({"A", "B", "b", "expr", "expression", "n", "op", "precision"}),
     "stats": frozenset({"data", "data2", "expr", "expression", "op", "p", "percentile", "precision", "predict", "value", "weights", "y"}),
-    "convert_form": frozenset({"angle", "expr", "expression", "form", "precision", "significant", "tolerance", "value"}),
-    "plot_points": frozenset({"angle", "expr", "expression", "n", "precision", "range", "var"}),
+    "convert_form": frozenset({"angle", "expr", "expression", "form", "percent", "precision", "significant", "tolerance", "value"}),
+    "plot_points": frozenset({"angle", "expr", "expression", "n", "percent", "precision", "range", "var"}),
 }
 
 #: Digits a result can be rendered with at all. CPython refuses to ``str()`` an integer
@@ -163,6 +165,154 @@ def _degree_namespace() -> dict[str, Any]:
         names[n] = lambda a, *, f=f, **kw: f(a, **kw) / _DEG
     return names
 
+#: Physical constants, long name -> the short name that appears in formulas. Both matter and
+#: for different readers: the long name is the one a model can read the meaning off without
+#: looking anything up, and the short one is what every formula it has been trained on uses.
+#: A model that writes `G*m1*m2/r^2` should get a force, not an expression in four unknowns
+#: (#55).
+PHYSICAL_CONSTANTS: dict[str, str] = {
+    "gravitational_constant": "G",
+    "speed_of_light": "c",
+    "planck_constant": "h",
+    "reduced_planck_constant": "hbar",
+    "boltzmann_constant": "k_B",
+    "avogadro_constant": "N_A",
+    "molar_gas_constant": "R",
+    "standard_gravity": "g",
+    "elementary_charge": "q_e",
+    "electron_mass": "m_e",
+    "proton_mass": "m_p",
+    "vacuum_permittivity": "epsilon_0",
+    "vacuum_permeability": "mu_0",
+    "stefan_boltzmann_constant": "sigma_SB",
+    "fine_structure_constant": "alpha",
+}
+
+#: pint's spelling where it differs from ours.
+_PINT_NAMES = {"reduced_planck_constant": "hbar"}
+
+
+@lru_cache(maxsize=1)
+def constant_table() -> dict[str, tuple[Any, str, str]]:
+    """Each constant's SI value, unit and printed form, from pint's CODATA registry.
+
+    pint is a core dependency and already backs `convert`, so the figures come from one place
+    rather than being copied into this module to drift. The printed form is kept beside the
+    value because SymPy renders a Float at full precision - `6.67430000000000e-11` where the
+    figure is 6.6743e-11, which reads as more digits than CODATA gives.
+    """
+    import pint
+
+    registry = pint.UnitRegistry()
+    table: dict[str, tuple[Any, str, str]] = {}
+    for long in PHYSICAL_CONSTANTS:
+        quantity = registry.Quantity(1, _PINT_NAMES.get(long, long)).to_base_units()
+        magnitude = quantity.magnitude
+        whole = float(magnitude).is_integer()
+        value = sp.Integer(int(magnitude)) if whole else sp.Float(repr(magnitude))
+        table[long] = (value, f"{quantity.units:~C}" or "dimensionless", str(int(magnitude)) if whole else repr(magnitude))
+    return table
+
+
+def _constant_names(short: bool) -> dict[str, Any]:
+    """The constants to bind: long names always, short ones only where they are safe."""
+    table = constant_table()
+    names = {long: value for long, (value, _unit, _shown) in table.items()}
+    if short:
+        names.update({PHYSICAL_CONSTANTS[long]: value for long, (value, _unit, _shown) in table.items()})
+    return names
+
+
+@lru_cache(maxsize=1)
+def _constant_token() -> Any:
+    """Any constant name used as a token, for saying which ones an answer relied on."""
+    every = sorted([*PHYSICAL_CONSTANTS, *PHYSICAL_CONSTANTS.values()], key=len, reverse=True)
+    return re.compile(r"(?<![\w.])(" + "|".join(re.escape(n) for n in every) + r")(?![\w])")
+
+
+def _constants_used(src: str, bound: dict[str, Any]) -> list[str]:
+    """`assumptions` naming every constant an expression relied on, with value and unit.
+
+    The same mechanism `e`, `i` and `phi` already use: a single letter silently becoming a
+    physical constant is exactly the kind of reading this tool is supposed to state out loud.
+    """
+    table = constant_table()
+    short_to_long = {v: k for k, v in PHYSICAL_CONSTANTS.items()}
+    notes, seen = [], set()
+    for match in _constant_token().finditer(src):
+        name = match.group(1)
+        if name not in bound:
+            continue
+        long = name if name in table else short_to_long.get(name)
+        if long is None or long in seen:
+            continue
+        seen.add(long)
+        _value, unit, shown = table[long]
+        as_read = f"{name} read as {long} = " if name != long else f"{long} = "
+        notes.append(f"{as_read}{shown}{'' if unit == 'dimensionless' else ' ' + unit}")
+    return notes
+
+
+def _numeric(value: Any, name: str) -> Any:
+    """The argument of a predicate, or a refusal naming what stopped it being a number.
+
+    SymPy answers `Symbol('n').is_even` with `None` - a third value that is the honest one for
+    an unknown, and useless in an envelope that promises true or false. Naming the symbol says
+    the same thing and tells the caller what to substitute (#57).
+    """
+    expr = sp.sympify(value)
+    if getattr(expr, "free_symbols", set()):
+        names = ", ".join(sorted(str(x) for x in expr.free_symbols))
+        raise ToolError(
+            f"{name} needs a number, but {sp.sstr(expr)} still contains {names}",
+            hint=f"Substitute with vars={{'{names.split(', ')[0]}': ...}}, or ask about a number.",
+        )
+    return expr
+
+
+def _predicate(fn: Callable[..., Any], name: str, arity: int = 1) -> Callable[..., Any]:
+    """Bind a boolean test under the `isprime` naming, refusing on anything not a number.
+
+    Returns SymPy's own booleans, which coerce to 1 and 0 inside an expression - so
+    `is_prime(a) + is_prime(b) + ...` counts how many hold. That is the only batching this
+    tool has, and it is documented rather than left to be rediscovered (#63).
+    """
+
+    def bound(*args: Any, **_kw: Any) -> Any:
+        if len(args) != arity:
+            raise ToolError(f"{name} takes {arity} argument{'s' if arity > 1 else ''}, got {len(args)}")
+        # a Python bool rather than SymPy's `true`: the latter refuses arithmetic, and summing
+        # predicates is the only batching mechanism `math` has (#63)
+        return bool(fn(*[_numeric(a, name) for a in args]))
+
+    return bound
+
+
+def _is_square(n: Any) -> bool:
+    return bool(n.is_integer) and n >= 0 and sp.integer_nthroot(int(n), 2)[1]
+
+
+def _is_perfect(n: Any) -> bool:
+    """A perfect number equals the sum of its proper divisors: 6, 28, 496."""
+    return bool(n.is_integer) and n > 0 and sp.divisor_sigma(int(n)) == 2 * int(n)
+
+
+#: Predicates that answer the everyday questions, under `isprime`'s naming. Parity was only
+#: reachable as `Mod(n, 2)` and sign as `sign(n)`, both of which answer 1 or -1 rather than
+#: true or false, and neither of which is a phrase a caller reaches for (#57).
+_PREDICATES: dict[str, Any] = {
+    "is_even": _predicate(lambda n: bool(n.is_even), "is_even"),
+    "is_odd": _predicate(lambda n: bool(n.is_odd), "is_odd"),
+    "is_negative": _predicate(lambda n: bool(n.is_negative), "is_negative"),
+    "is_positive": _predicate(lambda n: bool(n.is_positive), "is_positive"),
+    "is_integer": _predicate(lambda n: bool(n.is_integer), "is_integer"),
+    "is_square": _predicate(_is_square, "is_square"),
+    "is_perfect": _predicate(_is_perfect, "is_perfect"),
+    "is_prime": _predicate(lambda n: bool(sp.isprime(n)), "is_prime"),
+    "is_coprime": _predicate(lambda a, b: sp.gcd(a, b) == 1, "is_coprime", arity=2),
+}
+
+
 _SAFE_NAMES: dict[str, Any] = {
     # constants
     "pi": sp.pi,
@@ -229,6 +379,7 @@ _SAFE_NAMES: dict[str, Any] = {
     "zeta": sp.zeta,
     "fibonacci": sp.fibonacci,
     "isprime": sp.isprime,
+    **_PREDICATES,
     "prime": sp.prime,
     "primefactors": sp.primefactors,
     "factorint": sp.factorint,
@@ -334,10 +485,25 @@ _UNICODE_MAP = {
 }
 
 _PCT_OF = re.compile(r"(\d+(?:\.\d+)?)\s*%\s*of\s*")
-_PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+#: A *postfix* percent: `17%`, `17% + 3`. The lookahead keeps it off `17 % 5`, which was
+#: rewritten to `(17/100) 5` and answered 0.85 where the convention says 2.
+_PCT = re.compile(r"(\d+(?:\.\d+)?)\s*%(?!\s*[\w.(])")
+
+#: A `%` with an operand on both sides. `of` is excluded because `15% of 200` is already a
+#: percentage and says so. This is the shape that has two readings.
+_BINARY_PCT = re.compile(r"\s*%\s*(?!of\b)(?=[\w.(])")
+
+#: How `%` between two values may be read. `mod` is unambiguous and always available;
+#: this only settles the `%` spelling.
+PERCENT_READINGS = ("percent", "modulus")
 _ANGLE_NOTATION = re.compile(r"([\w.()]+)\s*∠\s*([\w.()°-]+)")
 _ARC = re.compile(r"\barc(sin|cos|tan|cot|sec|csc)\b")
-_MOD_INFIX = re.compile(r"(\([^()]*\)|[\w.]+)\s+mod\s+(\([^()]*\)|[\w.]+)")
+#: The infix `mod` word. It used to be rewritten to `Mod(a, b)` by matching an operand on
+#: each side as `(...)` or `[\w.]+`, which cannot see past an operator: `2^10 mod 7` took
+#: `10` as the left operand and answered 2^(10 mod 7) = 8 instead of 1024 mod 7 = 2.
+#: Rewriting to `%` instead hands precedence to the parser, which already has the right
+#: rule for it - the same one Python uses.
+_MOD_INFIX = re.compile(r"\s+mod\s+", re.IGNORECASE)
 
 
 #: `√` followed by a number or an identifier, rather than by a bracket.
@@ -403,7 +569,7 @@ def _top_level_comma(s: str) -> bool:
     return False
 
 
-def _preprocess(src: str) -> tuple[str, list[str]]:
+def _preprocess(src: str, percent: str | None = None) -> tuple[str, list[str]]:
     """Normalise human/LLM-written math into parser-friendly text."""
     s, assumptions = _strip_grouping_commas(src.strip())
     # `√` becomes `sqrt`, and implicit multiplication then reads `sqrt2` as one symbol -
@@ -420,12 +586,43 @@ def _preprocess(src: str) -> tuple[str, list[str]]:
         s = s.replace("°", "*deg")
         assumptions.append("° converted to radians via ·π/180")
     if "%" in s:
+        # `%` between two values has two readings that differ by a factor of 20 on `17 % 5`:
+        # the remainder (2) or a percentage multiplied (0.85). It used to silently take the
+        # second. Rather than swap one silent guess for another, this asks - the same way the
+        # tool already refuses trigonometry without an `angle` - and takes `percent` as the
+        # answer. `mod` is the spelling with only one meaning and never needs asking about.
+        if _BINARY_PCT.search(s):
+            choice = str(percent or "").strip().lower()
+            if choice not in PERCENT_READINGS:
+                as_mod = _BINARY_PCT.sub(" mod ", src.strip())
+                as_pct = _BINARY_PCT.sub("% * ", src.strip())
+                raise Ambiguous(
+                    f"'%' between two values has two readings: {as_mod!r} (the remainder) or "
+                    f"{as_pct!r} (a percentage of what follows). Pass percent='modulus' or "
+                    f"percent='percent', or write {as_mod!r}, which has only one meaning.",
+                    field="percent",
+                    options=list(PERCENT_READINGS),
+                )
+            if choice == "modulus":
+                # Left exactly as written: SymPy parses `%` as Mod with Python's precedence, so
+                # `2^10 % 7` is 1024 mod 7. Rewriting it to the `mod` word would go through
+                # `_MOD_INFIX`, whose operands are `[\w.]+` and so take `10` rather than
+                # `2^10` - giving 2^(10 mod 7) = 8.
+                assumptions.append("'%' between two values read as the remainder; 'mod' says this without asking")
+            else:
+                s = _BINARY_PCT.sub("% * ", s)
+                assumptions.append("'%' between two values read as a percentage, multiplied by what follows")
+        elif percent:
+            # supplied and not needed: say so rather than drop it
+            assumptions.append(f"no '%' between two values, so percent={str(percent)!r} was not needed")
         s2 = _PCT_OF.sub(r"(\1/100)*", s)
         s2 = _PCT.sub(r"(\1/100)", s2)
         if s2 != s:
             assumptions.append("% read as /100")
         s = s2
-    s = _MOD_INFIX.sub(r"Mod(\1, \2)", s)
+    elif percent:
+        assumptions.append(f"no '%' in the expression, so percent={str(percent)!r} was not needed")
+    s = _MOD_INFIX.sub(" % ", s)  # after the percent block above, so this `%` is never re-read
     if re.search(r"(?<![A-Za-z_])e(?![A-Za-z_0-9])", s) and not re.search(r"\d[eE][+-]?\d", s):
         assumptions.append("e read as Euler's number")
     if re.search(r"(?<![A-Za-z_])i(?![A-Za-z_0-9])", s):
@@ -698,6 +895,19 @@ def _check_safe(s: str, *, size: bool = True, env: dict[str, Fraction] | None = 
         _check_result_size(s, env)
 
 
+def function_names() -> list[str]:
+    """Every function `math` will evaluate, for the refusal and the tool reference (#63)."""
+    return sorted(n for n, v in _SAFE_NAMES.items() if callable(v))
+
+
+def _did_you_mean(unknown: list[str]) -> dict[str, Any]:
+    """`hint` and `details` for a rejected function name: the near misses, then the whole set."""
+    close = sorted({m for name in unknown for m in difflib.get_close_matches(name, function_names(), n=3, cutoff=0.7)})
+    known = function_names()
+    hint = f"Did you mean {', '.join(close)}?" if close else f"{len(known)} functions are available; see details.accepted."
+    return {"hint": hint, "details": {"unknown": unknown, "did_you_mean": close, "accepted": known}}
+
+
 def _parse(
     src: str,
     *,
@@ -705,16 +915,25 @@ def _parse(
     local: dict[str, Any] | None = None,
     numeric: bool = False,
     env: dict[str, Fraction] | None = None,
+    constants: bool = False,
+    reserved: Any = (),
+    percent: str | None = None,
 ) -> tuple[Any, list[str]]:
     """Parse ``src`` into a SymPy object.
 
     ``numeric`` leaves the tree unevaluated, for a caller that will take ``N()`` of it
     because the exact form is too big to build (#52 §3). ``env`` is the numeric value of
     each variable the caller will substitute, for the size estimate.
+
+    ``constants`` binds the *short* names of the physical constants - `c`, `G`, `h`, `R` - and
+    is set only by the modes whose answer is a number. They are the most common single-letter
+    variable names in algebra, so binding them in `solve` or `diff` would change what those
+    modes mean, which is a regression rather than a feature (#55). ``reserved`` names the
+    caller's own variables, which always win over a constant.
     """
     if not isinstance(src, str) or not src.strip():
         raise ToolError("expression is empty")
-    s, assumptions = _preprocess(src)
+    s, assumptions = _preprocess(src, percent)
     if (m := _EQUALS.search(s)) is not None:
         # `factor` a minute after `solve` on the same polynomial is an easy slip, and CPython's
         # own message for it is not actionable (#52 §8).
@@ -725,21 +944,27 @@ def _parse(
     _check_safe(s, size=not numeric, env=env)  # numeric: the size was judged by the evaluated parse that sent us here
     unknown = sorted({m.group(1) for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", s) if m.group(1) not in _SAFE_NAMES and m.group(1) not in (local or {})})
     if unknown:
-        raise ToolError(f"unknown function(s): {', '.join(unknown)}")
+        # Naming only what failed turned a wrong guess into a probing loop: `primepi` and
+        # `nextprime` are both out while `isprime` and `factorint` are in, and nothing said
+        # which. The allowlist is right here, so the refusal can spend it (#63).
+        raise ToolError(f"unknown function(s): {', '.join(unknown)}", **_did_you_mean(unknown))
     # Read off the source, because the parse is where the evidence is destroyed. The
     # *decision* is reported after a successful parse, so `sin(` still answers "could not
     # parse" rather than "specify angle".
     trig = _trig_in_source(s)
     explicit_deg = trig and "deg" in s  # `°` became `*deg` in _preprocess
     degrees = trig and not explicit_deg and angle == "deg"
+    bound = {n: v for n, v in _constant_names(short=constants).items() if n not in set(reserved) and n not in (local or {})}
     try:
         expr = parse_expr(
             s,
             local_dict=dict(local or {}),
-            global_dict={**_SAFE_NAMES, **(_degree_namespace() if degrees else {}), **(_UNEVALUATED_NAMES if numeric else {})},
+            global_dict={**_SAFE_NAMES, **bound, **(_degree_namespace() if degrees else {}), **(_UNEVALUATED_NAMES if numeric else {})},
             transformations=_TRANSFORMS,
             evaluate=not numeric,
         )
+    except ToolError:
+        raise  # a bound function refusing its argument said something better than "could not parse"
     except SyntaxError as e:
         raise ToolError(f"could not parse {src!r}: {e.msg}") from None  # not str(e): that carries `(<string>, line 1)`
     except tokenize.TokenError as e:
@@ -761,6 +986,7 @@ def _parse(
             names = sorted({str(f.func) for f in undef})
             raise ToolError(f"unknown function(s): {', '.join(names)}")
         assumptions += _angle_notes(trig, explicit_deg=explicit_deg, degrees=degrees, angle=angle)
+    assumptions += _constants_used(s, bound)
     return expr, assumptions
 
 
@@ -917,6 +1143,16 @@ def _describe(expr: Any, precision: int = 15) -> dict[str, Any]:
     if isinstance(expr, (list, tuple)):
         out["type"] = "list"
         out["items"] = [_describe(v, precision) for v in expr]
+        return out
+
+    if isinstance(expr, (dict, sp.Dict)):
+        # `factorint(10007)` came back as `{"value": "{10007: 1}", "type": "Dict"}`, which has
+        # to be parsed out of a string to be used - exactly the step this tool exists to
+        # remove (#63).
+        out["type"] = "mapping"
+        out["mapping"] = {sp.sstr(k): sp.sstr(v) for k, v in expr.items()}
+        if all(getattr(sp.sympify(k), "is_integer", False) and getattr(sp.sympify(v), "is_integer", False) for k, v in expr.items()):
+            out["factors"] = [{"prime": int(k), "exponent": int(v)} for k, v in sorted(expr.items(), key=lambda kv: int(kv[0]))]
         return out
 
     if isinstance(expr, dict):
@@ -1082,13 +1318,13 @@ def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
         if isinstance(value, sp.Rational):
             env[k] = Fraction(int(value.p), int(value.q))
     try:
-        expr, assumptions = _parse(p["expr"], angle=p.get("angle"), env=env)
+        expr, assumptions = _parse(p["expr"], angle=p.get("angle"), env=env, constants=True, reserved=set(p.get("vars") or {}), percent=p.get("percent"))
     except _ExactTooLarge as e:
         if exact_only:
             raise
         # The caller asked for `precision` digits, not six million: take the tree
         # unevaluated and go straight to a decimal (#52 §3).
-        expr, assumptions = _parse(p["expr"], angle=p.get("angle"), numeric=True)
+        expr, assumptions = _parse(p["expr"], angle=p.get("angle"), numeric=True, constants=True, reserved=set(p.get("vars") or {}), percent=p.get("percent"))
         if subs:
             with sp.evaluate(False):
                 expr = expr.subs(subs)
@@ -1146,7 +1382,7 @@ def _factor_integer(n: sp.Integer, precision: int) -> dict[str, Any]:
 
 
 def _mode_transform(p: dict[str, Any], *, mode: str) -> dict[str, Any]:
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
+    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad", percent=p.get("percent"))
     precision = p.get("precision", 15)
     if mode == "expand":
         # trig=True: sin(2x) expands like exp(x+y) does - both are a function of a sum, and
@@ -1387,7 +1623,7 @@ def _numeric_roots(eqs: list[Any], syms: list[Any], precision: int, domain: str 
 
 
 def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
+    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad", percent=p.get("percent"))
     var = _symbol(p.get("var"), expr)
     order = whole(p.get("order", 1), "order", lo=0, hi=100)
     res = sp.diff(expr, var, order)
@@ -1435,7 +1671,7 @@ def _quadrature(expr: Any, var: Any, a: Any, b: Any, precision: int) -> Any:
 
 
 def _mode_integrate(p: dict[str, Any]) -> dict[str, Any]:
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
+    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad", percent=p.get("percent"))
     var = _symbol(p.get("var"), expr)
     lo, hi = p.get("lower"), p.get("upper")
     precision = p.get("precision", 15)
@@ -1527,7 +1763,7 @@ def _is_real_on(expr: Any, var: Any, a: Any, b: Any) -> bool | None:
 
 
 def _mode_limit(p: dict[str, Any]) -> dict[str, Any]:
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
+    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad", percent=p.get("percent"))
     var = _symbol(p.get("var"), expr)
     point = _num(p.get("point", 0))
     side = p.get("side")
@@ -1568,7 +1804,7 @@ def _mode_limit(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mode_series(p: dict[str, Any]) -> dict[str, Any]:
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
+    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad", percent=p.get("percent"))
     var = _symbol(p.get("var"), expr)
     at = _num(p.get("at", 0))
     order = _bounded(p.get("order", 6), "order", MAX_SERIES_ORDER, "terms")
@@ -2011,7 +2247,7 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
         p = {**p, "expr": p["value"]}
     if not p.get("expr"):
         raise ToolError("mode 'convert_form' needs 'expr' (or 'value', which means the same here)")
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
+    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad", percent=p.get("percent"))
     form = (p.get("form") or "decimal").lower()
     precision = p.get("precision", 15)
     _check_defined(expr, p["expr"])
@@ -2100,7 +2336,7 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _mode_plot_points(p: dict[str, Any]) -> dict[str, Any]:
-    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
+    expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad", percent=p.get("percent"))
     var = _symbol(p.get("var"), expr)
     extra = sorted(str(sym) for sym in getattr(expr, "free_symbols", set()) if sym != var)
     if extra:

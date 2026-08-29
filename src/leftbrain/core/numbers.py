@@ -605,6 +605,80 @@ MAX_TERMS = 10_000
 _LOG10_PHI = math.log10((1 + 5**0.5) / 2)
 
 
+def _ranged(p: dict[str, Any]) -> bool:
+    """Whether the caller asked for a bounded range rather than the first N.
+
+    `sequence kind=primes` took `n` and nothing else, so "the primes between 50 and 80" could
+    not be asked for at all - and `start` was ignored without a word, which was #56. `end` is
+    what distinguishes the two readings: a `start` alone still means "the first n, from here".
+    """
+    return p.get("end") is not None
+
+
+def _bounds(p: dict[str, Any], num: Any) -> tuple[Decimal, Decimal]:
+    lo = num(p.get("start", 0), "start")
+    hi = num(p["end"], "end")
+    if hi < lo:
+        raise ToolError(f"end {_dec_str(hi)} is below start {_dec_str(lo)}; a range runs upwards")
+    return lo, hi
+
+
+def _cap(count: int) -> None:
+    if count > MAX_TERMS:
+        raise TooLarge(
+            f"the range holds more than {MAX_TERMS:,} terms",
+            details={"limit": MAX_TERMS},
+            hint="Narrow the range, or ask for the first n with 'n' instead of 'end'.",
+        )
+
+
+def _estimate_primes(lo: Decimal, hi: Decimal) -> None:
+    """Refuse an unsievable range before sieving it, as the other caps do.
+
+    pi(x) ~ x/ln x is close enough to know that the primes below 10^9 are not a list anyone
+    can be handed, and it costs microseconds rather than the sieve it prevents.
+    """
+    top = float(hi)
+    if top > 1e12:
+        raise TooLarge(
+            f"a prime range ending at {_dec_str(hi)} is past this tool's reach",
+            details={"end": _dec_str(hi), "limit": "1e12"},
+            hint="Narrow the range, or ask for the first n primes with 'n'.",
+        )
+    def pi(x: float) -> float:
+        return x / math.log(x) if x > 2 else 0.0
+    estimate = pi(top) - pi(max(float(lo), 2.0))
+    if estimate > MAX_TERMS:
+        raise TooLarge(
+            f"that range holds roughly {int(estimate):,} primes; the most that can be returned is {MAX_TERMS:,}",
+            details={"estimated_terms": int(estimate), "limit": MAX_TERMS},
+            hint="Narrow the range, or ask for the first n primes with 'n'.",
+        )
+
+
+def _primes_between(lo: int, hi: int) -> list[int]:
+    """A segmented sieve over [lo, hi]."""
+    if hi < 2 or hi < lo:
+        return []
+    lo = max(lo, 2)
+    limit = int(hi**0.5) + 1
+    base = bytearray([1]) * (limit + 1)
+    base[0:2] = b"\x00\x00"
+    for i in range(2, int(limit**0.5) + 1):
+        if base[i]:
+            base[i * i::i] = bytearray(len(base[i * i::i]))
+    small = [i for i, ok in enumerate(base) if ok]
+    window = bytearray([1]) * (hi - lo + 1)
+    for q in small:
+        first = max(q * q, ((lo + q - 1) // q) * q)
+        for multiple in range(first, hi + 1, q):
+            window[multiple - lo] = 0
+    if lo <= 1:
+        for i in range(lo, min(2, hi + 1)):
+            window[i - lo] = 0
+    return [lo + i for i, ok in enumerate(window) if ok]
+
+
 def _sequence(p: dict[str, Any]) -> dict[str, Any]:
     kind = str(p.get("kind") or p.get("type") or "arithmetic").lower()
     assumptions: list[str] = []
@@ -614,7 +688,12 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
         n = whole(n, "n", lo=1, hi=MAX_TERMS)
     # `start` belongs in this list as much as the others do: a caller asking for the primes
     # from 50 got the primes from 2, and only the `end` line hinted anything was dropped (#56).
-    for name, kinds in (("start", ("arithmetic", "geometric", "range")), ("step", ("arithmetic", "range")), ("ratio", ("geometric",)), ("end", ("arithmetic", "range"))):
+    # `primes`, `squares` and `fibonacci` read `start` only as the low end of a range, and it is
+    # `end` that asks for one (#57). Without `end` the parameter is still ignored, and still
+    # has to say so - which is what #56 was about.
+    bounded = ("primes", "squares", "fibonacci")
+    reads_start = ("arithmetic", "geometric", "range", *(bounded if _ranged(p) else ()))
+    for name, kinds in (("start", reads_start), ("step", ("arithmetic", "range")), ("ratio", ("geometric",)), ("end", ("arithmetic", "range", *bounded))):
         if p.get(name) is not None and kind not in kinds:
             assumptions.append(f"'{name}' is not used by a {kind} sequence; ignored")
 
@@ -659,6 +738,15 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
         for _ in range(n):
             seq.append(cur)
             cur *= ratio
+    elif kind == "fibonacci" and _ranged(p):
+        lo, hi = _bounds(p, num)
+        seq, a, b = [], Decimal(0), Decimal(1)
+        while a <= hi:
+            if a >= lo:
+                seq.append(a)
+                _cap(len(seq))
+            a, b = b, a + b
+        assumptions.append(f"the Fibonacci numbers from {_dec_str(lo)} to {_dec_str(hi)}")
     elif kind == "fibonacci":
         n = n or 10
         last_digits = (n - 1) * _LOG10_PHI
@@ -672,6 +760,12 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
         while len(seq) < n:
             seq.append(seq[-1] + seq[-2])
         seq = seq[:n]
+    elif kind == "primes" and _ranged(p):
+        lo, hi = _bounds(p, num)
+        _estimate_primes(lo, hi)
+        seq = [Decimal(q) for q in _primes_between(int(lo.to_integral_value(rounding=ROUND_CEILING)), int(hi))]
+        _cap(len(seq))
+        assumptions.append(f"the primes from {_dec_str(lo)} to {_dec_str(hi)}, inclusive")
     elif kind == "primes":
         n = n or 10
         seq, c = [], 2
@@ -679,6 +773,16 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
             if all(c % q for q in range(2, int(c**0.5) + 1)):
                 seq.append(Decimal(c))
             c += 1
+    elif kind == "squares" and _ranged(p):
+        lo, hi = _bounds(p, num)
+        first = max(1, math.ceil(math.sqrt(max(float(lo), 0))))
+        seq = []
+        i = first
+        while Decimal(i * i) <= hi:
+            seq.append(Decimal(i * i))
+            _cap(len(seq))
+            i += 1
+        assumptions.append(f"the squares from {_dec_str(lo)} to {_dec_str(hi)}")
     elif kind == "squares":
         n = n or 10
         seq = [Decimal(i * i) for i in range(1, n + 1)]

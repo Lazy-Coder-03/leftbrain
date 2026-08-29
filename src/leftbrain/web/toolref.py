@@ -743,7 +743,15 @@ MATH = ToolDoc(
         "`math` is SymPy behind the leftbrain contract. Answers come back in exact form *and* "
         "decimal form *and* LaTeX together, so the caller never rounds, re-derives or re-types "
         "anything. Expressions are parsed in a locked-down namespace — no builtins, no attribute "
-        "access, no imports — and run under a timeout."
+        "access, no imports — and run under a timeout.\n\n"
+        "That namespace is an allowlist, not all of SymPy: `isprime` and `factorint` are in, "
+        "`primepi` and `nextprime` are not. Every function it will evaluate is listed under "
+        "**Functions** below, and a rejected name comes back with the near misses and the whole "
+        "accepted set rather than only what failed.\n\n"
+        "**Batching.** There is no list mode, but predicates return booleans that coerce to 1 "
+        "and 0 inside an expression, so `is_prime(11) + is_prime(12) + is_prime(13)` counts how "
+        "many hold in one call. For a bounded run of primes or squares, `numbers.sequence` takes "
+        "`start` and `end`."
     ),
     when=(
         "Before stating any number: percentages, fractions, powers, roots, interest, ratios.",
