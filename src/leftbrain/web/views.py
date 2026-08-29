@@ -67,10 +67,10 @@ def parse_grid_scope(form: Any) -> Scope | None:
 
 
 def routes(store: Any, cfg: WebConfig) -> list[Any]:
+    from .. import toolref as toolref_mod
     from ..serve import _client_ip  # a module-level import would be circular
     from . import demo as demo_mod
     from . import docs as docs_mod
-    from . import toolref as toolref_mod
 
     throttle = demo_mod.Throttle()
 

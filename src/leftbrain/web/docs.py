@@ -164,7 +164,7 @@ def page_source(slug: str) -> Path | None:
 @lru_cache(maxsize=32)
 def load_page(slug: str) -> tuple[str, str] | None:
     if slug == "tools":
-        from .toolref import index_page  # local import: toolref imports render_markdown from here
+        from ..toolref import index_page  # local import: toolref imports render_markdown from here
 
         return index_page()
     title = dict(PAGES).get(slug)

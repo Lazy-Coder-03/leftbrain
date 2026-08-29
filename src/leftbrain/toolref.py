@@ -30,18 +30,16 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
 
-from ..contract import CODES, schema_rejection
-from ..core import collections_, datetimex, geo_offline, holidays_, mathx, random_
-from ..core import color as color_mod
-from ..core import convert as convert_mod
-from ..core import encode as encode_mod
-from ..core import finance as finance_mod
-from ..core import numbers as numbers_mod
-from ..core import scale as scale_mod
-from ..core import text as text_mod
-from ..core import validate as validate_mod
-from .docs import render_markdown
-from .tools_list import TOOLS
+from .contract import CODES, schema_rejection
+from .core import collections_, datetimex, geo_offline, holidays_, mathx, random_
+from .core import color as color_mod
+from .core import convert as convert_mod
+from .core import encode as encode_mod
+from .core import finance as finance_mod
+from .core import numbers as numbers_mod
+from .core import scale as scale_mod
+from .core import text as text_mod
+from .core import validate as validate_mod
 
 #: Responses longer than this are elided in the page (the call still returns them all).
 MAX_JSON_LINES = 140
@@ -148,8 +146,8 @@ def specs() -> dict[str, ToolSpec]:
     it directly keeps the docs build synchronous. ``tests/test_toolref.py`` asserts the two
     agree, so an SDK change cannot quietly desynchronise the page from the wire.
     """
-    from ..external.mcp_server import server as external_server
-    from ..mcp_server import server as core_server
+    from .external.mcp_server import server as external_server
+    from .mcp_server import server as core_server
 
     out: dict[str, ToolSpec] = {}
     for server in (core_server, external_server):
@@ -607,6 +605,8 @@ def catalogue_json() -> dict[str, Any]:
     """Every tool, with its one-liner and its mode names - the index, for a machine."""
     described = {t.name: t for t in CATALOGUE}
     listed = []
+    from .web.tools_list import TOOLS
+
     for name, description, _modes in TOOLS:
         tool = described[name]
         listed.append(
@@ -644,7 +644,7 @@ def catalogue_json() -> dict[str, Any]:
 
 
 def _version() -> str:
-    from .. import __version__
+    from . import __version__
 
     return __version__
 
@@ -698,6 +698,8 @@ def index_markdown() -> str:
         "",
     ]
     described = {t.name: t for t in CATALOGUE}
+    from .web.tools_list import TOOLS
+
     for name, desc, _modes in TOOLS:
         parts += _index_entry(described[name], desc + ".")
     parts += [
@@ -714,6 +716,8 @@ def index_markdown() -> str:
 
 @lru_cache(maxsize=1)
 def index_page() -> tuple[str, str]:
+    from .web.docs import render_markdown
+
     return "Tools", render_markdown(index_markdown())
 
 
@@ -722,6 +726,8 @@ def tool_page(name: str) -> tuple[str, str] | None:
     tool = by_name(name)
     if tool is None:
         return None
+    from .web.docs import render_markdown
+
     return tool.name, render_markdown(tool_markdown(tool))
 
 
@@ -782,6 +788,7 @@ MATH = ToolDoc(
                 "decimal is returned and `warnings` says so."
             ),
             params=(
+                Param("percent", "How to read a `%` between two values: `modulus` for the remainder, `percent` for a percentage of what follows. Only asked for when the expression has one; `mod` is the spelling that never needs it."),
                 Param("expr", "The expression to evaluate.", required=True),
                 Param("angle", "Mandatory whenever the expression contains trigonometry."),
                 Param("vars", "Values substituted before evaluating, e.g. `{'a': 3}`."),
@@ -799,6 +806,7 @@ MATH = ToolDoc(
                 "refused as `too_large` before it is built; `eval` with `precision` gives the decimal."
             ),
             params=(
+                Param("percent", "How to read a `%` between two values: `modulus` for the remainder, `percent` for a percentage of what follows. Only asked for when the expression has one; `mod` is the spelling that never needs it."),
                 Param("expr", "The expression to evaluate.", required=True),
                 Param("angle", "Mandatory whenever the expression contains trigonometry."),
                 Param("vars", "Values substituted before evaluating."),

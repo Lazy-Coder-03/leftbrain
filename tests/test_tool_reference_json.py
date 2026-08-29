@@ -11,9 +11,11 @@ pytest.importorskip("starlette")
 
 from starlette.testclient import TestClient  # noqa: E402
 
-from leftbrain import __version__  # noqa: E402
+from leftbrain import (
+    __version__,  # noqa: E402
+    toolref,  # noqa: E402
+)
 from leftbrain.serve import build_app  # noqa: E402
-from leftbrain.web import toolref  # noqa: E402
 
 
 @pytest.fixture
