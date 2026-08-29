@@ -4,6 +4,7 @@ from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 from leftbrain.keys import KeyStore
+from leftbrain.oauth.redirects import is_loopback, redirect_uri_matches
 from leftbrain.oauth.store import OAuthStore
 
 
@@ -258,3 +259,50 @@ def test_the_key_path_is_unchanged(tmp_path):
     assert keys.verify_and_count(raw).status == 429
     assert keys.verify_and_count("lblz_nope").status == 401
     assert keys.verify_and_count("not-even-a-key").status == 401  # wrong prefix, not a token lookup
+
+
+# -- redirect URIs ----------------------------------------------------------
+
+
+def test_an_exact_match_is_accepted():
+    assert redirect_uri_matches("https://app.example/cb", "https://app.example/cb")
+
+
+def test_a_different_host_or_path_is_refused():
+    assert not redirect_uri_matches("https://app.example/cb", "https://evil.example/cb")
+    assert not redirect_uri_matches("https://app.example/cb", "https://app.example/other")
+
+
+def test_a_remote_host_may_not_vary_its_port():
+    assert not redirect_uri_matches("https://app.example/cb", "https://app.example:8443/cb")
+
+
+def test_loopback_ignores_the_port_because_claude_code_needs_it():
+    # Claude Code registers localhost/callback and returns on an ephemeral port
+    assert redirect_uri_matches("http://localhost/callback", "http://localhost:3118/callback")
+    assert redirect_uri_matches("http://127.0.0.1/callback", "http://127.0.0.1:51234/callback")
+    assert redirect_uri_matches("http://localhost:8080/callback", "http://localhost:9999/callback")
+
+
+def test_loopback_still_matches_host_scheme_and_path_exactly():
+    assert not redirect_uri_matches("http://localhost/callback", "http://127.0.0.1:3118/callback")
+    assert not redirect_uri_matches("http://localhost/callback", "http://localhost:3118/other")
+    assert not redirect_uri_matches("http://localhost/callback", "https://localhost:3118/callback")
+
+
+def test_a_loopback_lookalike_host_is_not_loopback():
+    assert not is_loopback("https://localhost.evil.example/cb")
+    assert not redirect_uri_matches("http://localhost/callback", "https://localhost.evil.example:80/callback")
+
+
+def test_the_redirect_uris_real_clients_use_are_classified_correctly():
+    assert not is_loopback("https://claude.ai/api/mcp/auth_callback")
+    assert not is_loopback("https://chatgpt.com/connector_platform_oauth_redirect")
+    assert is_loopback("http://localhost:3118/callback")
+    assert is_loopback("http://[::1]:7000/callback")
+
+
+def test_rubbish_is_refused_rather_than_raising():
+    assert not is_loopback("")
+    assert not is_loopback("not a url")
+    assert not redirect_uri_matches("http://localhost/callback", "")
