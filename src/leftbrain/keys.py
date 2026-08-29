@@ -89,6 +89,59 @@ _SCHEMA = [
         count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (ip, day)
     )""",
+    # -- OAuth 2.1 for MCP clients (#34). Whole new tables belong here rather than in
+    # `_migrate`, which adds columns to tables that already exist; these are
+    # CREATE TABLE IF NOT EXISTS and run on every open, on SQLite and Postgres alike.
+    """CREATE TABLE IF NOT EXISTS oauth_clients (
+        client_id     TEXT PRIMARY KEY,
+        secret_hash   TEXT,
+        name          TEXT,
+        redirect_uris TEXT NOT NULL,
+        metadata      TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        last_used     TEXT
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_consents (
+        owner      TEXT NOT NULL,
+        client_id  TEXT NOT NULL,
+        key_prefix TEXT NOT NULL,
+        granted_at TEXT NOT NULL,
+        PRIMARY KEY (owner, client_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_codes (
+        code_hash             TEXT PRIMARY KEY,
+        client_id             TEXT NOT NULL,
+        key_hash              TEXT NOT NULL,
+        owner                 TEXT NOT NULL,
+        scopes                TEXT NOT NULL,
+        code_challenge        TEXT NOT NULL,
+        redirect_uri          TEXT NOT NULL,
+        redirect_uri_provided INTEGER NOT NULL DEFAULT 1,
+        resource              TEXT,
+        expires_at            TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_tokens (
+        token_hash TEXT PRIMARY KEY,
+        kind       TEXT NOT NULL,
+        client_id  TEXT NOT NULL,
+        key_hash   TEXT NOT NULL,
+        scopes     TEXT NOT NULL,
+        resource   TEXT,
+        expires_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS oauth_devices (
+        device_hash TEXT PRIMARY KEY,
+        user_code   TEXT NOT NULL,
+        client_id   TEXT NOT NULL,
+        status      TEXT NOT NULL,
+        owner       TEXT,
+        key_hash    TEXT,
+        scopes      TEXT NOT NULL,
+        expires_at  TEXT NOT NULL,
+        last_polled TEXT
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_oauth_tokens_key ON oauth_tokens(key_hash)",
+    "CREATE INDEX IF NOT EXISTS idx_oauth_devices_code ON oauth_devices(user_code)",
 ]
 
 
