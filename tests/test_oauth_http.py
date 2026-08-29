@@ -101,6 +101,25 @@ def test_a_registered_client_survives_a_restart(tmp_path):
         }).status_code == 400  # reaches the handler rather than "invalid client"
 
 
+def test_the_agent_auth_document_is_served_and_reachable(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        page = c.get("/docs/agents/auth", headers={"Accept": "text/html"})
+        assert page.status_code == 200
+        for needle in ("device_authorization", "user_code", "/register",
+                       "oauth-protected-resource", "lblz_", "/keys/me/scope"):
+            assert needle in page.text, needle
+        # narrowing is told as an instruction, and the one-way rule is stated plainly
+        assert "only narrow" in page.text.lower() or "cannot widen" in page.text.lower()
+        # and the standard pointer to it resolves
+        prm = c.get("/.well-known/oauth-protected-resource/mcp").json()
+        assert prm["resource_documentation"].endswith("/docs/agents/auth")
+
+
+def test_the_agent_document_is_listed_in_the_docs_nav(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        assert "/docs/agents/auth" in c.get("/docs", headers={"Accept": "text/html"}).text
+
+
 def test_the_cimd_escape_hatch_is_off_and_announces_itself_when_on(tmp_path, monkeypatch, capsys):
     make_app(tmp_path)
     assert "CIMD_ALLOW_INSECURE" not in capsys.readouterr().out

@@ -43,6 +43,22 @@ def test_signup_closed_by_default_open_by_flag(tmp_path):
         assert c.post("/keys/signup", json={"email": "a@b.co"}).status_code == 201
 
 
+def test_the_docs_offer_both_ways_to_connect():
+    from pathlib import Path
+
+    clients = Path("src/leftbrain/web/docs/clients.md").read_text(encoding="utf-8")
+    assert "Connect ChatGPT" in clients and "Connect Claude Code" in clients
+    # the OAuth door must say a key is created and stays visible, not merely "you're connected"
+    assert "creates a key" in clients.lower() or "creates an api key" in clients.lower()
+    assert "dashboard" in clients.lower()
+    # every connect path tells the reader to tighten the key afterwards
+    assert "narrow" in clients.lower() and "edit scope" in clients.lower()
+    # and the device flow must not overpromise
+    assert "no shipping client drives it yet" in clients.lower()
+    # the workaround it replaces is gone
+    assert "cloudflare worker" not in clients.lower()
+
+
 def test_session_roundtrip_and_tamper():
     u = auth.User(login="octo", email="octo@example.com", avatar_url=None)
     tok = auth.sign_session("s3cret", u)

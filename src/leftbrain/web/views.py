@@ -479,7 +479,9 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         Route("/demo/{tool}", demo, methods=["POST"]),
         Route("/docs", docs_page),
         Route("/docs/tools/{name}", tool_page),
-        Route("/docs/{slug}", docs_page),
+        # `:path` so `agents/auth` resolves; `/docs/tools/{name}` is declared above and still
+        # wins, and `load_page` accepts only slugs named in `docs.PAGES`
+        Route("/docs/{slug:path}", docs_page),
     ]
 
 

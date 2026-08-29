@@ -321,13 +321,31 @@ With a store configured, `leftbrain-serve` also grows a web site:
 - `/` — landing page (browsers) or the JSON service description (`Accept: application/json`)
 - `/login` — GitHub OAuth; keys belong to the account's verified primary email
 - `/dashboard` — create up to 5 active keys with a lifetime of 30 / 90 / 365 days (or never, with a warning), choose which tools — and which modes of each — a key may call (on creation, or later with **Edit scope** on its row), see today's usage and when each key expires, show a key again, revoke, and delete a revoked or expired key for good. Keys issued before the server could show keys again are marked **legacy**: they still work if you saved them, but do not hold one of the 5 slots
-- `/docs` — quickstart with Windows PowerShell / macOS / Linux tabs, MCP client setup
+- `/docs` — quickstart with Windows PowerShell / macOS / Linux tabs, MCP client setup, and `/docs/agents/auth`, an authentication guide written for a model rather than a person
 - `POST /demo/{numbers|convert|datetime|text}` — key-less demo, 30 req/min per IP
+
+**There are two ways to connect.** Paste a key from `/dashboard` into your client's config, or —
+with `LEFTBRAIN_BASE_URL` set — connect with **OAuth 2.1** and let leftbrain create the key for
+you. ChatGPT has no field for a key at all and OAuth is its only route; Claude Code, Cursor and
+VS Code can use either.
+
+- **OAuth 2.1 for MCP clients**: discovery (RFC 8414 and RFC 9728), Client ID Metadata Documents,
+  dynamic client registration (RFC 7591), PKCE `S256`, refresh-token rotation, and the device
+  grant (RFC 8628) for an agent with no browser. Requires `LEFTBRAIN_SECRET` and
+  `LEFTBRAIN_BASE_URL`; without both, none of it is mounted.
+- **A connector's key is an ordinary key.** Approving on the consent screen creates one named
+  after the app and where it runs — `Claude Code · Windows`, `ChatGPT · web` — visible on the
+  dashboard, revealable, re-scopable, revocable, and counting against the same active-key cap.
+  Revoking it stops that connector on its next call.
+- **`POST /keys/me/scope`** lets a caller propose *narrowing* its own key. It returns `202` with a
+  URL for its owner to approve; nothing changes until they do, and widening is refused outright.
+- The scope editor shows how many times the key has called each tool, so the ones sitting at zero
+  are the ones to untick.
 
 and the key API behaves like this:
 
 - **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 1000, "rpm": 60}`. Throttled to 3 signups per IP per day and 5 active keys per email. Anonymous signup is **off** unless `LEFTBRAIN_OPEN_SIGNUP=1`; with the web site, people sign in at `/login` instead.
-- **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key, and `403 {"error": "expired", "message": "key expired on 2026-11-25; create a new one at /dashboard"}` once a key's lifetime is up. Expired keys stop counting towards the 3-active cap.
+- **Every request** is metered: `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key, and `403 {"error": "expired", "message": "key expired on 2026-11-25; create a new one at /dashboard"}` once a key's lifetime is up. Expired keys stop counting towards the active-key cap.
 - **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`, and `tools` (the key's scope, or `null` for every tool).
 - **Scoped keys**: a key can be limited to specific tools, and to specific modes of a tool — from the dashboard (the **Tools** disclosure on the create form, or **Edit scope** on a key's row) or with `leftbrain-keys … --tools "math,datetime,holidays:list+check"`. A scoped key's `tools/list` shows only the tools it may call, and a `tools/call` outside the scope returns the contract error `{"ok": false, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: list, check"}` — a result, not an HTTP error, so an agent reads it and stops. Keys without a scope may call everything; a changed scope applies on the key's next call.
 

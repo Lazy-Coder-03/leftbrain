@@ -14,6 +14,10 @@ PAGES: list[tuple[str, str]] = [
     ("quickstart", "Quickstart"),
     ("clients", "MCP clients"),
     ("custom-agents", "Custom agents"),
+    # A slug with a slash needs the `{slug:path}` route in views. `load_page` looks the slug
+    # up in this list before touching the filesystem, so the allowlist is what keeps a
+    # path-shaped slug from reaching anywhere it should not.
+    ("agents/auth", "Auth, for agents"),
     ("tools", "Tools"),
     ("changelog", "Changelog"),
 ]
