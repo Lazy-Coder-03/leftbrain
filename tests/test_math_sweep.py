@@ -50,9 +50,19 @@ def test_commas_inside_a_function_call_still_separate_arguments():
     assert math_tool("eval", expr="max(1,000, 45)")["result"]["decimal"] == "45"  # ambiguous, but inside a call the argument convention wins
 
 
-def test_a_comma_that_is_not_grouping_is_refused_not_evaluated_as_a_tuple():
-    r = math_tool("eval", expr="3,14 * 2")
-    assert r["ok"] is False and r["error"] == "invalid_input" and "comma" in r["message"] and r["hint"]
+@pytest.mark.parametrize("expr", ["3,14 * 2", "1,2345 + 1", "10,000,00 + 1", "123,45,678 + 1", "1,234,56 + 1"])
+def test_a_comma_that_is_not_grouping_is_refused_not_evaluated_as_a_tuple(expr):
+    """The same two shapes `numbers.parse` accepts, and nothing else: a run that groups the
+    digits neither in threes nor in twos-then-a-three is not a number."""
+    r = math_tool("eval", expr=expr)
+    assert r["ok"] is False and r["error"] == "invalid_input" and "comma" in r["message"] and r["hint"], (expr, r)
+
+
+@pytest.mark.parametrize("expr", ["1,23,45,678", "12,34,567", "1,234,567", "1,000.5"])
+def test_math_and_numbers_agree_on_which_groupings_are_numbers(expr):
+    from leftbrain.core.numbers import numbers
+
+    assert math_tool("eval", expr=expr)["result"]["decimal"] == numbers("parse", value=expr)["result"]["value"], expr
 
 
 # --- 3. a rational power blow-up ran to the deadline ------------------------

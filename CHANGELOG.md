@@ -36,10 +36,11 @@ All notable changes to leftbrain are recorded here. The format follows
   rationalised. A decimal literal is now the rational it prints as, in every mode, so the sum
   is `0`, `0.1 * 3` is exactly `3/10` and `2^0.5` is `sqrt(2)`.
 - **`math` read grouped digits as a tuple.** `17.5% of 8,45,000 + 12% of 1,20,000` came back as
-  five numbers with no warning. Indian and Western grouping (`8,45,000`, `845,000`,
-  `1,000,000`) is read as one number, with a line in `assumptions`; inside a call's brackets a
-  comma still separates arguments. Anything else that parses to a list — `3,14` — is refused
-  with the two spellings that would be read as one number, rather than evaluated as a tuple.
+  five numbers with no warning. Grouped digits are read as one number, with a line in
+  `assumptions`, in the same two shapes `numbers.parse` accepts: Western threes (`1,234,567`)
+  or Indian twos-then-a-three (`12,34,567`). A run that is neither — `3,14`, `1,2345`,
+  `123,45,678` — is refused with those two spellings named, rather than evaluated as a tuple or
+  stripped of its commas. Inside a call's brackets a comma still separates arguments.
 - **A rational power ran to the deadline.** `(1+1/1000000)^1000000` is about 2.718 and also a
   seven-million-digit integer over another; the size estimate measured the value and let it
   through, and the hosted server built the rational until the 15 s kill. The estimate now

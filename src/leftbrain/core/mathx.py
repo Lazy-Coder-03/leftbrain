@@ -315,10 +315,10 @@ _ROOT_BARE = re.compile(r"√\s*(\d+(?:\.\d+)?|[A-Za-z_]\w*)")
 #: `0^0` written any of the ways the parser accepts.
 _ZERO_POWER_ZERO = re.compile(r"(?<![\d.])0\s*(?:\^|\*\*)\s*0(?![\d.])")
 
-#: A digit run with grouping commas: `845,000`, `1,000,000`, or Indian `8,45,000` (two-digit
-#: groups after the first, three at the end). The last group must be exactly three digits, so
-#: `3,14` is not one.
-_GROUPED = re.compile(r"(?<![\w.])\d{1,3}(?:,\d{2,3})*,\d{3}(?!\d)")
+#: A digit run with grouping commas, in the same two shapes `numbers.parse` accepts: Western
+#: threes (`1,234,567`) or Indian twos-then-a-three (`12,34,567`). A run that is neither -
+#: `3,14`, `1,2345`, `123,45,678` - is not grouping and is left for the parser to refuse.
+_GROUPED = re.compile(r"(?<![\w.])(?:\d{1,3}(?:,\d{3})+|\d{1,2}(?:,\d{2})*,\d{3})(?!\d)")
 #: An identifier directly before `(` - the bracket opens a call's argument list.
 _CALL_BEFORE = re.compile(r"[A-Za-z_]\w*\s*$")
 #: A bare `=` or `==`; `<=`, `>=` and `!=` are comparisons and pass.
