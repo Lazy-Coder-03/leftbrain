@@ -345,9 +345,18 @@ def _from_scheme(scheme: str, parts: list[str]) -> tuple[RGB, float, list[str]]:
             raise ToolError(f"cmyk(...) takes 4 components, got {len(parts)}")
         nums = [_num(t, scheme) for t in parts]
         notes: list[str] = []
-        if all(v <= 1 and unit != "%" for v, unit in nums) and any("." in t for t in parts):
-            nums = [(v * 100, "%") for v, _u in nums]
-            notes.append("cmyk fractions 0-1 read as percentages")
+        if all(v <= 1 and unit != "%" for v, unit in nums) and any(v for v, _u in nums):
+            if any("." in t for t in parts):
+                nums = [(v * 100, "%") for v, _u in nums]
+                notes.append("cmyk fractions 0-1 read as percentages")
+            else:
+                # `cmyk(0, 1, 1, 0)` is red as fractions and all but white as percentages
+                raise Ambiguous(
+                    f"cmyk({', '.join(parts)}) has every component at 1 or below: as fractions it is one colour and as percentages another. "
+                    f"Write the fractions with a decimal point (cmyk(0, 1.0, 1.0, 0)) or the percentages with a sign (cmyk(0%, 100%, 100%, 0%)).",
+                    "scale",
+                    ["fractions 0-1", "percentages 0-100"],
+                )
         for (v, _u), t in zip(nums, parts, strict=True):
             if not 0 <= v <= 100:
                 raise ToolError(f"cmyk component '{t}' is outside 0-100%")
@@ -537,7 +546,10 @@ def _contrast(p: dict[str, Any]) -> dict[str, Any]:
     out = {
         "foreground": _hex(fg),
         "background": _hex(bg),
-        "ratio": _rd(ratio, 2),
+        # rounded down: WCAG decides on the unrounded ratio, and a displayed 3.0 beside
+        # "does not pass 3:1" contradicts itself
+        "ratio": math.floor(ratio * 100) / 100,
+        "ratio_exact": _rd(ratio, 6),
         "luminance": {"foreground": _rd(_luminance(fg), 4), "background": _rd(_luminance(bg), 4)},
         "wcag": {lvl.lower(): {k: ratio >= v for k, v in th.items()} for lvl, th in WCAG.items()},
         "level": level,

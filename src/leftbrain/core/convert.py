@@ -3,13 +3,24 @@
 from __future__ import annotations
 
 import re
-from decimal import ROUND_HALF_UP, Decimal, localcontext
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from fractions import Fraction
 from typing import Any
 
 import pint
 
-from ..contract import Ambiguous, TooLarge, ToolError, Unsupported, check_params, fail, ok, tool
+from ..contract import (
+    Ambiguous,
+    TooLarge,
+    ToolError,
+    Unsupported,
+    check_params,
+    fail,
+    flag,
+    ok,
+    tool,
+    whole,
+)
 from .numbers import _dec_str, parse_number, saturate_to_float
 
 MODES = ("units", "temperature", "currency", "fuel_economy", "cooking", "sizes", "auto")
@@ -18,13 +29,13 @@ MODES = ("units", "temperature", "currency", "fuel_economy", "cooking", "sizes",
 #: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
 #: the same map from the code and fails when the two drift.
 MODE_PARAMS: dict[str, frozenset[str]] = {
-    "units": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
-    "temperature": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
-    "currency": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
-    "fuel_economy": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
-    "cooking": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
-    "sizes": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
-    "auto": frozenset({"assume", "base", "category", "cup", "date", "decimals", "delta", "from_unit", "gender", "ingredient", "precision", "rate", "rates", "region", "to_unit", "value"}),
+    "units": frozenset({'assume', 'delta', 'from_unit', 'precision', 'to_unit', 'value'}),
+    "temperature": frozenset({'assume', 'delta', 'from_unit', 'precision', 'to_unit', 'value'}),
+    "currency": frozenset({'base', 'date', 'decimals', 'from_unit', 'rate', 'rates', 'to_unit', 'value'}),
+    "fuel_economy": frozenset({'decimals', 'from_unit', 'to_unit', 'value'}),
+    "cooking": frozenset({'cup', 'decimals', 'from_unit', 'ingredient', 'to_unit', 'value'}),
+    "sizes": frozenset({'category', 'decimals', 'from_unit', 'gender', 'region', 'to_unit', 'value'}),
+    "auto": frozenset({'assume', 'base', 'date', 'decimals', 'delta', 'from_unit', 'precision', 'rate', 'rates', 'to_unit', 'value'}),
 }
 
 _ureg: pint.UnitRegistry | None = None
@@ -136,6 +147,75 @@ _TEMP_UNITS = {
 }
 _CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 
+#: Spellings that name a unit pint has under another name.
+_ALIASES.update({
+    "us gallon": "gallon", "u.s. gallon": "gallon", "us gal": "gallon", "usgal": "gallon",
+    "imperial gallon": "imperial_gallon", "uk gallon": "imperial_gallon", "imp gallon": "imperial_gallon",
+    "us pint": "us_pint", "imperial pint": "imperial_pint", "uk pint": "imperial_pint",
+    "us quart": "us_quart", "imperial quart": "imperial_quart", "uk quart": "imperial_quart",
+    "ft2": "foot**2", "in2": "inch**2", "m2": "meter**2", "cm2": "centimeter**2", "mm2": "millimeter**2",
+    "km2": "kilometer**2", "mi2": "mile**2", "yd2": "yard**2",
+    "ft3": "foot**3", "in3": "inch**3", "m3": "meter**3", "cm3": "centimeter**3", "yd3": "yard**3",
+    "degrees c": "degC", "degrees celsius": "degC", "deg c": "degC", "°c": "degC",
+    "degrees f": "degF", "degrees fahrenheit": "degF", "deg f": "degF", "°f": "degF",
+    "degrees k": "kelvin", "degrees kelvin": "kelvin", "deg k": "kelvin", "°k": "kelvin",
+})
+
+#: Data units, where case is the difference between a bit and a byte. `Mb` is a megabit and
+#: `MB` a megabyte; pint reads both `Mb` and `Pb` as barns, and `Mbps` as a baud.
+_DATA_UNITS = {
+    "b": "bit", "B": "byte",
+    "kb": "kilobit", "Kb": "kilobit", "kB": "kilobyte", "KB": "kilobyte",
+    "Mb": "megabit", "MB": "megabyte", "Gb": "gigabit", "GB": "gigabyte",
+    "Tb": "terabit", "TB": "terabyte", "Pb": "petabit", "PB": "petabyte",
+    "Kib": "kibibit", "KiB": "kibibyte", "Mib": "mebibit", "MiB": "mebibyte",
+    "Gib": "gibibit", "GiB": "gibibyte", "Tib": "tebibit", "TiB": "tebibyte",
+}
+_DATA_RATES = {
+    "bps": "bit/second", "kbps": "kilobit/second", "Kbps": "kilobit/second", "Mbps": "megabit/second",
+    "Gbps": "gigabit/second", "Tbps": "terabit/second", "kBps": "kilobyte/second", "KBps": "kilobyte/second",
+    "MBps": "megabyte/second", "GBps": "gigabyte/second", "TBps": "terabyte/second",
+}
+
+
+def _superscripts(s: str) -> str:
+    return s.replace("²", "**2").replace("³", "**3").replace("^", "**")
+
+
+def _data_unit(s: str) -> str | None:
+    """`Mb/s` -> `megabit/second`, matched with the case the caller wrote."""
+    if s in _DATA_RATES:
+        return _DATA_RATES[s]
+    if s in _DATA_UNITS:
+        return _DATA_UNITS[s]
+    if "/" in s:
+        head, _, tail = s.partition("/")
+        if head.strip() in _DATA_UNITS:
+            return _DATA_UNITS[head.strip()] + "/" + tail.strip()
+    return None
+
+
+#: Single letters that name two different quantities depending on what the writer meant.
+_CASE_AMBIGUOUS = {"S": ["siemens", "second"], "H": ["henry", "hour"], "T": ["tesla", "metric_ton"]}
+
+
+def _pint_unit(s: str) -> Any:
+    try:
+        return ureg().Unit(s)
+    except Exception:
+        return None
+
+
+def _same_quantity(written: str, alias: str) -> bool:
+    """Whether `written` names the same kind of thing as `alias`, at another scale.
+
+    `mPa` and the alias for `mpa` are both pressures, so the capital is a prefix the caller
+    meant. `L` is a lakh to pint and a litre to everyone, and `degrees C` parses as
+    degree-coulomb, so neither is the same quantity as its alias and the alias stands.
+    """
+    a, b = _pint_unit(written), _pint_unit(alias)
+    return a is not None and b is not None and a.dimensionality == b.dimensionality
+
 
 #: Absolute zero in each scale a reading can be given in. A *difference* may of course be
 #: colder than this, which is why `delta=true` skips the check (#28 SS2c).
@@ -162,10 +242,15 @@ def _define_land(reg: pint.UnitRegistry) -> None:
 def _norm_unit(u: Any, assume: str | None, field: str, assumptions: list[str]) -> str:
     if u is None:
         raise ToolError(f"'{field}' is required")
-    s = str(u).strip()
+    if not isinstance(u, str):
+        raise ToolError(f"'{field}' must be a unit written as a string, not {u!r}")
+    s = re.sub(r"\s+", " ", u.strip())
     if not s:
         raise ToolError(f"'{field}' is empty")
-    key = s.lower().replace("²", "**2").replace("³", "**3").replace("^", "**")
+    data = _data_unit(s)
+    if data is not None:
+        return data
+    key = _superscripts(s.lower())
     key = re.sub(r"\s+", " ", key)
     if key in _AMBIGUOUS:
         if assume == "common" and key in _COMMON_DEFAULT:
@@ -176,11 +261,21 @@ def _norm_unit(u: Any, assume: str | None, field: str, assumptions: list[str]) -
             field=field,
             options=_AMBIGUOUS[key],
         )
-    if key in _ALIASES:
-        return _ALIASES[key]
     if s in ("F", "C", "K"):
         return {"F": "degF", "C": "degC", "K": "kelvin"}[s]
-    return s.replace("²", "**2").replace("³", "**3").replace("^", "**")
+    if s in _CASE_AMBIGUOUS:
+        raise Ambiguous(f"'{s}' names two different quantities; write out the one you mean", field=field, options=_CASE_AMBIGUOUS[s])
+    written = _superscripts(s)
+    if key in _ALIASES:
+        # A capital is a prefix: `mPa` is a millipascal where `MPa` is a megapascal, and the
+        # alias table is keyed in lower case. The written spelling wins when it names the
+        # same kind of quantity, so a capital cannot be lost without changing the meaning.
+        # one word only: `deg K` differs from `deg k` in case too, and pint reads it as
+        # degree-kelvin, which has the dimensionality of a temperature and none of the meaning
+        if written != key and re.fullmatch(r"[A-Za-z_]+", written) and _same_quantity(written, _ALIASES[key]):
+            return written
+        return _ALIASES[key]
+    return written
 
 
 #: Pint converts through `float`, so a magnitude past its range is an `OverflowError`
@@ -210,7 +305,7 @@ def _check_magnitude(value: Fraction) -> None:
     )
 
 
-def _parse_value(v: Any) -> Fraction:
+def _parse_value(v: Any, notes: list[str] | None = None) -> Fraction:
     if isinstance(v, bool):
         raise ToolError("value must be a number")
     if isinstance(v, int):
@@ -226,12 +321,37 @@ def _parse_value(v: Any) -> Fraction:
             )
         return Fraction(repr(v))
     if isinstance(v, str):
-        s = v.strip().replace(",", "").replace("_", "")
-        try:
-            return Fraction(s)
-        except ValueError:
-            raise ToolError(f"value {v!r} is not a number") from None
+        # the same reading `numbers` makes, so "1,5" is 1.5 here as it is there and
+        # "1,2345" is refused in both rather than read as 12345
+        d, how = parse_number(v)
+        if notes is not None:
+            notes.extend(x for x in how if x not in notes)
+        if not d.is_finite():
+            raise ToolError("value is infinite; a conversion needs a finite value")
+        return Fraction(d)
     raise ToolError(f"value {v!r} is not a number")
+
+
+#: Significant digits a float holds. A conversion factor written with more of them is the
+#: decimal expansion of a rounded float, not an exact ratio: pi/180 and psi->Pa both are.
+_EXACT_DIGITS = 15
+
+
+def _terminating(factor: float) -> Fraction | None:
+    """The factor as an exact fraction, or None when the float is a rounded stand-in.
+
+    A factor defined in the SI is a short terminating decimal - 1609.344, 0.3048 - and a
+    float carries it exactly. One that needs all 17 digits is an approximation, and
+    `limit_denominator` on it produces a fraction that is neither the float nor the truth.
+    """
+    d = Decimal(repr(factor)).normalize()
+    if len(d.as_tuple().digits) > _EXACT_DIGITS:
+        return None
+    return Fraction(d)
+
+
+def _precision(p: dict[str, Any]) -> int:
+    return whole(p.get("precision", 10), "precision", lo=1, hi=15)
 
 
 def _sig(x: float, precision: int) -> float:
@@ -257,20 +377,27 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     out_exact: str | None = None
     assume = p.get("assume")
-    val = _parse_value(p.get("value", 1))
+    val = _parse_value(p.get("value", 1), assumptions)
     src = _norm_unit(p.get("from_unit"), assume, "from_unit", assumptions)
     dst = _norm_unit(p.get("to_unit"), assume, "to_unit", assumptions)
-    precision = int(p.get("precision", 10))
+    precision = _precision(p)
     try:
-        u_src, u_dst = reg.Unit(src), reg.Unit(dst)
-    except Exception as e:
-        raise ToolError(f"unknown unit: {e}") from None
+        u_src = reg.Unit(src)
+    except Exception:
+        raise ToolError(f"unknown unit {src!r}: it is not in the unit registry", hint="Check the spelling, or write it as a product of known units (e.g. 'ft**2').") from None
+    try:
+        u_dst = reg.Unit(dst)
+    except Exception:
+        raise ToolError(f"unknown unit {dst!r}: it is not in the unit registry", hint="Check the spelling, or write it as a product of known units (e.g. 'ft**2').") from None
     is_temp = str(u_src) in _TEMP_UNITS or str(u_dst) in _TEMP_UNITS
+    delta = flag(p.get("delta", False), "delta")
+    if delta and not is_temp:
+        raise ToolError("'delta' marks a temperature difference; it does not apply to this conversion")
     if is_temp:
         if str(u_src) not in _TEMP_UNITS or str(u_dst) not in _TEMP_UNITS:
             raise ToolError(f"cannot convert {src} to {dst}: only temperature-to-temperature is meaningful")
         try:
-            if p.get("delta"):
+            if delta:
                 src_d = "delta_" + src if src in ("degC", "degF") else src
                 dst_d = "delta_" + dst if dst in ("degC", "degF") else dst
                 q = reg.Quantity(float(val), src_d).to(dst_d)
@@ -289,9 +416,14 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
             # range - so the exact result is kept and reported alongside it when the two
             # cannot be the same.
             q = (Fraction(1) * u_src).to(u_dst)
-            exact = val * Fraction(str(q.magnitude)) if not isinstance(q.magnitude, Fraction) else val * q.magnitude
-        except pint.errors.DimensionalityError as e:
-            raise ToolError(f"cannot convert {src} to {dst}: {e}") from None
+            rational_factor = _terminating(float(q.magnitude))
+            exact = val * (q.magnitude if isinstance(q.magnitude, Fraction) else Fraction(str(q.magnitude)))
+        except pint.errors.DimensionalityError:
+            raise ToolError(
+                f"cannot convert {src} to {dst}: {src} measures {u_src.dimensionality or 'a pure number'} and {dst} measures {u_dst.dimensionality or 'a pure number'}",
+                details={"from_unit": src, "to_unit": dst},
+                hint="These are different kinds of quantity; a conversion between them needs a physical constant (mass to force needs g, for instance).",
+            ) from None
         out_val, note = saturate_to_float(_dec(exact), "result")
         if note:
             warnings.append(note)
@@ -315,26 +447,21 @@ def _units(p: dict[str, Any]) -> dict[str, Any]:
         # The answer a JSON number could not carry. Exact, so nothing is lost by reading it.
         out["value_exact"] = out_exact
     if not is_temp:
-        try:
-            factor = (1 * u_src).to(u_dst).magnitude
-            out["factor"] = _sig(float(factor), 12)
-            fr = Fraction(str(factor)).limit_denominator(10**9)
-            if abs(float(fr) - factor) < 1e-12 * max(1, abs(factor)):
-                out["factor_exact"] = f"{fr.numerator}/{fr.denominator}" if fr.denominator != 1 else str(fr.numerator)
-        except Exception:  # pragma: no cover
-            pass
+        out["factor"] = _sig(float((1 * u_src).to(u_dst).magnitude), 12)
+        if rational_factor is not None:
+            out["factor_exact"] = _exact_str(rational_factor)
     return ok(out, assumptions=assumptions, warnings=warnings)
 
 
 def _currency(p: dict[str, Any]) -> dict[str, Any]:
-    val = _parse_value(p.get("value", 1))
+    assumptions: list[str] = []
+    val = _parse_value(p.get("value", 1), assumptions)
     src = str(p.get("from_unit") or "").strip().upper()
     dst = str(p.get("to_unit") or "").strip().upper()
     if not (_CURRENCY_RE.match(src) and _CURRENCY_RE.match(dst)):
         raise ToolError("currency codes must be 3-letter ISO codes like USD, INR, EUR")
     rates = p.get("rates")
     rate = p.get("rate")
-    assumptions: list[str] = []
     if rate is not None:
         r = _parse_value(rate)
         if r <= 0:
@@ -346,6 +473,13 @@ def _currency(p: dict[str, Any]) -> dict[str, Any]:
         assumptions.append(f"used caller-supplied rate 1 {src} = {float(r)} {dst}")
     elif isinstance(rates, dict):
         up = {str(k).upper(): _parse_value(v) for k, v in rates.items()}
+        for code, value in up.items():
+            if value <= 0:
+                raise ToolError(
+                    f"the rate for {code} is {float(value):g}; a rate is how much of the base one unit buys, which is positive",
+                    details={"currency": code, "rate": float(value)},
+                    hint="Check the direction of the conversion rather than negating the rate.",
+                )
         base = str(p.get("base") or "").upper()
         if src in up and dst in up:
             r = up[dst] / up[src]
@@ -363,10 +497,10 @@ def _currency(p: dict[str, Any]) -> dict[str, Any]:
             "(or pass rates={'USD':1,'INR':83.5,...} / rate=83.5)",
             needs={"field": "rates", "options": ["pass 'rate' (1 from = rate to)", "pass 'rates' table", "call fx_rate first"]},
         )
-    decimals = int(p.get("decimals", 2))
+    decimals = whole(p.get("decimals", 2), "decimals", lo=0, hi=10)
     amount = val * r
-    q = Fraction(1, 10**decimals)
-    rounded = round(amount / q) * q
+    # half-up, as the assumption says: `round()` on a Fraction is half-even, so 1.005 went to 1.00
+    rounded = _dec(amount).quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
     return ok(
         {
             "value": float(rounded),
@@ -389,14 +523,18 @@ _PREC = 40
 
 
 def _decimals(p: dict[str, Any], default: int) -> int:
-    decimals = int(p.get("decimals", default))
-    if not 0 <= decimals <= 10:
-        raise ToolError("decimals must be between 0 and 10")
-    return decimals
+    return whole(p.get("decimals", default), "decimals", lo=0, hi=10)
 
 
 def _quant(d: Decimal, decimals: int) -> Decimal:
-    return d.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+    try:
+        return d.quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_UP)
+    except InvalidOperation:
+        raise ToolError(
+            f"the result has more digits than {decimals} decimals can express",
+            details={"decimals": decimals},
+            hint="Ask for more decimals, or convert a value of ordinary size.",
+        ) from None
 
 
 def _jsonnum(d: Decimal) -> int | float:
@@ -836,6 +974,40 @@ def _sizes(p: dict[str, Any]) -> dict[str, Any]:
     raise ToolError("category must be shoe or clothing")
 
 
+def _temperature(p: dict[str, Any]) -> dict[str, Any]:
+    """`units` restricted to temperatures, so `temperature` cannot quietly convert a length."""
+    notes: list[str] = []
+    for field in ("from_unit", "to_unit"):
+        unit = _norm_unit(p.get(field), p.get("assume"), field, notes)
+        if unit not in _TEMP_UNITS:
+            raise ToolError(
+                f"{field} {unit!r} is not a temperature; mode='temperature' converts temperatures",
+                details={field: unit},
+                hint="Use mode='units' for anything else.",
+            )
+    return _units(p)
+
+
+def _auto(p: dict[str, Any]) -> dict[str, Any]:
+    """Units unless the codes are only currencies. `PSI` and `BAR` are units in any case."""
+    src, dst = str(p.get("from_unit") or ""), str(p.get("to_unit") or "")
+    looks_like_currency = bool(_CURRENCY_RE.match(src.strip().upper()) and _CURRENCY_RE.match(dst.strip().upper()))
+    if looks_like_currency:
+        notes: list[str] = []
+        try:
+            known = _pint_unit(_norm_unit(src, p.get("assume"), "from_unit", notes)) is not None and _pint_unit(_norm_unit(dst, p.get("assume"), "to_unit", notes)) is not None
+        except ToolError:
+            known = False
+        if not known:
+            return _currency(p)
+    if p.get("rates") is not None or p.get("rate") is not None or p.get("base") is not None:
+        return _currency(p)
+    return _units(p)
+
+
+_MODE_FUNCS = {"units": _units, "temperature": _temperature, "currency": _currency, "fuel_economy": _fuel_economy, "cooking": _cooking, "sizes": _sizes, "auto": _auto}
+
+
 @tool
 def convert(mode: str = "auto", **params: Any) -> dict[str, Any]:
     """Convert units, temperatures, currencies, fuel economy, cooking measures or sizes. Refuses ambiguous units."""
@@ -843,17 +1015,7 @@ def convert(mode: str = "auto", **params: Any) -> dict[str, Any]:
         raise ToolError(f"mode must be one of {', '.join(MODES)}")
     p = {k: v for k, v in params.items() if v is not None}
     check_params("convert", mode, p, MODE_PARAMS)
-    if mode == "fuel_economy":
-        return _fuel_economy(p)
-    if mode == "cooking":
-        return _cooking(p)
-    if mode == "sizes":
-        return _sizes(p)
-    src = str(p.get("from_unit") or "")
-    dst = str(p.get("to_unit") or "")
-    if mode == "currency" or (mode == "auto" and _CURRENCY_RE.match(src.strip().upper()) and _CURRENCY_RE.match(dst.strip().upper()) and src.strip().upper() not in ("DEG", "RAD") and len(src.strip()) == 3 and src.strip().isupper()):
-        return _currency(p)
-    return _units(p)
+    return _MODE_FUNCS[mode](p)
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
 #: executed when /docs/tools/convert is built and sorted by the result into

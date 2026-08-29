@@ -215,7 +215,9 @@ def test_contrast_black_on_white_is_21():
 def test_contrast_suggests_the_smallest_lightness_change_that_passes():
     r = call("contrast", value="#777777", other="#FFFFFF")
     res = r["result"]
-    assert res["ratio"] == 4.48 and res["level"] == "AA" and res["target"] == 4.5
+    # 4.4779…, reported rounded down: a displayed ratio must never reach a threshold the
+    # colours do not meet, and `ratio_exact` carries the unrounded figure
+    assert res["ratio"] == 4.47 and res["ratio_exact"] == 4.478089 and res["level"] == "AA" and res["target"] == 4.5
     assert res["wcag"]["aa"] == {"normal_text": False, "large_text": True}
     assert res["passes"] is False
     s = res["suggestion"]
