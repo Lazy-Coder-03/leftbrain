@@ -262,54 +262,6 @@ discovered; a scope editor nobody finds is the same as no scope editor. Widening
 equally possible and equally the owner's business: it is their key, on their dashboard, behind
 their session and CSRF token.
 
-### The editor shows what the connector actually called
-
-Advice to narrow a key is useless without the evidence to narrow it *by*. The scope editor puts
-a lifetime call count beside every tool, for that key:
-
-```
-Which tools may Claude Code · Windows use?
-  [x] math          412 calls
-  [x] convert        38 calls
-  [x] datetime        6 calls
-  [x] holidays        0 calls
-  [x] finance         0 calls
-```
-
-The zeroes are the answer, and the decision makes itself. leftbrain counts calls per key per
-*day* today (`usage`), not per tool, so this needs the `tool_usage` table above and one more
-contextvar: `AuthMiddleware` already sets `current_scope` from the resolved key, and now sets
-`current_key_hash` beside it. `scopes.enforce()` — which wraps every tool and already knows the
-tool's name — records the call after the scope check passes, so a refused call is not counted as
-usage.
-
-`enforce` runs in the server process, above the dispatch into the compute-isolation worker, so
-the write happens where the database connection already lives. It is one UPSERT per tool call,
-next to the one `verify_and_count` already performs per request. If that ever shows up in a
-profile the fix is to buffer and flush per request, not to drop the count — but it is not
-speculatively buffered now.
-
-### An agent may narrow its own key, and only narrow it
-
-`POST /keys/me/scope`, authenticated by the same credential the caller already uses — a `lblz_`
-key or an OAuth token, resolved identically. The body names the tools to keep. The change takes
-effect on the next call, because the server is stateless.
-
-**The proposed scope must be a subset of the current one.** Dropping a tool, or dropping modes
-within a tool, is allowed. Adding either is refused with `forbidden` and a message naming what
-was asked for and what is currently held. A key with no scope at all (every tool) can narrow to
-anything, since everything is a subset of everything.
-
-The asymmetry is the entire point. An agent voluntarily dropping privileges it does not need is
-the behaviour least-privilege guidance asks for and rarely gets; an agent that can *widen* its
-own grant makes the scope a suggestion rather than a ceiling, and hands anything that hijacks
-that agent a free escalation. So: an agent may put tools down, and only its owner — signed in,
-with a CSRF token, on the dashboard — may hand them back. That restoration stays a two-click
-edit rather than a revoke-and-reconnect, so the key keeps its name and its usage history.
-
-This is documented in the agent auth document as a thing an agent *should* do once it knows what
-it needs, not merely a thing it *can* do.
-
 It is named the way WhatsApp names a linked device — **what the app is, and where it runs**:
 
 ```
@@ -338,6 +290,122 @@ same limitation WhatsApp has, and the same answer applies: the row already shows
 is how a person tells them apart. A disambiguating suffix is deliberately **not** added up front;
 it would put noise on every row to solve a problem most owners never have. If it proves necessary,
 it is added only on collision.
+
+### The editor shows what the connector actually called
+
+Advice to narrow a key is useless without the evidence to narrow it *by*. The scope editor puts
+a lifetime call count beside every tool, for that key:
+
+```
+Which tools may Claude Code · Windows use?
+  [x] math          412 calls
+  [x] convert        38 calls
+  [x] datetime        6 calls
+  [x] holidays        0 calls
+  [x] finance         0 calls
+```
+
+The zeroes are the answer, and the decision makes itself. leftbrain counts calls per key per
+*day* today (`usage`), not per tool, so this needs the `tool_usage` table above and one more
+contextvar: `AuthMiddleware` already sets `current_scope` from the resolved key, and now sets a
+recorder beside it. `scopes.enforce()` — which wraps every tool and already knows the tool's
+name — records the call after the scope check passes, so a call refused by scope is not counted
+as usage, because it never ran.
+
+`enforce` runs in the server process, above the dispatch into the compute-isolation worker, so
+the write happens where the database connection already lives. It is one UPSERT per tool call,
+next to the one `verify_and_count` already performs per request, and it never raises: a lost
+count is not worth a caller's answer. If it ever shows up in a profile the fix is to buffer and
+flush per request, not to drop the count — but it is not speculatively buffered now.
+
+### An agent may *propose* narrowing its own key. A human approves it.
+
+`POST /keys/me/scope`, authenticated by the credential the caller already holds — a `lblz_` key
+or an OAuth token, resolved identically. The body names the tools to keep. **Nothing changes
+yet.** The request is recorded as pending, and the response hands the agent something to show
+its user:
+
+```json
+{"ok": true, "result": {
+  "status": "pending_approval",
+  "approve_url": "https://leftbrain.idlesync.in/keys/scope-request/7f3a…",
+  "tell_your_user": "I have only used math and convert. I would like to give up my access to the other tools. Approve at https://leftbrain.idlesync.in/keys/scope-request/7f3a…",
+  "expires_in": 900,
+  "check": "GET /keys/me"
+}}
+```
+
+The owner opens that URL, signed in, and sees the change as a before-and-after with the call
+counts beside it — `holidays 0 calls` next to a tool being given up is the whole argument.
+Approve applies it; decline discards it. The request is single use and expires in fifteen
+minutes. The agent learns the outcome from `GET /keys/me`, which already returns the key's
+tools, so no polling protocol is invented for this.
+
+**Two gates, not one.**
+
+1. **Narrow only.** The proposal must be a subset of what the key currently holds. Dropping a
+   tool, or dropping modes within a tool, is allowed; adding either is refused immediately with
+   `forbidden`, naming what is held and what was asked for. A key with no scope at all may
+   propose anything, since everything is a subset of every tool. The subset check runs **again
+   at approval**, because the owner may have narrowed the key further in the meantime, which
+   would turn a stale proposal into a widening.
+2. **Consent.** Even a valid narrowing waits for a human. An agent cannot change what a
+   credential may do, in either direction, on its own authority.
+
+The second gate is the one that is easy to argue away and should not be. Dropping privileges
+cannot escalate, so it looks safe — but a credential whose permissions change without its owner
+touching anything is a surprise, and a prompt-injected agent that cannot escalate can still
+strip a key to nothing and silently break every workflow that key serves. "Why did my connector
+stop working?" answered by "the agent decided to" is not an answer anyone accepts.
+
+What is left is the good half. The agent does the part it is genuinely better at — it knows
+which tools it called and which it never touched — and hands its owner a one-click decision,
+instead of the owner reverse-engineering the right scope from a usage table. Proposing is the
+agent's job; deciding stays the owner's.
+
+Restoring a tool is unchanged: two clicks on the key's row at `/dashboard`, so the key keeps its
+name and its history rather than needing a revoke-and-reconnect.
+
+The agent auth document describes proposing as something an agent *should* do once it knows what
+it needs — and states plainly that the answer is a pending request, not a change, so an agent
+neither assumes it worked nor retries in a loop.
+
+### A key that allows nothing still answers, and says something true
+
+Three ways a scope can end up granting nothing, and each must return promptly rather than hang,
+error obscurely, or — worst — invert into granting everything.
+
+**Nothing ticked is not everything.** `parse_scope([])` raises `a scope needs at least one tool`,
+and `_from_map` raises the same when a map reduces to no tools, so an empty selection cannot
+become an unrestricted key today. That is worth stating because the obvious implementation of a
+checkbox grid does invert it: `parse_scope(values) if values else None` reads an empty tick-list
+as `None`, and `None` means *every tool*. The consent screen and the device page must pass the
+empty list to `parse_scope` and render the `ValueError` as a form error — never substitute
+`None`. There is a test for exactly this on both pages, because it is a one-word mistake that
+fails open.
+
+**An empty proposal to `/keys/me/scope`** is a `400` naming the problem, not a grant and not a
+no-op. An agent that means "I need nothing" should have its key revoked by its owner, which is a
+different act with a different button.
+
+**A scope naming only tools this build does not have** is the case that actually reaches
+production: a key scoped to `files` on a server started without the files extra. The store loads
+it with `strict=False` on purpose, so the scope survives as `Scope(tools={"files": None})` and
+allows nothing. Today that behaves correctly but explains itself badly:
+
+- `tools/list` returns `{"tools": []}` — correct, prompt, and no hang. A client sees a server
+  with no tools, which is the truth.
+- A tool call returns the `forbidden` contract error — also correct — but worded
+  `this key may not call math; allowed: files`, naming a tool nobody on this server can call.
+
+So `denial` gains one case: when **none** of the scope's tools exist in this build's catalogue,
+the message becomes `this key is scoped to tools this server does not provide (files); ask its
+owner to re-scope it at /dashboard` rather than offering an impossible alternative. When some do,
+the existing wording is right and is kept.
+
+The dashboard shows the same thing rather than a blank grid: a key whose scope survives but
+matches nothing carries a warning on its row saying it can call nothing until it is re-scoped.
+A key that silently does nothing is a support ticket; a key that says why is a fix.
 
 ## Flows
 
@@ -527,11 +595,19 @@ handlers are exercised rather than mocked.
 - Per-tool counts: a successful call increments that key's row for that tool and nothing else; a
   call refused by scope increments nothing; two keys calling the same tool count separately; the
   scope editor renders the counts beside the tools, zeroes included.
-- An agent narrowing its own key: a subset is accepted and the dropped tool returns `forbidden`
-  on the very next call; a superset is refused with `forbidden` and both scopes named; an
-  unscoped key may narrow to anything; the owner can widen it again from the dashboard
-  afterwards; the endpoint accepts an OAuth token and a `lblz_` key identically, and rejects an
-  unauthenticated call.
+- An agent proposing a narrowing: the proposal returns `202` and changes **nothing**; approving
+  it applies the change and the dropped tool is gone from the next `tools/list`; declining
+  discards it and the request is then spent; only the owner can see or approve it, and another
+  signed-in user gets `404` rather than a `403` that would confirm it exists; a widening is
+  refused `403` at proposal time and never becomes a request; a proposal that has gone stale —
+  the owner narrowed further meanwhile — is refused `409` at approval; an OAuth token and a
+  `lblz_` key propose identically; an unauthenticated call is `401`.
+- A scope that grants nothing: `parse_scope([])` and `parse_scope({"tools": {}})` both raise
+  rather than returning `None`, on both the consent screen and the device page, and no key is
+  created; a key whose scope matches no tool in this build lists `{"tools": []}` promptly, is
+  refused with a message naming the missing tools and `/dashboard` rather than offering
+  `allowed: files`, and carries a warning on its dashboard row; the ordinary refusal wording is
+  unchanged when some of the scope's tools do exist.
 
 `pytest -q` and `ruff check src tests` green. Skips are checked with `-rs` before the run is
 called green — the only legitimate skip is the opt-in Postgres one.
@@ -551,12 +627,14 @@ called green — the only legitimate skip is the opt-in Postgres one.
 6. Device grant.
 7. CIMD + SSRF guard, and pruning of unused DCR registrations.
 8. Per-tool call counts, and the scope editor that shows them.
-9. `POST /keys/me/scope`, narrowing only.
-10. Both-doors documentation, agent document, ChatGPT / Claude Code / terminal client sections,
+9. `POST /keys/me/scope` — proposal only — and the owner's approval page.
+10. The refusal and the dashboard warning for a scope that grants nothing.
+11. Both-doors documentation, agent document, ChatGPT / Claude Code / terminal client sections,
     README, CHANGELOG.
 
-Steps 8 and 9 are the smaller half of "connect, observe, narrow": without the counts the advice
-has no evidence behind it, and without the endpoint only a human can act on it.
+Steps 8 to 10 are the smaller half of "connect, observe, narrow": without the counts the advice
+has no evidence behind it, without the endpoint only a human can start the conversation, and
+without step 10 a key that ends up granting nothing fails silently instead of saying why.
 
 MCP Inspector against a local `leftbrain-serve` is the development loop, not ChatGPT. A Claude
 Code session pointed at the same local server is the second loop and the cheaper one, since it
