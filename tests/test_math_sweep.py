@@ -252,3 +252,23 @@ def test_concatenated_variable_names_are_pointed_out():
     assert r["ok"] is False and "xy" in r["message"] and "x*y" in r["hint"], r
     assert math_tool("ode", equation="y' = x*y", func="y(x)")["ok"]
     assert math_tool("ode", equation="y' = k*y", func="y(x)")["ok"]  # a parameter is fine
+
+
+# --- constants ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("expr", "starts"),
+    [("pi", "3.14159265358979323846264338327950288419716939937510"), ("e", "2.71828182845904523536028747135266249775724709369995"),
+     ("GoldenRatio", "1.61803398874989484820458683436563811772030917980576"), ("EulerGamma", "0.57721566490153286060651209008240243104215933593992"),
+     ("Catalan", "0.91596559417721901505460351493238411077414937428167"), ("sqrt(2)", "1.41421356237309504880168872420969807856967187537694")],
+)
+def test_the_constants_carry_as_many_digits_as_asked_for(expr, starts):
+    assert math_tool("eval", expr=expr, precision=60)["result"]["decimal"].startswith(starts), expr
+
+
+def test_a_constant_that_shadows_a_variable_name_says_which_it_read():
+    """`phi` is the golden ratio here and a phase angle everywhere else; `e` and `i` already said so."""
+    r = math_tool("eval", expr="phi", precision=8)
+    assert r["result"]["decimal"] == "1.618034" and any("golden ratio" in a for a in r["assumptions"]), r
+    assert any("Euler" in a for a in math_tool("eval", expr="e")["assumptions"])

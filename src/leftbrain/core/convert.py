@@ -262,7 +262,12 @@ def _norm_unit(u: Any, assume: str | None, field: str, assumptions: list[str]) -
             options=_AMBIGUOUS[key],
         )
     if s in ("F", "C", "K"):
-        return {"F": "degF", "C": "degC", "K": "kelvin"}[s]
+        full = {"F": "degF", "C": "degC", "K": "kelvin"}[s]
+        # `C` is also the coulomb and `F` the farad; the temperature is the commoner reading,
+        # and the name of the other one is the way to ask for it
+        other = {"C": "coulomb", "F": "farad"}.get(s)
+        assumptions.append(f"'{s}' read as {full}" + (f"; write '{other}' for the unit of that name" if other else ""))
+        return full
     if s in _CASE_AMBIGUOUS:
         raise Ambiguous(f"'{s}' names two different quantities; write out the one you mean", field=field, options=_CASE_AMBIGUOUS[s])
     written = _superscripts(s)

@@ -110,3 +110,22 @@ def test_bad_inputs_are_refused_in_words(call, want):
     assert want in r["message"], r["message"]
     for leak in ("InvalidOperation", "TypeError", "ZeroDivisionError", "ValueError", "invalid literal", "Cannot convert from", "scaling factor"):
         assert leak not in r["message"], r["message"]
+
+
+def test_a_single_letter_unit_says_which_of_the_two_it_read():
+    """`C` is Celsius and the coulomb; `F` is Fahrenheit and the farad."""
+    r = convert("temperature", value=100, from_unit="C", to_unit="F")
+    assert r["result"]["value"] == 212.0
+    assert any("coulomb" in a for a in r["assumptions"]) and any("farad" in a for a in r["assumptions"]), r["assumptions"]
+    assert convert("units", value=1, from_unit="coulomb", to_unit="millicoulomb")["result"]["value"] == 1000.0
+
+
+@pytest.mark.parametrize(
+    ("constant", "to", "want"),
+    [("gravitational_constant", "m**3/(kg*s**2)", 6.6743e-11), ("speed_of_light", "m/s", 299792458.0),
+     ("planck_constant", "J*s", 6.62607015e-34), ("boltzmann_constant", "J/K", 1.380649e-23),
+     ("molar_gas_constant", "J/(mol*K)", 8.314462618), ("standard_gravity", "m/s**2", 9.80665)],
+)
+def test_the_physical_constants_are_reachable_as_units(constant, to, want):
+    r = convert("units", value=1, from_unit=constant, to_unit=to)
+    assert r["ok"] and r["result"]["value"] == pytest.approx(want, rel=1e-9), (constant, r)

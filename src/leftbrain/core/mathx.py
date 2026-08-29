@@ -147,6 +147,7 @@ _SAFE_NAMES: dict[str, Any] = {
     "GoldenRatio": sp.GoldenRatio,
     "phi": sp.GoldenRatio,
     "EulerGamma": sp.EulerGamma,
+    "Catalan": sp.Catalan,
     "deg": _DEG,
     # trig / hyperbolic
     **{n: getattr(sp, n) for n in _TRIG},
@@ -382,6 +383,9 @@ def _preprocess(src: str) -> tuple[str, list[str]]:
         assumptions.append("e read as Euler's number")
     if re.search(r"(?<![A-Za-z_])i(?![A-Za-z_0-9])", s):
         assumptions.append("i read as the imaginary unit")
+    if re.search(r"(?<![A-Za-z_])phi(?![A-Za-z_0-9])", s):
+        # bound to the golden ratio like `e` and `i` are bound, and said so as they are
+        assumptions.append("phi read as the golden ratio (1.618…), not as a variable")
     return s, assumptions
 
 
