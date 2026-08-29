@@ -787,7 +787,21 @@ def _phrase_to_rrule(phrase: str) -> str | None:
             return f"FREQ=WEEKLY;INTERVAL={interval};BYDAY={byday}"
     m = re.fullmatch(r"every (first|second|third|fourth|last|1st|2nd|3rd|4th) ([a-z]+)(?: of (?:the |every )?month)?", s)
     if m and m.group(2)[:3] in _WD_ABBR:
-        return f"FREQ=MONTHLY;BYDAY={m.group(2)[:2].upper()};BYSETPOS={_ORD[m.group(1)]}"
+        ordinal, day = m.group(1), m.group(2)
+        weeks = _AMBIGUOUS_ORDINALS.get(ordinal)
+        if weeks is not None and not s.endswith("month"):
+            # "every 2nd tuesday" and "every other tuesday" mean the same thing to most
+            # speakers and produced completely different schedules - monthly against
+            # fortnightly - with nothing in `assumptions` to say a choice had been made. An
+            # agent scheduling a fortnightly standup got a monthly meeting series, and the
+            # only tell was BYSETPOS against INTERVAL in the rrule (#81). This is at least as
+            # ambiguous as `03/04/2025`, which this tool already refuses.
+            raise Ambiguous(
+                f"'{s}' could be the {ordinal} {day} of each month, or every {weeks} weeks on {day}",
+                field="rule",
+                options=[f"every {ordinal} {day} of the month", f"every {weeks} weeks on {day}"],
+            )
+        return f"FREQ=MONTHLY;BYDAY={day[:2].upper()};BYSETPOS={_ORD[ordinal]}"
     m = re.fullmatch(r"(?:on the |every )?(\d{1,2})(?:st|nd|rd|th)? (?:of )?(?:every |each )?month", s)
     if m:
         return f"FREQ=MONTHLY;BYMONTHDAY={int(m.group(1))}"
@@ -883,6 +897,16 @@ def _dst_note(dt: datetime) -> list[str]:
     ]
 
 
+def _in_gap(dt: datetime) -> bool:
+    """Whether this wall clock never happened, because the clocks go forward over it."""
+    if dt.tzinfo is None:
+        return False
+    naive = dt.replace(tzinfo=None)
+    earlier = naive.replace(fold=0).replace(tzinfo=dt.tzinfo).utcoffset()
+    later = naive.replace(fold=1).replace(tzinfo=dt.tzinfo).utcoffset()
+    return earlier is not None and later is not None and earlier < later
+
+
 def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
     value = p.get("value") or p.get("datetime") or p.get("date")
     src = p.get("from_tz")
@@ -904,6 +928,16 @@ def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("value has no time component; a bare date cannot be converted between zones")
     explicit = isinstance(value, str) and re.search(r"([+-]\d{2}:?\d{2}|Z)\s*$", value.strip()) is not None
     warnings = [] if explicit else list(_dst_note(dt))  # an offset in the value already said which occurrence
+    # The warning says which reading was used; `source` used to print the other one. For
+    # `2026-03-08 02:30` in New York it reported `02:30:00-05:00` with `is_dst: false` - a
+    # wall clock that never occurred, since the clocks jump 02:00 straight to 03:00 - while
+    # the warning beside it said `03:30:00-04:00`. The instant was right throughout; only the
+    # representation disagreed, and an agent reading fields rather than prose took the one
+    # that was wrong (#85).
+    requested_local = None
+    if not explicit and _in_gap(dt):
+        requested_local = dt.replace(tzinfo=None).isoformat(sep=" ")
+        dt = dt.astimezone(UTC).astimezone(dt.tzinfo)
     results = []
     for t, label in _tz_targets(dst, "to_tz"):
         tz, name, a = resolve_tz(t)
@@ -914,8 +948,11 @@ def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
         entry["tz"] = name
         entry["day_shift"] = (conv.date() - dt.date()).days
         results.append(entry)
-    src_info = _info(dt)
-    out = {"source": src_info, "converted": results[0] if len(results) == 1 else results}
+    out = {"source": _info(dt), "converted": results[0] if len(results) == 1 else results}
+    if requested_local is not None:
+        # Kept so the round trip is still visible: this is the wall clock the caller wrote,
+        # which is the one that does not exist.
+        out["requested_local"] = requested_local
     return ok(out, assumptions=assumptions, warnings=warnings)
 
 
@@ -1392,19 +1429,68 @@ def _minutes(s: datetime, e: datetime) -> int:
     return int((e - s).total_seconds() // 60)
 
 
+#: Shorthands for a set of weekdays. `free_slots` exists to answer business-hours questions,
+#: and a working week is the thing its `days` field is most often asked to express (#82).
+_DAY_GROUPS = {
+    "weekday": (0, 1, 2, 3, 4), "weekdays": (0, 1, 2, 3, 4), "business": (0, 1, 2, 3, 4),
+    "weekend": (5, 6), "weekends": (5, 6),
+    "all": tuple(range(7)), "daily": tuple(range(7)), "everyday": tuple(range(7)),
+}
+
+
+def _one_weekday(token: str, name: str) -> int:
+    if token not in _WD_INDEX:
+        raise ToolError(
+            f"{name}: unknown weekday {token!r}; use a name ('mon', 'monday'), a range "
+            f"('mon-fri'), or a group ('weekdays', 'weekends')"
+        )
+    return _WD_INDEX[token]
+
+
+def _expand_days(spec: Any, name: str) -> set[int]:
+    """Weekday indices from names, numbers, ranges (`mon-fri`) and groups (`weekdays`).
+
+    Only individual names used to be accepted, so the natural way to write a working week was
+    refused - and the signature documented no format at all, making `"mon-fri"` the obvious
+    first guess (#82). A range wraps, so `fri-mon` is Friday through Monday.
+    """
+    if isinstance(spec, (str, int)) and not isinstance(spec, bool):
+        spec = [spec]
+    if not isinstance(spec, list) or not spec:
+        raise ToolError(f"{name} must be weekday names such as ['mon', 'tue'], a range like 'mon-fri', or 'weekdays'")
+    out: set[int] = set()
+    for item in spec:
+        if isinstance(item, bool):
+            raise ToolError(f"{name}: weekday entries must be names or numbers, not {item!r}")
+        if isinstance(item, int):
+            if not 0 <= item <= 6:
+                raise ToolError(f"{name}: weekday number {item} is out of range; they run 0 (Monday) to 6 (Sunday)")
+            out.add(item)
+            continue
+        for token in re.split(r"[,\s/]+", str(item).strip().lower()):
+            if not token:
+                continue
+            if token in _DAY_GROUPS:
+                out.update(_DAY_GROUPS[token])
+                continue
+            if "-" in token[1:] or "\u2013" in token:
+                first, _, last = token.replace("\u2013", "-").partition("-")
+                i, j = _one_weekday(first, name), _one_weekday(last, name)
+                out.add(i)
+                while i != j:  # a range wraps: `fri-mon` is Fri, Sat, Sun, Mon
+                    i = (i + 1) % 7
+                    out.add(i)
+                continue
+            out.add(_one_weekday(token, name))
+    if not out:
+        raise ToolError(f"{name} named no weekdays")
+    return out
+
+
 def _window_days(days: Any, name: str) -> tuple[set[int], list[str] | None]:
     if days is None:
         return set(range(7)), None
-    if isinstance(days, str):
-        days = [days]
-    if not isinstance(days, list) or not days:
-        raise ToolError(f"{name}.days must be a list of weekday names such as ['mon', 'tue']")
-    idx: set[int] = set()
-    for d in days:
-        key = str(d).strip().lower()
-        if key not in _WD_INDEX:
-            raise ToolError(f"{name}.days: unknown weekday {d!r}; use names like 'mon' or 'monday'")
-        idx.add(_WD_INDEX[key])
+    idx = _expand_days(days, f"{name}.days")
     return idx, [_WEEKDAYS[i][:3] for i in sorted(idx)]
 
 
@@ -1584,6 +1670,11 @@ def _mode_free_slots(p: dict[str, Any]) -> dict[str, Any]:
     assumptions.append("the search range is UTC dates, both ends inclusive; each participant's weekly windows are laid on their own local calendar, then everything is intersected in UTC")
     assumptions.append("windows and slots are half-open [start, end); slots begin at the start of each common stretch and step by granularity")
     return ok(out, assumptions=assumptions, warnings=warnings)
+
+
+#: Ordinals where "every Nth <weekday>" has two readings: the Nth of each month, or every N
+#: weeks. "first" and "last" have only the monthly reading, so they are not ambiguous (#81).
+_AMBIGUOUS_ORDINALS = {"second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4}
 
 
 def _mode_recurrence(p: dict[str, Any]) -> dict[str, Any]:

@@ -21,15 +21,15 @@ MODES = ("set_ops", "group_by", "pick_fields", "flatten", "unflatten", "paginate
 #: the same map from the code and fails when the two drift.
 MODE_PARAMS: dict[str, frozenset[str]] = {
     "set_ops": frozenset({"a", "b", "case_insensitive", "delimiter", "has_header", "items", "key", "op"}),
-    "group_by": frozenset({"agg", "agg_field", "delimiter", "field", "has_header", "include_items", "items", "key"}),
-    "pick_fields": frozenset({"delimiter", "fields", "has_header", "items", "rename", "short_names"}),
+    "group_by": frozenset({"agg", "agg_field", "by", "data", "delimiter", "field", "has_header", "include_items", "items", "key"}),
+    "pick_fields": frozenset({"data", "delimiter", "fields", "has_header", "items", "rename", "short_names"}),
     "flatten": frozenset({"data", "delimiter", "depth", "flatten_lists", "has_header", "items", "separator"}),
     "unflatten": frozenset({"data", "delimiter", "has_header", "items", "separator"}),
-    "paginate": frozenset({"delimiter", "has_header", "items", "page", "per_page"}),
-    "find_duplicates": frozenset({"case_insensitive", "delimiter", "has_header", "items", "key"}),
-    "sort_by": frozenset({"delimiter", "has_header", "items", "key", "keys", "order"}),
-    "aggregate": frozenset({"agg", "delimiter", "field", "has_header", "items", "ops"}),
-    "chunk": frozenset({"delimiter", "has_header", "items", "n", "size"}),
+    "paginate": frozenset({"data", "delimiter", "has_header", "items", "page", "per_page"}),
+    "find_duplicates": frozenset({"case_insensitive", "data", "delimiter", "has_header", "items", "key"}),
+    "sort_by": frozenset({"data", "delimiter", "has_header", "items", "key", "keys", "order"}),
+    "aggregate": frozenset({"agg", "data", "delimiter", "field", "has_header", "items", "ops"}),
+    "chunk": frozenset({"data", "delimiter", "has_header", "items", "n", "size"}),
     "filter": frozenset({"columns", "delimiter", "has_header", "items", "where"}),
     "pivot": frozenset({"agg", "by", "column", "decimals", "delimiter", "has_header", "items", "pivot_columns"}),
     "running": frozenset({"by", "column", "columns", "decimals", "delimiter", "has_header", "items"}),
@@ -111,6 +111,18 @@ def _items(p: dict[str, Any], key: str = "items") -> list[Any]:
     if not isinstance(it, list):
         raise ToolError(f"'{key}' must be a list")
     return it
+
+
+def _input_rows(p: dict[str, Any]) -> list[Any]:
+    """The rows to work on, under either of the names this tool uses for them.
+
+    `flatten` and `unflatten` call these `data`; every other mode calls them `items`. An agent
+    that learned one mode reasonably tries the same name in the next, and got a refusal and a
+    wasted round-trip for it (#78). Both are accepted everywhere records are taken.
+    """
+    if p.get("items") is None and p.get("data") is not None:
+        return _items(p, "data")
+    return _items(p)
 
 
 def _set_ops(p: dict[str, Any]) -> dict[str, Any]:
@@ -216,10 +228,12 @@ def _agg(values: list[Any], ops: list[str]) -> dict[str, Any]:
 
 
 def _group_by(p: dict[str, Any]) -> dict[str, Any]:
-    items = _items(p)
-    key = p.get("key")
+    items = _input_rows(p)
+    # `pivot` and `running` call the grouping key `by`. Accepting both here means an agent that
+    # learned one of the three can use the next without a round-trip to find out (#78).
+    key = p.get("key") or p.get("by")
     if not key:
-        raise ToolError("'key' is required")
+        raise ToolError("'key' is required (also accepted as 'by'); 'field' names the column to aggregate, not the one to group on")
     groups: dict[Any, list[Any]] = defaultdict(list)
     shown: dict[Any, Any] = {}  # the key as the caller wrote it, not the type-tagged form
     for x in items:
@@ -243,7 +257,7 @@ def _group_by(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _aggregate(p: dict[str, Any]) -> dict[str, Any]:
-    items = _items(p)
+    items = _input_rows(p)
     field = p.get("field")
     ops = p.get("ops") or p.get("agg") or ["count", "sum", "avg", "min", "max"]
     if isinstance(ops, str):
@@ -253,7 +267,7 @@ def _aggregate(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pick_fields(p: dict[str, Any]) -> dict[str, Any]:
-    items = _items(p)
+    items = _input_rows(p)
     fields = p.get("fields")
     if not fields:
         raise ToolError("'fields' is required")
@@ -397,7 +411,7 @@ def _unflatten(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _paginate(p: dict[str, Any]) -> dict[str, Any]:
-    items = _items(p)
+    items = _input_rows(p)
     per = whole(p.get("per_page", 20), "per_page", lo=1)
     page = whole(p.get("page", 1), "page", lo=1)
     total_pages = max(1, -(-len(items) // per))
@@ -406,7 +420,7 @@ def _paginate(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _find_duplicates(p: dict[str, Any]) -> dict[str, Any]:
-    items = _items(p)
+    items = _input_rows(p)
     key = p.get("key")
     ci = bool(p.get("case_insensitive", False))
     where: dict[Any, list[int]] = defaultdict(list)
@@ -438,18 +452,48 @@ def _find_duplicates(p: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+#: Accepted spellings of a sort direction, and whether each one reverses.
+_ORDERS = {"asc": False, "ascending": False, "desc": True, "descending": True}
+
+
+def _sort_spec(spec: Any, default: str, items: list[Any], notes: list[str]) -> dict[str, Any]:
+    """One sort key: a field name, `-name` for descending, or `{field, order}`."""
+    if isinstance(spec, dict):
+        return {"field": spec.get("field"), "order": str(spec.get("order", default)).lower()}
+    name = str(spec)
+    # `-field` is the shape agents reach for, and it used to be taken as a literal field name
+    # that nothing had (#84). A column genuinely called `-v` still wins, because it is checked
+    # against the data first.
+    if name.startswith("-") and len(name) > 1:
+        present = any(get_path(x, name) is not None for x in items)
+        bare = any(get_path(x, name[1:]) is not None for x in items)
+        if not present and bare:
+            notes.append(f"'{name}' read as '{name[1:]}' descending; a field actually named '{name}' would win")
+            return {"field": name[1:], "order": "desc"}
+    return {"field": name, "order": default}
+
+
 def _sort_by(p: dict[str, Any]) -> dict[str, Any]:
-    items = _items(p)
-    keys = p.get("keys") or ([{"field": p["key"], "order": p.get("order", "asc")}] if p.get("key") else None)
-    if not keys:
+    items = _input_rows(p)
+    # `order` used to be folded into the single-`key` form only, so a caller who passed `keys`
+    # - the only way to sort on more than one field - silently got ascending every time (#84).
+    default = str(p.get("order") or "asc").lower()
+    if default not in _ORDERS:
+        raise ToolError(f"order must be one of {', '.join(_ORDERS)}")
+    raw = p.get("keys") if p.get("keys") is not None else p.get("key")
+    if not raw:
         raise ToolError("'keys' (list of {field, order}) is required")
-    if isinstance(keys, str):
-        keys = [{"field": keys}]
-    keys = [{"field": k} if isinstance(k, str) else k for k in keys]
+    if isinstance(raw, (str, dict)):
+        raw = [raw]
+    notes: list[str] = []
+    keys = [_sort_spec(k, default, items, notes) for k in raw]
+    for spec in keys:
+        if spec["order"] not in _ORDERS:
+            raise ToolError(f"order must be one of {', '.join(_ORDERS)}; '{spec['order']}' was given for '{spec['field']}'")
     srt = list(items)
     for spec in reversed(keys):
         field = spec.get("field")
-        desc = str(spec.get("order", "asc")).lower() in ("desc", "descending")
+        desc = _ORDERS[spec["order"]]
 
         def kf(x: Any, field: Any = field) -> Any:
             v = get_path(x, field)
@@ -461,7 +505,7 @@ def _sort_by(p: dict[str, Any]) -> dict[str, Any]:
             return (1, 0, str(v).casefold())
 
         srt.sort(key=kf, reverse=desc)
-    assumptions = ["stable multi-key sort; None sorts last; strings case-insensitive"]
+    assumptions = ["stable multi-key sort; None sorts last; strings case-insensitive", *notes]
     warnings: list[str] = []
     for spec in keys:
         fld = spec.get("field")
@@ -476,7 +520,7 @@ def _sort_by(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _chunk(p: dict[str, Any]) -> dict[str, Any]:
-    items = _items(p)
+    items = _input_rows(p)
     size = p.get("size")
     n = p.get("n")
     if size is not None:
@@ -683,12 +727,14 @@ _CSV_INPUTS = {"set_ops": ("a", "b"), "flatten": ("data",)}
 def _inline_csv(mode: str, p: dict[str, Any]) -> list[str]:
     """Replace CSV text in the list modes' inputs with records; returns how each one was read."""
     notes: list[str] = []
-    keys = _CSV_INPUTS.get(mode, ("items",))
-    for key in keys:
-        if isinstance(p.get(key), str):
-            t = _load(p, key)
-            p[key] = _records(t)
-            notes.extend(t.assumptions if len(keys) == 1 else [f"{key}: {a}" for a in t.assumptions])
+    # `data` joins `items` here because it is now accepted wherever records are (#78); a mode
+    # that does not take it simply has nothing under that name to convert.
+    keys = _CSV_INPUTS.get(mode, ("items", "data"))
+    converted = [key for key in keys if isinstance(p.get(key), str)]
+    for key in converted:
+        t = _load(p, key)
+        p[key] = _records(t)
+        notes.extend(t.assumptions if len(converted) == 1 else [f"{key}: {a}" for a in t.assumptions])
     return notes
 
 

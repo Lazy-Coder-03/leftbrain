@@ -128,7 +128,9 @@ def test_overlap_and_duration_sum():
 
 
 def test_recurrence_phrase():
-    r = dt("recurrence", rule="every 2nd tuesday", start="2026-09-01", count=3)
+    """`every 2nd tuesday` used to resolve here silently. It has two readings that produce
+    completely different schedules, so it is refused now and this asks the monthly one (#81)."""
+    r = dt("recurrence", rule="every 2nd tuesday of the month", start="2026-09-01", count=3)
     assert r["result"]["occurrences"] == ["2026-09-08", "2026-10-13", "2026-11-10"]
 
 

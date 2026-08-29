@@ -1676,6 +1676,21 @@ HOLIDAYS = ToolDoc(
                 Param("region", "ISO country code.", required=True),
             ),
         ),
+        Mode(
+            name="categories",
+            purpose="The category values a country accepts.",
+            description=(
+                "There is no single list of categories to publish: `optional` is valid for India and "
+                "rejected outright for the United States, so the legal set has to be asked for per "
+                "country. Call this before passing `categories`, the way you would call "
+                "`subdivisions` before passing `subdiv`. The default when you pass nothing is "
+                "`public`, which is a real filter — it is why a regional festival can come back as "
+                "`is_holiday: false`."
+            ),
+            params=(
+                Param("region", "ISO country code.", required=True),
+            ),
+        ),
     ),
 )
 

@@ -63,6 +63,25 @@ def _clean(d: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in d.items() if v is not None}
 
 
+#: A quantity the caller may write as a number or as text - "1.2 Cr", "2.5k", "12%", "1/3".
+#:
+#: Spelled out rather than `Any` because an MCP client serialises its arguments *against this
+#: schema*, and `Any` renders as `anyOf: [{}, {"type": "null"}]` - an empty schema, carrying no
+#: type at all. A client with nothing to serialise against emitted `{"text": abc}` with the
+#: string unquoted, so the call failed inside the client and never reached the server: no
+#: envelope, no `needs`, nothing for an agent to recover from, and a retry produced the same
+#: malformed call (#71). Pydantic's smart union keeps each input as the type it arrived as, so
+#: "0.1" stays the exact decimal string leftbrain parses and 5 stays an int.
+Quantity = str | float | int | None
+
+#: A whole JSON document rather than a scalar: objects and arrays are accepted here too.
+#: `encode.text` really does take a dict - a JSON document arriving already parsed - so this
+#: cannot be narrowed to a string.
+Document = str | float | int | bool | list[Any] | dict[str, Any] | None
+
+#: A place: a name, "lat,lon", [lat, lon], or {"lat": .., "lon": ..}.
+Place = str | list[Any] | dict[str, Any] | None
+
 @server.tool(name="math")
 @enforce("math")
 def math(
@@ -93,7 +112,7 @@ def math(
     y: list[Any] | None = None,
     weights: list[Any] | None = None,
     percentile: float | None = None,
-    value: Any | None = None,
+    value: Quantity = None,
     predict: float | None = None,
     range: list[float] | None = None,
     tolerance: float | None = None,
@@ -251,7 +270,7 @@ def holidays(
     locale: str | None = None,
 ) -> dict[str, Any]:
     """Use for public holidays of any country/state (region="IN", subdiv="WB").
-    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions.
+    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions | categories.
     The model's holiday knowledge is stale; this dataset is current.
     """
     return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale)))
@@ -262,9 +281,9 @@ def holidays(
 def numbers(
     mode: str = "compare",
     values: list[Any] | None = None,
-    a: Any | None = None,
-    b: Any | None = None,
-    value: Any | None = None,
+    a: Quantity = None,
+    b: Quantity = None,
+    value: Quantity = None,
     decimals: int | None = None,
     significant: int | None = None,
     nearest: float | None = None,
@@ -273,17 +292,17 @@ def numbers(
     style: str | None = None,
     currency: str | None = None,
     accounting: bool | None = None,
-    total: Any | None = None,
+    total: Quantity = None,
     parts: int | None = None,
     weights: list[Any] | dict[str, Any] | None = None,
     percentages: list[Any] | None = None,
     labels: list[str] | None = None,
     method: str | None = None,
     kind: str | None = None,
-    start: Any | None = None,
-    step: Any | None = None,
-    ratio: Any | None = None,
-    end: Any | None = None,
+    start: Quantity = None,
+    step: Quantity = None,
+    ratio: Quantity = None,
+    end: Quantity = None,
     n: int | None = None,
     system: str | None = None,
     suffix_only: bool | None = None,
@@ -302,32 +321,32 @@ def numbers(
 @enforce("finance")
 def finance(
     mode: str = "emi",
-    principal: Any | None = None,
-    rate: Any | None = None,
+    principal: Quantity = None,
+    rate: Quantity = None,
     rate_period: str | None = None,
-    months: Any | None = None,
-    years: Any | None = None,
+    months: Quantity = None,
+    years: Quantity = None,
     schedule: bool | None = None,
     decimals: int | None = None,
     rounding: str | None = None,
     compounding: str | None = None,
-    contribution: Any | None = None,
+    contribution: Quantity = None,
     contribution_timing: str | None = None,
-    start_value: Any | None = None,
-    end_value: Any | None = None,
+    start_value: Quantity = None,
+    end_value: Quantity = None,
     cashflows: list[Any] | None = None,
-    amount: Any | None = None,
+    amount: Quantity = None,
     amount_is: str | None = None,
     supply: str | None = None,
     op: str | None = None,
-    a: Any | None = None,
-    b: Any | None = None,
-    percent: Any | None = None,
-    value: Any | None = None,
-    price: Any | None = None,
+    a: Quantity = None,
+    b: Quantity = None,
+    percent: Quantity = None,
+    value: Quantity = None,
+    price: Quantity = None,
     discounts: list[Any] | None = None,
-    total: Any | None = None,
-    tip: Any | None = None,
+    total: Quantity = None,
+    tip: Quantity = None,
     people: int | None = None,
 ) -> dict[str, Any]:
     """Use for any money arithmetic: loan EMIs with a full amortisation schedule, compound
@@ -390,7 +409,7 @@ def collections(
     agg: list[str] | str | None = None,
     agg_field: str | None = None,
     ops: list[str] | None = None,
-    data: Any | None = None,
+    data: Document = None,
     depth: int | None = None,
     separator: str | None = None,
     page: int | None = None,
@@ -430,11 +449,11 @@ def collections(
 @enforce("validate")
 def validate(
     mode: str = "assert",
-    data: Any | None = None,
+    data: Document = None,
     rules: list[dict[str, Any]] | dict[str, Any] | None = None,
     schema: dict[str, Any] | None = None,
     kind: str | None = None,
-    value: Any | None = None,
+    value: Quantity = None,
     region: str | None = None,
     sql: str | None = None,
     dialect: str | None = None,
@@ -489,12 +508,12 @@ def geo(
     place: str | None = None,
     lat: float | None = None,
     lon: float | None = None,
-    origin: Any | None = None,
-    destination: Any | None = None,
+    origin: Place = None,
+    destination: Place = None,
     country: str | None = None,
     zone: str | None = None,
     all: bool | None = None,
-    point: Any | None = None,
+    point: Place = None,
 ) -> dict[str, Any]:
     """Use to get the IANA timezone for a city/country ("Mumbai" -> Asia/Kolkata) before any
     timezone conversion, the zone nearest to coordinates, great-circle distance and bearing
@@ -509,14 +528,14 @@ def geo(
 @enforce("encode")
 def encode(
     mode: str = "hash",
-    text: Any | None = None,
+    text: Document = None,
     algo: str | None = None,
     key: str | None = None,
     expected: str | None = None,
     action: str | None = None,
     urlsafe: bool | None = None,
     token: str | None = None,
-    data: Any | None = None,
+    data: Document = None,
     indent: int | None = None,
     bytes_base64: str | None = None,
     bytes_hex: str | None = None,

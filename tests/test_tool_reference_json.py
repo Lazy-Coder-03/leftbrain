@@ -44,7 +44,7 @@ def test_a_browser_still_gets_the_page(client):
 
 def test_one_tool_gives_every_mode_with_its_parameters(client):
     body = client.get("/docs/tools/holidays").json()
-    assert [m["name"] for m in body["modes"]] == ["list", "check", "next", "countries", "subdivisions"]
+    assert [m["name"] for m in body["modes"]] == ["list", "check", "next", "countries", "subdivisions", "categories"]
     check = next(m for m in body["modes"] if m["name"] == "check")
     region = next(p for p in check["parameters"] if p["name"] == "region")
     assert region["required"] is True and region["type"] == "string" and region["doc"]
