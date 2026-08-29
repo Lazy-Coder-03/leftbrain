@@ -4,6 +4,7 @@ from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyUrl
 
 from leftbrain.keys import KeyStore
+from leftbrain.oauth.naming import connector_key_name, os_from_user_agent
 from leftbrain.oauth.redirects import is_loopback, redirect_uri_matches
 from leftbrain.oauth.store import OAuthStore
 
@@ -306,3 +307,64 @@ def test_rubbish_is_refused_rather_than_raising():
     assert not is_loopback("")
     assert not is_loopback("not a url")
     assert not redirect_uri_matches("http://localhost/callback", "")
+
+
+# -- what a connector key is called -----------------------------------------
+
+WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36"
+MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/605.1.15"
+IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Safari/604.1"
+ANDROID = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/130 Mobile"
+LINUX = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130 Safari/537.36"
+
+LOCAL = ["http://localhost/callback"]
+CLOUD = ["https://chatgpt.com/connector_platform_oauth_redirect"]
+
+
+def test_the_os_is_read_from_the_user_agent():
+    assert os_from_user_agent(WINDOWS) == "Windows"
+    assert os_from_user_agent(MAC) == "macOS"
+    assert os_from_user_agent(LINUX) == "Linux"
+
+
+def test_a_phone_is_not_read_as_the_desktop_it_resembles():
+    # an iPhone's user agent contains "like Mac OS X"; an Android's contains "Linux"
+    assert os_from_user_agent(IPHONE) == "iOS"
+    assert os_from_user_agent(ANDROID) == "Android"
+
+
+def test_an_unreadable_user_agent_has_no_os():
+    assert os_from_user_agent("curl/8.4.0") is None
+    assert os_from_user_agent("") is None
+    assert os_from_user_agent(None) is None
+
+
+def test_a_local_client_is_named_after_the_machine_that_approved_it():
+    assert connector_key_name("Claude Code", LOCAL, WINDOWS) == "Claude Code · Windows"
+    assert connector_key_name("Cursor", ["http://127.0.0.1:1234/cb"], MAC) == "Cursor · macOS"
+
+
+def test_a_cloud_client_is_named_web_and_never_the_approvers_os():
+    assert connector_key_name("ChatGPT", CLOUD, WINDOWS) == "ChatGPT · web"
+    assert connector_key_name("Claude", ["https://claude.ai/api/mcp/auth_callback"], MAC) == "Claude · web"
+
+
+def test_a_local_client_with_an_unreadable_user_agent_says_local():
+    assert connector_key_name("Claude Code", LOCAL, "curl/8.4.0") == "Claude Code · local"
+    assert connector_key_name("Claude Code", LOCAL, None) == "Claude Code · local"
+
+
+def test_a_nameless_client_still_gets_a_name():
+    assert connector_key_name(None, CLOUD, WINDOWS) == "app · web"
+    assert connector_key_name("   ", CLOUD, WINDOWS) == "app · web"
+
+
+def test_the_name_fits_the_note_column():
+    assert len(connector_key_name("x" * 200, CLOUD, WINDOWS)) <= 40
+    assert len(connector_key_name("x" * 200, LOCAL, WINDOWS)) <= 40
+
+
+def test_an_attacker_supplied_name_cannot_forge_a_second_line():
+    forged = connector_key_name("Evil\n<script>", CLOUD, WINDOWS)
+    assert forged.startswith("Evil <script>")
+    assert "\n" not in forged and "\r" not in forged
