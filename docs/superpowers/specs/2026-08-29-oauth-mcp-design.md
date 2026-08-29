@@ -9,6 +9,17 @@ ChatGPT plugins and Claude's web connectors both refuse a static API key and bot
 MCP's OAuth discovery against the server URL. leftbrain becomes an OAuth 2.1 authorization
 server so they can connect — and so can an agent in a terminal with no browser at all.
 
+**Claude Code is a third blocked client, confirmed against the live server on 2026-08-29.**
+Adding leftbrain to a Claude Code session fails with `Dynamic client registration rejected:
+unsupported — no such endpoint; see / for the endpoint list`. That message is not an auth
+error: it is leftbrain's generic 404 handler (`serve.py:443`), reached through the catch-all
+`Mount("", app=_McpOnly(root_app))` at `serve.py:445`. Claude Code asks for the discovery
+documents, gets 404 for each, falls back to the conventional endpoint names, POSTs `/register`,
+and is told the endpoint does not exist. Every one of those 404s becomes a real response in
+this design, so the failure resolves as a consequence of the work rather than needing its own
+fix. It is worth knowing that the symptom looks like a routing bug rather than a missing
+feature — that is a diagnosis trap for whoever meets it next.
+
 Two audiences are equally primary:
 
 - **A person** clicks through a consent screen and sees the result on the dashboard as an
@@ -282,6 +293,9 @@ handlers are exercised rather than mocked.
   resolving to a private or loopback address refused; no state cookie is set on a GET of the
   consent page.
 - Postgres: the five tables migrate on both backends (`LEFTBRAIN_TEST_PG_URL`, opt-in).
+- Regression for the observed failure: `POST /register` and both well-known paths return real
+  documents rather than the catch-all 404, so a Claude Code session no longer reports
+  `Dynamic client registration rejected: unsupported`.
 
 `pytest -q` and `ruff check src tests` green. Skips are checked with `-rs` before the run is
 called green — the only legitimate skip is the opt-in Postgres one.
@@ -297,4 +311,6 @@ called green — the only legitimate skip is the opt-in Postgres one.
 7. CIMD + SSRF guard.
 8. Agent documentation, ChatGPT and terminal client docs, README, CHANGELOG.
 
-MCP Inspector against a local `leftbrain-serve` is the development loop, not ChatGPT.
+MCP Inspector against a local `leftbrain-serve` is the development loop, not ChatGPT. A Claude
+Code session pointed at the same local server is the second loop and the cheaper one, since it
+is the client whose exact failure is recorded above and it needs no browser configuration.
