@@ -1623,6 +1623,7 @@ HOLIDAYS = ToolDoc(
                 "holiday list."
             ),
             params=(
+                Param("language", "Language for holiday names; see mode `categories`."),
                 Param("region", "ISO country code (`IN`, `US`, `GB`); `UK` is accepted as `GB`.", required=True),
                 Param("year", "The year.", default="current year"),
                 Param("years", "Several years at once."),
@@ -1640,6 +1641,8 @@ HOLIDAYS = ToolDoc(
                 "an ambiguous numeric date is refused here too."
             ),
             params=(
+                Param("date_locale", "How an ambiguous date is read (DD/MM vs MM/DD). `locale` is the old name."),
+                Param("language", "Language for holiday names; see mode `categories`."),
                 Param("region", "ISO country code.", required=True),
                 Param("date", "The date to check.", default="`today`"),
                 Param("subdiv", "State or province code."),
@@ -1655,6 +1658,8 @@ HOLIDAYS = ToolDoc(
                 "December still returns January's holidays."
             ),
             params=(
+                Param("date_locale", "How an ambiguous date is read. `locale` is the old name."),
+                Param("language", "Language for holiday names."),
                 Param("region", "ISO country code.", required=True),
                 Param("date", "Start looking from here.", default="`today`"),
                 Param("n", "How many holidays to return.", default="5"),
@@ -1682,6 +1687,66 @@ HOLIDAYS = ToolDoc(
             ),
             params=(
                 Param("region", "ISO country code.", required=True),
+            ),
+        ),
+        Mode(
+            name="festival",
+            purpose="A festival by name, with its named days in order.",
+            description=(
+                "`check` and `next` are date-first: you bring a date and they tell you about it. "
+                "This is name-first — “when is Durga Puja” — and it searches *every* category, "
+                "because a festival is often not a public holiday. A multi-day festival comes "
+                "back as one thing with its days named (Saptami, Mahashtami, Mahanavami) rather "
+                "than as unrelated rows sharing a prefix.\n\n"
+                "Common names are mapped onto whatever this dataset calls the same festival — "
+                "Durga Puja is filed as `Dussehra`, Kali Puja only as `Naraka Chaturdashi` — and "
+                "the substitution is stated. A name it cannot find is refused with the near "
+                "misses, never an empty list: “not in this dataset” and “no such festival” are "
+                "different claims and only the first one is ours to make."
+            ),
+            params=(
+                Param("name", "The festival to look up.", required=True),
+                Param("region", "ISO country code.", required=True),
+                Param("subdiv", "State/province code."),
+                Param("year", "Defaults to the current year."),
+                Param("categories", "Defaults to every category this country has."),
+                Param("language", "Language for the names; see mode `categories`."),
+            ),
+        ),
+        Mode(
+            name="upcoming",
+            purpose="Everything marked in a window, not only public holidays.",
+            description=(
+                "“What festivals are coming up?” Searches every category by default and reports "
+                "each named day separately, so a multi-day festival shows each of its days. "
+                "Without `end` the window is the twelve months from `start`."
+            ),
+            params=(
+                Param("region", "ISO country code.", required=True),
+                Param("subdiv", "State/province code."),
+                Param("start", "Defaults to today."),
+                Param("end", "Defaults to a year after `start`."),
+                Param("n", "How many to return (default 20)."),
+                Param("categories", "Defaults to every category."),
+                Param("language", "Language for the names."),
+            ),
+        ),
+        Mode(
+            name="compare",
+            purpose="The same dates across two or more regions, as a table.",
+            description=(
+                "“Which Durga Puja days are holidays in West Bengal but not Assam?” Two calls "
+                "and a hand-written diff otherwise — and the diff is easy to get wrong, because "
+                "the two responses use names that do not line up. Each date says which of the "
+                "compared places observe it and which do not."
+            ),
+            params=(
+                Param("subdivs", "Two or more state codes, within one `region`."),
+                Param("regions", "Two or more country codes, instead of `subdivs`."),
+                Param("region", "ISO country code, when comparing `subdivs`."),
+                Param("year", "Defaults to the current year."),
+                Param("month", "Narrow to one month."),
+                Param("categories", "Defaults to every category."),
             ),
         ),
         Mode(

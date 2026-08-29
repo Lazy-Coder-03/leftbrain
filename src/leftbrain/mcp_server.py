@@ -272,12 +272,20 @@ def holidays(
     n: int | None = None,
     categories: list[str] | None = None,
     locale: str | None = None,
+    date_locale: str | None = None,
+    language: str | None = None,
+    name: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    subdivs: list[str] | None = None,
+    regions: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Use for public holidays of any country/state (region="IN", subdiv="WB").
-    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions | categories.
+    """Use for public holidays and festivals of any country/state (region="IN", subdiv="WB").
+    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions |
+          categories | festival (name, year) | upcoming (start, end) | compare (subdivs/regions).
     The model's holiday knowledge is stale; this dataset is current.
     """
-    return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale)))
+    return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale, date_locale=date_locale, language=language, name=name, start=start, end=end, subdivs=subdivs, regions=regions)))
 
 
 @server.tool(name="numbers")

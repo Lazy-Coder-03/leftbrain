@@ -31,8 +31,12 @@ def test_month_names_are_read():
 
 
 def test_check_outside_the_calendar_data_says_so():
+    """It used to answer `is_holiday: false` with a warning. A year the source does not reach
+    is not a fact about holidays at all, so it is refused now and names the window (#90)."""
     r = holidays("check", region="IN", date="2200-08-15")
-    assert r["ok"] and r["result"]["is_holiday"] is False and any("no data" in w for w in r["warnings"]), r
+    assert r["ok"] is False and r["error"] == "unsupported"
+    assert "1948" in r["message"] and "2100" in r["message"]
+    assert r["details"]["covers"] == {"from": 1948, "to": 2100}
     assert holidays("check", region="IN", date="2026-08-15")["warnings"] == []
 
 
