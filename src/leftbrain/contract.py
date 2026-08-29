@@ -48,6 +48,7 @@ import functools
 import json
 import logging
 import os
+import re
 import traceback
 from collections.abc import Callable
 from typing import Any
@@ -313,6 +314,46 @@ def exclusive(given: dict[str, Any], *names: str, chosen: str | None = None) -> 
     winner = chosen or present[0]
     losers = [n for n in present if n != winner]
     return f"'{winner}' and {', '.join(repr(x) for x in losers)} cannot both apply; used '{winner}' and ignored {', '.join(repr(x) for x in losers)}"
+
+
+def whole(value: Any, name: str, *, lo: int | None = None, hi: int | None = None) -> int:
+    """``value`` as a whole number, refused in words when it is not one.
+
+    A boolean is not a count, and 2.7 is not a whole number, so neither is coerced.
+    """
+    if isinstance(value, bool):
+        raise ToolError(f"{name} must be a whole number, not a boolean")
+    if isinstance(value, int):
+        n = value
+    elif isinstance(value, float) and value.is_integer():
+        n = int(value)
+    elif isinstance(value, str) and re.fullmatch(r"\s*[+-]?\d+\s*", value):
+        n = int(value)
+    else:
+        raise ToolError(f"{name} must be a whole number, not {value!r}")
+    if lo is not None and n < lo:
+        raise ToolError(f"{name} must be at least {lo}")
+    if hi is not None and n > hi:
+        raise TooLarge(f"{name} is {n:,}; the most allowed is {hi:,}", details={name: n, "limit": hi}, hint=f"Use {name} of at most {hi:,}.")
+    return n
+
+
+def flag(value: Any, name: str) -> bool:
+    """``value`` as a boolean. Accepts true/false/yes/no/1/0 in any case; refuses anything else.
+
+    The string "false" is false, not a non-empty (truthy) string.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        s = value.strip().lower()
+        if s in ("true", "yes", "1", "on"):
+            return True
+        if s in ("false", "no", "0", "off", ""):
+            return False
+    raise ToolError(f"{name} must be true or false, not {value!r}")
 
 
 def tool(fn: Callable[..., Any]) -> Callable[..., dict[str, Any]]:

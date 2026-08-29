@@ -12,7 +12,7 @@ import math
 from fractions import Fraction
 from typing import Any
 
-from ..contract import ToolError, check_params, ok, tool
+from ..contract import ToolError, check_params, ok, tool, whole
 from .convert import _norm_unit, _parse_value, ureg
 
 #: The proportions this tool understands (the "mode" argument).
@@ -55,15 +55,23 @@ def scale(**params: Any) -> dict[str, Any]:
     if mode not in MODES:
         raise ToolError("mode must be 'linear' (direct proportion) or 'inverse' (inverse proportion)")
     check_params("scale", mode, p, MODE_PARAMS)
-    precision = int(p.get("precision", 6))
+    precision = whole(p.get("precision", 6), "precision", lo=0, hi=15)
     assumptions: list[str] = []
     warnings: list[str] = []
 
     if p.get("factor") is not None:
-        factor = _parse_value(p["factor"])
+        ratio = _parse_value(p["factor"])
         from_qty = Fraction(1)
-        to_qty = factor
-        assumptions.append("explicit factor supplied")
+        to_qty = ratio
+        if mode == "inverse":
+            # The factor is the from→to ratio in both modes; inverse proportion divides by it.
+            if ratio == 0:
+                raise ToolError("factor is 0; an inverse relationship cannot target zero", hint="Give a factor greater than zero.")
+            factor = 1 / ratio
+            assumptions.append(f"explicit factor {float(ratio):g} is the from→to ratio; inverse proportion divides each entity by it")
+        else:
+            factor = ratio
+            assumptions.append("explicit factor supplied")
     else:
         if p.get("from_qty") is None:
             raise ToolError("'from_qty' is required (or pass 'factor')")
@@ -72,10 +80,11 @@ def scale(**params: Any) -> dict[str, Any]:
             raise ToolError("from_qty cannot be zero")
         from_unit, to_unit = p.get("from_unit"), p.get("to_unit")
         to_qty = _parse_value(p["to_qty"]) if p.get("to_qty") is not None else None
-        if to_qty == 0:
+        if to_qty == 0 and mode == "inverse":
             # inverse scaling divides by it, which was a bare ZeroDivisionError (#28 SS4).
+            # In direct proportion scaling to zero is an answer: everything becomes 0.
             raise ToolError(
-                "to_qty is 0; scaling to zero has no answer",
+                "to_qty is 0; an inverse relationship cannot target zero",
                 details={"to_qty": 0},
                 hint="Give a to_qty greater than zero.",
             )

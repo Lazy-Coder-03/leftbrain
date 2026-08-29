@@ -10,7 +10,7 @@ import time
 import uuid as _uuid
 from typing import Any
 
-from ..contract import ToolError, check_params, ok, tool
+from ..contract import TooLarge, ToolError, check_params, flag, ok, tool, whole
 
 MODES = ("uuid", "int", "float", "pick", "shuffle", "token", "bool", "sample")
 
@@ -31,6 +31,8 @@ MODE_PARAMS: dict[str, frozenset[str]] = {
 _MAX_N = 10000
 #: Places a binary float can actually be rounded to.
 MAX_DECIMALS = 15
+#: Characters one call may generate across all its tokens.
+MAX_TOKEN_CHARS = 200_000
 
 
 def _rng(seed: Any) -> _random.Random:
@@ -40,10 +42,19 @@ def _rng(seed: Any) -> _random.Random:
 
 
 def _n(p: dict[str, Any], default: int = 1) -> int:
-    n = int(p.get("n", default))
-    if n < 1 or n > _MAX_N:
-        raise ToolError(f"n must be 1..{_MAX_N}")
-    return n
+    return whole(p.get("n", default), "n", lo=1, hi=_MAX_N)
+
+
+def _number(v: Any, name: str) -> float:
+    if isinstance(v, bool) or not isinstance(v, (int, float, str)):
+        raise ToolError(f"{name} must be a number, not {v!r}")
+    try:
+        x = float(v)
+    except ValueError:
+        raise ToolError(f"{name} must be a number, not {v!r}") from None
+    if x != x or x in (float("inf"), float("-inf")):
+        raise ToolError(f"{name} must be a finite number, not {v!r}")
+    return x
 
 
 def uuid7() -> str:
@@ -56,27 +67,30 @@ def uuid7() -> str:
 
 def _uuid_mode(p: dict[str, Any]) -> dict[str, Any]:
     n = _n(p)
-    version = int(p.get("version", 4))
+    version = whole(p.get("version", 4), "version")
     if version == 4:
         ids = [str(_uuid.uuid4()) for _ in range(n)]
     elif version == 7:
         ids = [uuid7() for _ in range(n)]
     else:
         raise ToolError("version must be 4 (random) or 7 (time-ordered)")
-    fmt = (p.get("format") or "canonical").lower()
+    fmt = str(p.get("format") or "canonical").lower()
     if fmt == "hex":
         ids = [i.replace("-", "") for i in ids]
     elif fmt == "upper":
         ids = [i.upper() for i in ids]
+    elif fmt != "canonical":
+        raise ToolError("format must be canonical, hex or upper")
     return ok({"uuid": ids[0], "uuids": ids, "version": version} if n == 1 else {"uuids": ids, "version": version, "count": n})
 
 
 def _int(p: dict[str, Any]) -> dict[str, Any]:
-    lo, hi = int(p.get("min", 1)), int(p.get("max", 100))
+    lo = whole(p.get("min", 1), "min")
+    hi = whole(p.get("max", 100), "max")
     if lo > hi:
         raise ToolError("min must be <= max")
     n = _n(p)
-    unique = bool(p.get("unique", False))
+    unique = flag(p.get("unique", False), "unique")
     rng = _rng(p.get("seed"))
     if unique:
         if hi - lo + 1 < n:
@@ -89,9 +103,15 @@ def _int(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _float(p: dict[str, Any]) -> dict[str, Any]:
-    lo, hi = float(p.get("min", 0.0)), float(p.get("max", 1.0))
+    lo, hi = _number(p.get("min", 0.0), "min"), _number(p.get("max", 1.0), "max")
     if lo > hi:
         raise ToolError("min must be <= max")
+    if hi - lo in (float("inf"), float("-inf")):
+        raise ToolError(
+            f"the range from {lo:g} to {hi:g} is wider than a double can span, so every draw would be infinity",
+            details={"min": lo, "max": hi},
+            hint="Draw from a narrower range, or scale the result yourself.",
+        )
     n = _n(p)
     dec = p.get("decimals")
     rng = _rng(p.get("seed"))
@@ -99,7 +119,7 @@ def _float(p: dict[str, Any]) -> dict[str, Any]:
     if dec is not None:
         # `round(v, 100)` is a no-op on a binary float: it has ~17 significant digits, so
         # asking for 100 silently returned full precision (#28 SS3.13).
-        dec = int(dec)
+        dec = whole(dec, "decimals")
         if not 0 <= dec <= MAX_DECIMALS:
             raise ToolError(
                 f"decimals must be 0..{MAX_DECIMALS}; a float carries about 17 significant digits, "
@@ -116,20 +136,29 @@ def _pick(p: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(items, list) or not items:
         raise ToolError("'items' must be a non-empty list")
     n = _n(p)
-    unique = bool(p.get("unique", True))
+    unique = flag(p.get("unique", True), "unique")
     weights = p.get("weights")
     rng = _rng(p.get("seed"))
     if weights is not None:
-        if len(weights) != len(items):
-            raise ToolError("weights must match items length")
+        if not isinstance(weights, list) or len(weights) != len(items):
+            raise ToolError("weights must be a list with one entry per item")
+        ws_all = [_number(w, "weights") for w in weights]
+        if any(w < 0 for w in ws_all):
+            # `random.choices` bisects the running total, so a negative weight silently
+            # drops its item and rescales the rest
+            raise ToolError("weights must not be negative", details={"weights": ws_all}, hint="Use 0 for an item that should never be drawn.")
+        if not sum(ws_all):
+            raise ToolError("the weights are all zero, so there is nothing to draw")
+        if unique and n > len(items):
+            raise ToolError("cannot pick more unique items than available")
         if unique and n > 1:
-            pool, ws, chosen = list(items), [float(w) for w in weights], []
+            pool, ws, chosen = list(items), list(ws_all), []
             for _ in range(min(n, len(pool))):
                 c = rng.choices(range(len(pool)), weights=ws, k=1)[0]
                 chosen.append(pool.pop(c))
                 ws.pop(c)
         else:
-            chosen = rng.choices(items, weights=[float(w) for w in weights], k=n)
+            chosen = rng.choices(items, weights=ws_all, k=n)
     elif unique:
         if n > len(items):
             raise ToolError("cannot pick more unique items than available")
@@ -163,11 +192,15 @@ _ALPHABETS = {
 
 
 def _token(p: dict[str, Any]) -> dict[str, Any]:
-    kind = (p.get("kind") or "urlsafe").lower()
-    length = int(p.get("length", 32))
-    if length < 1 or length > 4096:
-        raise ToolError("length must be 1..4096")
+    kind = str(p.get("kind") or "urlsafe").lower()
+    length = whole(p.get("length", 32), "length", lo=1, hi=4096)
     n = _n(p)
+    if length * n > MAX_TOKEN_CHARS:
+        raise TooLarge(
+            f"{n:,} tokens of {length:,} characters is {length * n:,} characters; the most that can be returned is {MAX_TOKEN_CHARS:,}",
+            details={"length": length, "n": n, "limit": MAX_TOKEN_CHARS},
+            hint="Ask for fewer or shorter tokens.",
+        )
     if kind == "bytes":
         toks = [secrets.token_hex(length) for _ in range(n)]
     elif kind in _ALPHABETS:
@@ -188,7 +221,7 @@ def _token(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _bool(p: dict[str, Any]) -> dict[str, Any]:
-    prob = float(p.get("p", p.get("probability", 0.5)))
+    prob = _number(p.get("p", p.get("probability", 0.5)), "p")
     if not 0 <= prob <= 1:
         raise ToolError("p must be within 0..1")
     n = _n(p)
@@ -204,8 +237,13 @@ def _sample(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("'items' must be a non-empty list")
     rng = _rng(p.get("seed"))
     groups = p.get("groups")
-    if groups:
-        names = list(groups) if isinstance(groups, list) else [f"group{i + 1}" for i in range(int(groups))]
+    if groups is not None:
+        if isinstance(groups, list):
+            if not groups:
+                raise ToolError("'groups' is an empty list; give at least one group name")
+            names = list(groups)
+        else:
+            names = [f"group{i + 1}" for i in range(whole(groups, "groups", lo=1, hi=_MAX_N))]
         pool = list(items)
         rng.shuffle(pool)
         out: dict[str, list[Any]] = {name: [] for name in names}
@@ -219,9 +257,9 @@ def _sample(p: dict[str, Any]) -> dict[str, Any]:
             # with no hint that the split could not be made (#28 SS3.13).
             warnings=[f"{len(empty)} of {len(names)} groups are empty: there are only {len(items)} items to spread"] if empty else [],
         )
-    k = int(p.get("k", p.get("n", 1)))
+    k = whole(p.get("k", p.get("n", 1)), "k", lo=0)
     if k > len(items):
-        raise ToolError("k exceeds number of items")
+        raise ToolError(f"k is {k:,} but there are only {len(items):,} items to sample")
     return ok({"sample": rng.sample(items, k), "k": k})
 
 

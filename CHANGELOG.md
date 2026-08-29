@@ -6,7 +6,162 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **`numbers.compare`'s `percent_change_a_to_b` divides by `|a|`**, matching
+  `finance.percent`: from -100 to -50 is +50%, not -50%. It is omitted, with an assumption
+  saying why, when `a` is zero.
+- **`color.contrast`'s `ratio` is rounded down**, and `ratio_exact` carries the unrounded
+  figure. 2.99979 was displayed as `3.0` beside "does not meet 3:1".
+- **Each mode of `convert` and `holidays` declares only the parameters it reads.** `decimals`
+  on `convert.units`, `delta` on `convert.currency`, `n` on `holidays.check` and `date` on
+  `holidays.list` were accepted and ignored; they are refused now.
+  `convert.temperature` converts temperatures rather than whatever units it is handed.
+- **`math.solve` filters solutions by `domain`.** `x^40 = 2` over the reals returned 26
+  solutions, 24 of them complex. An identity reports `identity: true` and an inconsistent
+  system reports no solutions, both `ok`.
+- **`numbers.allocate` is capped at 2,000 parts**, which is what a 256 KB response can carry;
+  10,000 passed the pre-check and then failed on size.
+- **`numbers.semver` refuses a version given as a number**, which cannot tell `1.10` from
+  `1.1`, and refuses a leading zero in a numeric part.
+- **`encode.base64` decodes strictly**: data after the padding, padding in the middle and
+  characters outside the alphabet are refused rather than quietly ignored.
+- **`convert.units` refuses `S`, `H` and `T`** as ambiguous - siemens or seconds, henry or
+  hours, tesla or tonnes.
+
 ### Fixed
+
+- **`math` read a decimal literal as a binary float.** `exact` on `0.1 + 0.2 - 0.3` returned
+  `277555756156289/5000000000000000000000000000000`: the IEEE-754 rounding error, faithfully
+  rationalised. A decimal literal is now the rational it prints as, in every mode, so the sum
+  is `0`, `0.1 * 3` is exactly `3/10` and `2^0.5` is `sqrt(2)`.
+- **`math` read grouped digits as a tuple.** `17.5% of 8,45,000 + 12% of 1,20,000` came back as
+  five numbers with no warning. Grouped digits are read as one number, with a line in
+  `assumptions`, in the same two shapes `numbers.parse` accepts: Western threes (`1,234,567`)
+  or Indian twos-then-a-three (`12,34,567`). A run that is neither — `3,14`, `1,2345`,
+  `123,45,678` — is refused with those two spellings named, rather than evaluated as a tuple or
+  stripped of its commas. Inside a call's brackets a comma still separates arguments.
+- **A rational power ran to the deadline.** `(1+1/1000000)^1000000` is about 2.718 and also a
+  seven-million-digit integer over another; the size estimate measured the value and let it
+  through, and the hosted server built the rational until the 15 s kill. The estimate now
+  measures the exact form too. `eval` takes the tree unevaluated and returns the decimal the
+  caller asked for, with `warnings` saying why there is no `exact`; `exact` refuses as
+  `too_large` in a millisecond and points at `eval`.
+- **`ode` rejected the syntax its own docstring documents.** `y'' + 4y' + 4y = 0` failed the
+  token guard with `disallowed token: "'"`, because the prime rewrite wanted a word boundary
+  before `y` and there is none after a coefficient. The documented form now works, as does
+  `4y` for `4*y(x)`.
+- **`solve` reported "no real solutions" as a numeric failure.** `x^2 + 1 = 0` with
+  `domain=real` answered `unsupported` — "no closed form exists and its roots could not be found
+  numerically" — with `equations: ["False"]` leaking out. Neither half was true. It is now `ok`
+  with an empty list, and `assumptions` says `no real solutions; 2 complex roots exist
+  (domain='complex' to see them)`. The numeric fallback also respects the domain: the four
+  complex roots of `x^4 - 2x^2 + 3` are no longer offered as real solutions.
+- **`expand` never expanded trigonometry, and said nothing.** `sin(2*x)` came back untouched
+  while `exp(x + y)` split. The multiple-angle and sum identities are applied now; `log(x*y)`
+  is left alone, correctly, and `assumptions` says why. `expand`, `factor` and `simplify` all
+  say so when they return the input unchanged, so "already in simplest form" and "this mode
+  does not do that" can be told apart.
+- **`factor` returned an integer unchanged.** `factor 12` is now `2**2*3`, with the primes and
+  exponents in `factors` and `prime: true` for a prime.
+- **`factor` on an equation surfaced CPython's parser.** `x^2 - 5*x + 6 = 0` answered
+  `invalid syntax (<string>, line 1)`. A bare `=` where an expression is expected now says to
+  drop the `= 0` and points at `solve`; no parse failure carries the `(<string>, line 1)`
+  artefact any more, and unbalanced brackets are called that.
+- **`math` cross-checks every integral it computes.** A definite integral is checked against
+  numeric quadrature and the numeric value is returned when the two disagree, with a warning
+  naming the closed form that was dropped; an antiderivative is differentiated back and the
+  result carries `verified`. SymPy 1.14 answers `0` for the integral of `1/(x^8+1)` over
+  `[0, 1]`. A divergent integral is refused, a range where the integrand is not real is
+  flagged, and a step function is integrated numerically rather than erroring.
+- **`math` limits that do not exist say so.** `1/x` at 0 and `sin(1/x)` at 0 returned
+  `exists: true` beside `zoo` and `AccumBounds`. Both return `exists: false` now, with `left`
+  and `right`, or `oscillates_between`.
+- **`math.matrix`** refuses a right-hand side whose length does not match the matrix, reports
+  an inconsistent system as `consistent: false` rather than "singular; general solution
+  returned", names the shape when an operation needs a square matrix, names the row when the
+  rows are ragged, reads a nested list written as a string, and estimates the digits of
+  `A**n` before computing it.
+- **`math.plot_points`** drops a sample that is a pole showing through (`tan(x)` beside a
+  half-turn), falls back to SymPy where lambdify's `math` module has no such function
+  (`zeta`), and refuses an expression that still has a second free symbol in it.
+- **`math.convert_form`** honours `tolerance` on a value that is already exact, reports the
+  argument of 0 as undefined rather than NaN, keeps the exact form of a value below 1e-308,
+  and writes scientific notation through `Decimal` so `10^400` is not `inf`.
+- **`math.stats`** refuses a z-score of one point and a covariance of one pair, returns a
+  horizontal regression (slope 0, `r_squared: null`) instead of refusing it as "correlation
+  undefined", and names the index and value of a data point that is not a number.
+- **`numbers` computes at 1,200 significant digits.** Decimal's default context is 28, so
+  `sequence` terms, `to_words` values and parsed numbers past 28 digits were rounded in
+  silence and any `quantize` past them raised. A number that would round is refused as
+  `too_large`.
+- **`numbers.parse` resolves `.` and `,` as a whole.** `1.234,56` is 1234.56, `1,234.56` is
+  1234.56 and `12,34,567.89` is 1234567.89; commas that group nothing (`1,2345`,
+  `10,000,00`) are refused rather than stripped. Thin and non-breaking spaces group digits, a
+  sign may come before a currency symbol, and a value past the float range carries the note
+  that says so.
+- **`finance` reads a rate written with its sign.** `rate="12%"` was 0.12%. `rate`, `tip`,
+  `percent` and `discounts` take a percentage, and how any amount was read (`10L`, `1,10`)
+  reaches `assumptions`.
+- **`finance.npv_irr` finds every internal rate of return.** `[-100, 230, -132]` has one at
+  10% and another at 20%, and bisection from the ends found neither. All roots are listed in
+  `irrs_percent` when there is more than one, and the NPV is returned even when no IRR exists.
+- **`finance.emi` stops the schedule when the balance reaches zero.** A rounded-up instalment
+  clears a long loan early; the schedule ran on into negative balances and a negative final
+  payment. `months_paid` says how many instalments there were.
+- **`scale`** inverts an explicit `factor` in `inverse` mode, and scales to zero in `linear`
+  mode instead of refusing with a message written for `inverse`.
+- **`datetime` measures elapsed time in UTC.** `diff`, `duration_sum` and `overlap` across a
+  daylight-saving change counted wall-clock hours, so a day over the spring-forward change
+  was 24. A wall time in the gap is moved forward and reported by `parse`, `add`,
+  `recurrence` and `cron_next`; an explicit offset settles a fold without the warning.
+- **`datetime` reads what it is given.** A bare number is a Unix timestamp only with 9-13
+  digits, so `2026` is refused rather than answered as 1970; a written date fills missing
+  parts with the first of the period and reports each fill; `1/2` is as ambiguous as
+  `1/2/2026`; a trailing zone abbreviation is resolved rather than dropped; `EST`, `MST`,
+  `CET` and the rest resolve as abbreviations rather than as tzdata's fixed-offset zones;
+  cron reads `7` as Sunday inside a range; `free_slots` reads `9am` as a time of day.
+- **`holidays`** accepts country names and alpha-3 codes and returns the ISO-2 code, reads a
+  month name, warns on `check` when the calendar has no data for that year, and declares only
+  the parameters each mode reads.
+- **`geo_offline`** resolves coordinates inside a one-zone country to that zone (New Delhi
+  answered `Asia/Kathmandu`), refuses `Washington`, `Portland`, `Birmingham`, `Georgia` and
+  `LA` as ambiguous, reads a zone name in any case and a backward-compatibility link such as
+  `Asia/Calcutta`, matches country names regardless of accents, and no longer attaches a
+  neighbouring territory's tzdata comment to a zone.
+- **`text`'s regex guard covers four more shapes.** Bounded nesting (`(a{1,60}){1,60}`), an
+  alternation whose branches overlap by character class, a nullable body under a fixed
+  repeat, and a nested quantifier behind an `x`-mode comment all ran to a hang. With the text
+  length known the guard also budgets the polynomial shapes (`a*a*a*b` over 100,000
+  characters) and the slow-growing ones. `validate.assert`'s `matches` runs through it too.
+- **`text` positions are in the caller's string.** A case-insensitive `count` or `find`
+  reported offsets into the lower-cased text, which is a different length for a dotted I.
+- **`collections`** matches a CSV number against the same JSON number, leaves rows without
+  the key out of `set_ops` and `dedupe` rather than treating them as equal, keeps leading
+  zeros as identifiers, reads `12,34` the same way in every mode, refuses a numeric
+  comparison on a text column, and refuses a deep or huge structure up front instead of
+  raising `RecursionError`.
+- **`validate`** reports `EXEC`, a `DELETE` inside a CTE, `SELECT ... INTO` and `COPY` as
+  writes; applies the PAN rule to a GSTIN's embedded PAN; rejects a card number of repeated
+  digits; uses the same email check as mode `email` for `format: email`; reads a phone
+  extension and rejects an unassigned country code; and refuses a URL with a control
+  character, an out-of-range port or an empty `tel:`.
+- **`encode`** compares a Base64 digest exactly (a case-mangled digest verified), refuses a
+  `key_base64` key that is not Base64 rather than signing with an empty key, decodes Base64
+  and hex strictly and names what is wrong, reads a JWT expiry given in milliseconds, and
+  rejects `NaN` and `Infinity` when parsing JSON.
+- **`convert`** rounds currency half-up as it says it does; keeps the case of a unit, so
+  `Mb/s`, `mPa`, `Mm` and `mWh` mean what they say; reads `1,5` the way `numbers` does;
+  reports `factor_exact` only when the factor is exactly representable; bounds `precision` to
+  1-15; and tries the unit registry before reading three capitals as a currency.
+- **`random`** refuses negative weights, a weighted unique draw larger than the list, a float
+  range wider than a double, and a token request larger than the response can carry.
+- **`color`** refuses `cmyk(0, 1, 1, 0)` as ambiguous - it is red as fractions and near-white
+  as percentages - and rounds the contrast ratio down, so a displayed figure never reaches a
+  WCAG threshold the colours do not meet.
+- **Options are read as written across every tool.** `"false"` is false, a count must be a
+  whole number, and no failure message carries a Python exception type or `invalid literal
+  for int()`.
 
 - **The loading skeleton replaces the page instead of covering it.** The outgoing page was faded
   to a quarter and the skeleton laid over the top, so both were on screen at once and the text

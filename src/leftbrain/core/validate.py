@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ipaddress
 import re
+import unicodedata
 import uuid as _uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -102,10 +103,17 @@ def _json_schema(p: dict[str, Any]) -> dict[str, Any]:
         cls.check_schema(schema)
     except jsonschema.SchemaError as e:
         raise ToolError(f"invalid schema: {e.message}") from None
-    v = cls(schema, format_checker=jsonschema.FormatChecker())
+    checker = jsonschema.FormatChecker()
+    checker.checks("email")(lambda x: not isinstance(x, str) or _email_ok(x))  # the same check as mode 'email'; jsonschema's own is "contains @"
+    v = cls(schema, format_checker=checker)
     errors = []
     try:
         found = sorted(v.iter_errors(data), key=lambda e: list(e.absolute_path))
+    except jsonschema.exceptions._WrappedReferencingError as e:
+        raise Unsupported(
+            f"the schema refers to {str(e).split(': ', 1)[-1]}, which is not fetched: only references inside the schema itself are resolved",
+            hint="Inline the referenced schema, or put it under $defs and $ref it as '#/$defs/name'.",
+        ) from None
     except RecursionError:
         # A $ref cycle ({"$ref": "#"}) is an input the caller can fix, not a crash.
         raise ToolError(
@@ -168,6 +176,8 @@ _TYPES = {"string": str, "number": (int, float, Decimal), "integer": int, "boole
 
 
 def _eval_rule(data: Any, rule: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(rule, dict):
+        raise ToolError(f"each rule must be an object {{path, op, value}}, not {rule!r}")
     path = rule.get("path", "$")
     op = str(rule.get("op", "exists")).lower()
     expected = rule.get("value")
@@ -175,6 +185,8 @@ def _eval_rule(data: Any, rule: dict[str, Any]) -> dict[str, Any]:
     exists = actual is not None
     passed: bool
     reason = ""
+    if op in ("ne", "!=", "not_equals", "not_in", "not_contains", "empty", "missing", "absent") and not exists and not (isinstance(data, dict) and path in data):
+        reason = "the path is missing, so the negative condition holds vacuously"
     try:
         if op in ("exists", "present", "required"):
             passed = exists
@@ -186,10 +198,10 @@ def _eval_rule(data: Any, rule: dict[str, Any]) -> dict[str, Any]:
             passed = bool(actual)
         elif op in ("eq", "==", "equals"):
             pair = _cmp_pair(actual, expected)
-            passed = (pair[0] == pair[1]) if pair else actual == expected
+            passed = (pair[0] == pair[1]) if pair else (actual == expected and isinstance(actual, bool) == isinstance(expected, bool))  # True is not 1
         elif op in ("ne", "!=", "not_equals"):
             pair = _cmp_pair(actual, expected)
-            passed = (pair[0] != pair[1]) if pair else actual != expected
+            passed = (pair[0] != pair[1]) if pair else (actual != expected or isinstance(actual, bool) != isinstance(expected, bool))
         elif op in ("gt", ">", "gte", ">=", "lt", "<", "lte", "<=", "after", "before", "on_or_after", "on_or_before"):
             pair = _cmp_pair(actual, expected)
             if pair is None:
@@ -219,7 +231,11 @@ def _eval_rule(data: Any, rule: dict[str, Any]) -> dict[str, Any]:
         elif op == "ends_with":
             passed = isinstance(actual, str) and actual.endswith(str(expected))
         elif op in ("matches", "regex"):
-            passed = isinstance(actual, str) and re.search(str(expected), actual) is not None
+            check_pattern(str(expected), where="rule pattern", text_len=len(actual) if isinstance(actual, str) else None)  # the same guard as text.regex_match
+            try:
+                passed = isinstance(actual, str) and re.search(str(expected), actual) is not None
+            except re.error as e:
+                passed, reason = False, f"invalid pattern: {e}"
         elif op in ("type", "is_type"):
             t = _TYPES.get(str(expected))
             if t is None:
@@ -229,6 +245,8 @@ def _eval_rule(data: Any, rule: dict[str, Any]) -> dict[str, Any]:
             n = len(actual) if isinstance(actual, (str, list, dict)) else None
             if n is None:
                 passed, reason = False, "value has no length"
+            elif expected is None:
+                passed, reason = False, "the rule needs a 'value' to compare the length with"
             else:
                 sub = op[4:] if op.startswith("len_") else "eq"
                 if sub == "between":
@@ -247,16 +265,27 @@ def _eval_rule(data: Any, rule: dict[str, Any]) -> dict[str, Any]:
         elif op == "unique":
             passed = isinstance(actual, list) and len({_key(x) for x in actual}) == len(actual)
         elif op == "sum_eq":
-            passed = isinstance(actual, list) and sum(_dec(x) or 0 for x in actual) == _dec(expected)
+            bad = [x for x in actual if _dec(x) is None] if isinstance(actual, list) else []
+            if not isinstance(actual, list):
+                passed, reason = False, "value is not a list"
+            elif bad:
+                passed, reason = False, f"{bad[0]!r} is not a number, so the list has no sum"
+            else:
+                passed = sum(_dec(x) or 0 for x in actual) == _dec(expected)
         elif op == "each":
             sub = expected if isinstance(expected, dict) else {}
             results = [_eval_rule(x, {**sub, "path": sub.get("path", "$")}) for x in (actual if isinstance(actual, list) else [])]
             passed = bool(results) and all(r["passed"] for r in results)
-            reason = f"{sum(1 for r in results if not r['passed'])} item(s) failed" if not passed else ""
+            if not isinstance(actual, list):
+                reason = "value is not a list"
+            elif not results:
+                reason = "the list is empty, so nothing was checked"
+            else:
+                reason = f"{sum(1 for r in results if not r['passed'])} item(s) failed" if not passed else ""
         else:
             raise ToolError(f"unknown op {op!r}")
-    except (TypeError, ValueError) as e:
-        passed, reason = False, f"{type(e).__name__}: {e}"
+    except (TypeError, ValueError):
+        passed, reason = False, "the values cannot be compared with this op"
     out = {"path": path, "op": op, "expected": expected, "actual": actual, "passed": bool(passed)}
     if rule.get("id") is not None:
         out["id"] = rule["id"]
@@ -363,6 +392,9 @@ def gstin_ok(s: str) -> tuple[bool, str]:
     check = chars[(36 - total % 36) % 36]
     if check != s[14]:
         return False, f"check character should be {check}"
+    pan_valid, pan_info = pan_ok(s[2:12])
+    if not pan_valid:  # the embedded PAN follows the PAN rules; `kind=pan` on it would say so
+        return False, f"embedded PAN {s[2:12]}: {pan_info['reason']}"
     return True, "ok"
 
 
@@ -466,11 +498,14 @@ def _id(p: dict[str, Any]) -> dict[str, Any]:
     value = p.get("value")
     if value is None:
         raise ToolError("'value' is required")
-    s = str(value)
-    out: dict[str, Any] = {"kind": kind, "value": s}
+    s = unicodedata.normalize("NFKC", str(value))  # full-width digits are digits
+    out: dict[str, Any] = {"kind": kind, "value": str(value)}
     if kind in ("luhn", "card", "credit_card"):
         d = _digits(s)
         out["valid"] = luhn_ok(d)
+        if kind != "luhn" and d and len(set(d)) == 1:
+            out["valid"] = False  # passes Luhn and is nobody's card
+            out["reason"] = "every digit is the same; this is a placeholder, not a card number"
         if kind != "luhn":
             out["brand"] = next((b for b, rx in _CARD_BRANDS if rx.match(d)), None)
             out["length"] = len(d)
@@ -553,14 +588,20 @@ def _email(p: dict[str, Any]) -> dict[str, Any]:
     return ok(out, assumptions=["syntax check only; deliverability not verified"])
 
 
+_URL_SCHEMES = ("http", "https", "ftp", "ftps", "mailto", "tel", "file")
+
+
 def _url_ok(s: Any) -> bool:
     if not isinstance(s, str):
         return False
+    if any(ord(c) < 32 or ord(c) == 127 for c in s):
+        return False  # urlparse would strip a newline
     try:
         u = urlparse(s.strip())
+        u.port  # noqa: B018 - raises for a port out of range
     except ValueError:
         return False
-    return u.scheme in ("http", "https", "ftp", "ftps", "mailto", "tel", "file") and (bool(u.netloc) or u.scheme in ("mailto", "tel", "file"))
+    return u.scheme in _URL_SCHEMES and (bool(u.netloc) or (u.scheme in ("mailto", "tel", "file") and bool(u.path)))
 
 
 def _idn_note(host: str | None) -> str | None:
@@ -584,13 +625,19 @@ def _idn_note(host: str | None) -> str | None:
 
 def _url(p: dict[str, Any]) -> dict[str, Any]:
     s = str(p.get("value") or "").strip()
+    if any(ord(c) < 32 or ord(c) == 127 for c in s):
+        return ok({"valid": False, "value": s, "reason": "contains a control character (newline, tab...), which a URL cannot"})
     try:
         u = urlparse(s)
     except ValueError as e:
         return ok({"valid": False, "value": s, "reason": str(e)})
+    try:
+        port = u.port
+    except ValueError:
+        return ok({"valid": False, "value": s, "scheme": u.scheme or None, "host": u.hostname, "reason": "the port is not a number between 0 and 65535"})
     valid = _url_ok(s)
     host = u.hostname
-    out = {"valid": valid, "value": s, "scheme": u.scheme or None, "host": host, "port": u.port, "path": u.path or "/", "query": u.query or None, "fragment": u.fragment or None, "is_ip": False, "tld": None, "secure": u.scheme == "https"}
+    out = {"valid": valid, "value": s, "scheme": u.scheme or None, "host": host, "port": port, "path": u.path or "/", "query": u.query or None, "fragment": u.fragment or None, "is_ip": False, "tld": None, "secure": u.scheme == "https"}
     if host:
         try:
             ipaddress.ip_address(host)
@@ -602,7 +649,12 @@ def _url(p: dict[str, Any]) -> dict[str, Any]:
                 out["valid"] = False
                 out["reason"] = "host has no TLD"
     if not valid and "reason" not in out:
-        out["reason"] = "missing scheme or host (e.g. https://example.com)"
+        if u.scheme and u.scheme not in _URL_SCHEMES:
+            out["reason"] = f"scheme '{u.scheme}' is not one this checks ({', '.join(_URL_SCHEMES)})"
+        elif u.scheme in ("mailto", "tel", "file") and not u.path and not u.netloc:
+            out["reason"] = f"'{u.scheme}:' with nothing after it"
+        else:
+            out["reason"] = "missing scheme or host (e.g. https://example.com)"
     warnings: list[str] = []
     if u.username or u.password:
         # `https://user:pass@evil.example.com` reads as though it points at `user` (#28 SS3.13).
@@ -641,14 +693,34 @@ _PHONE_RULES: dict[str, tuple[str, int, str]] = {
 }
 
 
+#: Country calling codes assigned by the ITU (E.164), so +999 is not "valid".
+_CALLING_CODES = {
+    "1", "7", "20", "27", "30", "31", "32", "33", "34", "36", "39", "40", "41", "43", "44", "45", "46", "47", "48", "49", "51", "52", "53", "54", "55", "56", "57", "58", "60", "61", "62", "63", "64", "65", "66", "81", "82", "84", "86", "90", "91", "92", "93", "94", "95", "98",
+    "211", "212", "213", "216", "218", "220", "221", "222", "223", "224", "225", "226", "227", "228", "229", "230", "231", "232", "233", "234", "235", "236", "237", "238", "239", "240", "241", "242", "243", "244", "245", "246", "247", "248", "249", "250", "251", "252", "253", "254", "255", "256", "257", "258", "260", "261", "262", "263", "264", "265", "266", "267", "268", "269", "290", "291", "297", "298", "299",
+    "350", "351", "352", "353", "354", "355", "356", "357", "358", "359", "370", "371", "372", "373", "374", "375", "376", "377", "378", "379", "380", "381", "382", "383", "385", "386", "387", "389", "420", "421", "423", "500", "501", "502", "503", "504", "505", "506", "507", "508", "509", "590", "591", "592", "593", "594", "595", "596", "597", "598", "599",
+    "670", "672", "673", "674", "675", "676", "677", "678", "679", "680", "681", "682", "683", "685", "686", "687", "688", "689", "690", "691", "692", "800", "808", "850", "852", "853", "855", "856", "870", "878", "880", "881", "882", "883", "886", "888", "960", "961", "962", "963", "964", "965", "966", "967", "968", "970", "971", "972", "973", "974", "975", "976", "977", "979", "992", "993", "994", "995", "996", "998",
+}
+_EXTENSION = re.compile(r"\s*(?:x|ext\.?|extension|#)\s*(\d{1,6})\s*$", re.I)
+
+
 def _phone(p: dict[str, Any]) -> dict[str, Any]:
     raw = str(p.get("value") or "")
     region = (p.get("region") or "").upper()
-    s = re.sub(r"[\s().\-]", "", raw)
+    body = raw
+    extension = None
+    m = _EXTENSION.search(body)
+    if m:  # `x123` is how an extension is written
+        extension, body = m.group(1), body[: m.start()]
+    s = re.sub(r"[\s().\-]", "", body)
     if s.startswith("00"):
         s = "+" + s[2:]
     out: dict[str, Any] = {"value": raw, "valid": False}
+    if extension:
+        out["extension"] = extension
     digits = s[1:] if s.startswith("+") else s
+    if not digits:
+        out["reason"] = "no digits"
+        return ok(out)
     if not digits.isdigit():
         out["reason"] = "contains non-digit characters"
         return ok(out)
@@ -656,13 +728,18 @@ def _phone(p: dict[str, Any]) -> dict[str, Any]:
         if not 8 <= len(digits) <= 15:
             out["reason"] = "E.164 numbers have 8-15 digits"
             return ok(out)
-        cc = next((c for c in sorted({r[0] for r in _PHONE_RULES.values()}, key=len, reverse=True) if digits.startswith(c)), None)
-        national = digits[len(cc):] if cc else None
-        matched = [k for k, (c, _n, rx) in _PHONE_RULES.items() if c == cc and national and re.fullmatch(rx, national)]
-        out.update({"e164": "+" + digits, "country_code": cc, "national": national, "region_guess": matched[0] if matched else None, "valid": bool(matched) if cc else True})
-        if cc and not matched:
+        cc = next((c for c in sorted(_CALLING_CODES, key=len, reverse=True) if digits.startswith(c)), None)
+        if cc is None:
+            out["reason"] = "the country code is not one the ITU has assigned"
+            return ok(out)
+        national = digits[len(cc):]
+        known = [k for k, (c, _n, _rx) in _PHONE_RULES.items() if c == cc]
+        matched = [k for k, (c, _n, rx) in _PHONE_RULES.items() if c == cc and re.fullmatch(rx, national)]
+        out.update({"e164": "+" + digits, "country_code": cc, "national": national, "region_guess": matched[0] if matched else None, "valid": bool(matched) if known else True})
+        warnings = [] if known else [f"+{cc} is not in the table of national formats, so only the E.164 shape was checked"]
+        if known and not matched:
             out["reason"] = f"national part does not match known pattern for +{cc}"
-        return ok(out, assumptions=["E.164 syntax check; number existence not verified"])
+        return ok(out, assumptions=["E.164 syntax check; number existence not verified"], warnings=warnings)
     if not region:
         raise ToolError("number has no '+country code'; pass region (e.g. 'IN', 'US')")
     if region not in _PHONE_RULES:
@@ -762,7 +839,7 @@ def _cidr(p: dict[str, Any]) -> dict[str, Any]:
 # SQL
 # --------------------------------------------------------------------------- #
 
-_WRITE_TYPES = {"Insert", "Update", "Delete", "Merge", "Create", "Drop", "Alter", "TruncateTable", "Truncate", "Grant", "Revoke", "Set", "Command"}
+_WRITE_TYPES = {"Insert", "Update", "Delete", "Merge", "Create", "Drop", "Alter", "TruncateTable", "Truncate", "Grant", "Revoke", "Set", "Command", "Execute", "Copy", "Call"}
 
 
 def _sql_parse(p: dict[str, Any]) -> dict[str, Any]:
@@ -774,13 +851,23 @@ def _sql_parse(p: dict[str, Any]) -> dict[str, Any]:
     sql = p.get("sql") or p.get("value") or p.get("query")
     if not sql:
         raise ToolError("'sql' is required")
+    if not isinstance(sql, str):
+        raise ToolError(f"'sql' must be a string, not {type(sql).__name__}")
     dialect = p.get("dialect")
+    if dialect is not None:
+        from sqlglot.dialects import Dialect
+
+        if Dialect.get(str(dialect).lower()) is None:
+            raise ToolError(f"unknown dialect {dialect!r}", hint="Use one of postgres, mysql, sqlite, tsql, oracle, bigquery, snowflake, spark, duckdb, or leave it out.")
     try:
         # sqlglot yields a None for a trailing comment or a stray semicolon, which was
         # counted as a third statement in `SELECT 1; DROP TABLE users; --` (#28 SS3.13).
-        statements = [st for st in sqlglot.parse(sql, read=dialect) if st is not None and st.sql().strip()]
+        # An EXEC renders as an empty string too, and is a statement.
+        statements = [st for st in sqlglot.parse(sql, read=dialect) if st is not None and (st.sql().strip() or type(st).__name__ in _WRITE_TYPES)]
     except sqlglot.errors.ParseError as e:
         return ok({"valid": False, "errors": [str(err.get("description", e)) for err in getattr(e, "errors", [])] or [str(e)], "statement_count": 0, "read_only": None})
+    except RecursionError:
+        raise TooLarge("the statement nests too deeply to parse", hint="Simplify the expression.") from None
     out_stmts = []
     read_only = True
     warnings: list[str] = []
@@ -804,7 +891,20 @@ def _sql_parse(p: dict[str, Any]) -> dict[str, Any]:
             tbl = st.find(exp.Table)
             if tbl is not None:
                 tables_write.add(tbl.name)
-        is_write = kind in _WRITE_TYPES
+        # a write hiding inside a read: `WITH d AS (DELETE ...) SELECT`, `SELECT ... INTO new_t`
+        nested = [n for n in st.walk() if n is not st and isinstance(n, (exp.Insert, exp.Update, exp.Delete, exp.Merge, exp.Create, exp.Drop, exp.Alter))]
+        into = st.args.get("into") if isinstance(st, exp.Select) else None
+        if into is not None:
+            tbl = into.find(exp.Table)
+            if tbl is not None:
+                tables_write.add(tbl.name)
+                tables_read.discard(tbl.name)
+        for n in nested:
+            tbl = n.this.find(exp.Table) if getattr(n, "this", None) is not None and hasattr(n.this, "find") else n.find(exp.Table)
+            if tbl is not None:
+                tables_write.add(tbl.name)
+                tables_read.discard(tbl.name)
+        is_write = kind in _WRITE_TYPES or bool(nested) or into is not None
         if is_write:
             read_only = False
         entry: dict[str, Any] = {"type": kind.upper(), "is_write": is_write, "tables_read": sorted(tables_read), "tables_write": sorted(tables_write), "columns": sorted({c.name for c in st.find_all(exp.Column) if c.name})[:200], "has_where": st.find(exp.Where) is not None, "has_limit": st.find(exp.Limit) is not None}

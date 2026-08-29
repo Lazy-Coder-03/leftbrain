@@ -7,8 +7,10 @@ major cities that are not tzdata zone names (Mumbai, Bengaluru, Manchester…).
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
+import unicodedata
 from functools import lru_cache
 from importlib.resources import files
 from typing import Any
@@ -45,12 +47,12 @@ _CITY_ALIASES: dict[str, str] = {
     "vadodara": "Asia/Kolkata", "nashik": "Asia/Kolkata", "ranchi": "Asia/Kolkata", "raipur": "Asia/Kolkata", "dehradun": "Asia/Kolkata",
     # US / Canada
     "new york city": "America/New_York", "nyc": "America/New_York", "manhattan": "America/New_York", "brooklyn": "America/New_York",
-    "boston": "America/New_York", "washington": "America/New_York", "washington dc": "America/New_York", "dc": "America/New_York",
+    "boston": "America/New_York", "washington dc": "America/New_York", "dc": "America/New_York",
     "miami": "America/New_York", "atlanta": "America/New_York", "philadelphia": "America/New_York", "orlando": "America/New_York",
     "tampa": "America/New_York", "charlotte": "America/New_York", "pittsburgh": "America/New_York", "baltimore": "America/New_York",
     "san francisco": "America/Los_Angeles", "sf": "America/Los_Angeles", "seattle": "America/Los_Angeles",
     "san diego": "America/Los_Angeles", "san jose": "America/Los_Angeles", "silicon valley": "America/Los_Angeles",
-    "portland": "America/Los_Angeles", "las vegas": "America/Los_Angeles", "sacramento": "America/Los_Angeles", "oakland": "America/Los_Angeles",
+    "las vegas": "America/Los_Angeles", "sacramento": "America/Los_Angeles", "oakland": "America/Los_Angeles",
     "dallas": "America/Chicago", "houston": "America/Chicago", "austin": "America/Chicago", "san antonio": "America/Chicago",
     "minneapolis": "America/Chicago", "st louis": "America/Chicago", "new orleans": "America/Chicago", "kansas city": "America/Chicago",
     "milwaukee": "America/Chicago", "nashville": "America/Chicago", "memphis": "America/Chicago", "oklahoma city": "America/Chicago",
@@ -58,7 +60,7 @@ _CITY_ALIASES: dict[str, str] = {
     "montreal": "America/Toronto", "ottawa": "America/Toronto", "quebec": "America/Toronto", "calgary": "America/Edmonton",
     "honolulu": "Pacific/Honolulu", "hawaii": "Pacific/Honolulu", "alaska": "America/Anchorage",
     # UK / Europe
-    "manchester": "Europe/London", "birmingham": "Europe/London", "edinburgh": "Europe/London", "glasgow": "Europe/London",
+    "manchester": "Europe/London", "edinburgh": "Europe/London", "glasgow": "Europe/London",
     "liverpool": "Europe/London", "leeds": "Europe/London", "bristol": "Europe/London", "cambridge": "Europe/London", "oxford": "Europe/London",
     "uk": "Europe/London", "england": "Europe/London", "scotland": "Europe/London", "wales": "Europe/London", "britain": "Europe/London", "united kingdom": "Europe/London",
     "munich": "Europe/Berlin", "frankfurt": "Europe/Berlin", "hamburg": "Europe/Berlin", "cologne": "Europe/Berlin", "stuttgart": "Europe/Berlin", "germany": "Europe/Berlin",
@@ -98,7 +100,16 @@ _CITY_ALIASES: dict[str, str] = {
     "argentina": "America/Argentina/Buenos_Aires", "chile": "America/Santiago", "peru": "America/Lima", "colombia": "America/Bogota",
     "medellin": "America/Bogota", "guadalajara": "America/Mexico_City", "monterrey": "America/Monterrey",
 }
-_COUNTRY_ALIASES = {"uk": "GB", "usa": "US", "united states": "US", "america": "US", "uae": "AE", "south korea": "KR", "russia": "RU", "vietnam": "VN", "iran": "IR", "syria": "SY", "laos": "LA", "czechia": "CZ", "czech republic": "CZ", "taiwan": "TW", "hong kong": "HK", "macau": "MO", "bolivia": "BO", "venezuela": "VE", "tanzania": "TZ", "moldova": "MD", "north korea": "KP", "turkey": "TR", "türkiye": "TR", "netherlands": "NL", "holland": "NL", "ivory coast": "CI", "cote d'ivoire": "CI", "brunei": "BN", "cape verde": "CV", "micronesia": "FM", "palestine": "PS", "kosovo": "XK", "eswatini": "SZ", "swaziland": "SZ", "myanmar": "MM", "burma": "MM"}
+#: Names that mean more than one place: the state of Washington is on Pacific time, and
+#: `LA` is Los Angeles as often as Laos.
+_AMBIGUOUS_PLACES: dict[str, list[str]] = {
+    "washington": ["America/New_York", "America/Los_Angeles"],
+    "portland": ["America/Los_Angeles", "America/New_York"],
+    "birmingham": ["Europe/London", "America/Chicago"],
+    "georgia": ["Asia/Tbilisi", "America/New_York"],
+    "la": ["America/Los_Angeles", "Asia/Vientiane"],
+}
+_COUNTRY_ALIASES = {"united kingdom": "GB", "great britain": "GB", "britain": "GB", "england": "GB", "scotland": "GB", "wales": "GB", "northern ireland": "GB", "timor leste": "TL", "east timor": "TL", "cabo verde": "CV", "viet nam": "VN", "russian federation": "RU", "aland": "AX", "aland islands": "AX", "uk": "GB", "usa": "US", "united states": "US", "america": "US", "uae": "AE", "south korea": "KR", "russia": "RU", "vietnam": "VN", "iran": "IR", "syria": "SY", "laos": "LA", "czechia": "CZ", "czech republic": "CZ", "taiwan": "TW", "hong kong": "HK", "macau": "MO", "bolivia": "BO", "venezuela": "VE", "tanzania": "TZ", "moldova": "MD", "north korea": "KP", "turkey": "TR", "turkiye": "TR", "netherlands": "NL", "holland": "NL", "ivory coast": "CI", "cote d'ivoire": "CI", "brunei": "BN", "cape verde": "CV", "micronesia": "FM", "palestine": "PS", "kosovo": "XK", "eswatini": "SZ", "swaziland": "SZ", "myanmar": "MM", "burma": "MM"}
 
 
 def _coord(s: str) -> float:
@@ -136,11 +147,61 @@ def _tables() -> tuple[dict[str, dict[str, Any]], dict[str, str], dict[str, list
             comment = parts[3].strip() if len(parts) > 3 else ""
             if zone not in zones:
                 zones[zone] = {"zone": zone, "countries": codes, "lat": lat, "lon": lon, "comment": comment}
+            elif fname == "zone.tab" and codes[0] == zones[zone]["countries"][0]:
+                # zone1970.tab shares Asia/Dubai between AE, OM, RE, SC and TF and comments on
+                # the islands; zone.tab's own line for the first country is about that country
+                zones[zone]["comment"] = comment
             for c in codes:
                 by_country.setdefault(c, [])
                 if zone not in by_country[c]:
                     by_country[c].append(zone)
     return zones, countries, by_country
+
+
+@lru_cache(maxsize=1)
+def _links() -> dict[str, str]:
+    """Backward-compatibility names -> the zone they point at (`Asia/Calcutta` -> `Asia/Kolkata`).
+
+    tzdata ships a link as a byte-identical copy of its target, so the copies pair up.
+    """
+    from zoneinfo import available_timezones
+
+    zones, _, _ = _tables()
+    root = files("tzdata.zoneinfo")
+
+    def digest(z: str) -> str | None:
+        try:
+            return hashlib.sha1(root.joinpath(*z.split("/")).read_bytes()).hexdigest()
+        except (FileNotFoundError, OSError, TypeError):
+            return None
+
+    by_hash = {h: z for z in zones if (h := digest(z))}
+    out: dict[str, str] = {}
+    for z in available_timezones():
+        if z in zones:
+            continue
+        target = by_hash.get(digest(z) or "")
+        if target:
+            out[z] = target
+    return out
+
+
+@lru_cache(maxsize=1)
+def _zones_lower() -> dict[str, str]:
+    from zoneinfo import available_timezones
+
+    return {z.lower(): z for z in available_timezones()}
+
+
+def canonical_zone(name: str) -> tuple[str, str | None] | None:
+    """(zone, link-note) for an IANA name in any case, or None when it is not one."""
+    z = _zones_lower().get(name.strip().replace(" ", "_").lower())
+    if z is None:
+        return None
+    target = _links().get(z)
+    if target:
+        return target, f"'{z}' is a backward-compatibility link to {target}"
+    return z, None
 
 
 @lru_cache(maxsize=1)
@@ -158,6 +219,8 @@ def _name_index() -> dict[str, list[str]]:
 
 
 def _norm(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s)
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))  # Réunion and Reunion are one place
     s = s.strip().lower().replace("_", " ").replace("-", " ")
     s = re.sub(r"\s+", " ", s)
     s = re.sub(r"^(st\.|saint)\s", "st ", s)
@@ -170,25 +233,35 @@ def lookup_zone(place: str) -> list[str]:
         return []
     zones, countries, by_country = _tables()
     raw = place.strip()
-    if raw in zones or raw.replace(" ", "_") in zones:
-        return [raw.replace(" ", "_")]
+    exact = canonical_zone(raw)
+    if exact:
+        return [exact[0]]
     key = _norm(raw)
+    if key in _AMBIGUOUS_PLACES:
+        return list(_AMBIGUOUS_PLACES[key])
     if key in _CITY_ALIASES:
         return [_CITY_ALIASES[key]]
     idx = _name_index()
     if key in idx:
         return list(idx[key])
-    code = _COUNTRY_ALIASES.get(key) or (raw.upper() if len(raw) == 2 and raw.upper() in countries else None)
-    if code is None:
-        for c, name in countries.items():
-            if _norm(name) == key:
-                code = c
-                break
+    code = country_code(raw)
     if code and code in by_country:
         return list(by_country[code])
     # prefix match on city names (e.g. "kolkata city")
     hits = [z for k, zs in idx.items() if key.startswith(k) or k.startswith(key) for z in zs] if len(key) >= 4 else []
     return list(dict.fromkeys(hits))[:8]
+
+
+def country_code(q: str) -> str | None:
+    """ISO 3166 code for a country given by code or by name, in any case, accents or not."""
+    _, countries, _ = _tables()
+    key = _norm(q)
+    code = _COUNTRY_ALIASES.get(key) or (q.strip().upper() if len(q.strip()) == 2 and q.strip().upper() in countries else None)
+    if code is None:
+        for c, name in countries.items():
+            if _norm(name) == key:
+                return c
+    return code
 
 
 def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -252,11 +325,24 @@ def _on_globe(lat: float, lon: float, name: str) -> tuple[float, float]:
     return lat, lon
 
 
+def _degrees(v: Any, name: str, what: str) -> float:
+    if isinstance(v, bool) or v is None:
+        raise ToolError(f"{name}: {what} must be a number, not {v!r}")
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        raise ToolError(f"{name}: {what} must be a number in degrees, not {v!r}") from None
+
+
 def _point(v: Any, name: str, assumptions: list[str]) -> tuple[float, float]:
-    if isinstance(v, dict) and "lat" in v and ("lon" in v or "lng" in v):
-        return _on_globe(float(v["lat"]), float(v.get("lon", v.get("lng"))), name)
+    if isinstance(v, dict) and ("lat" in v or "lon" in v or "lng" in v):
+        if v.get("lat") is None:
+            raise ToolError(f"{name}: lat is required alongside lon")
+        if v.get("lon", v.get("lng")) is None:
+            raise ToolError(f"{name}: lon is required alongside lat")
+        return _on_globe(_degrees(v["lat"], name, "lat"), _degrees(v.get("lon", v.get("lng")), name, "lon"), name)
     if isinstance(v, (list, tuple)) and len(v) == 2:
-        return _on_globe(float(v[0]), float(v[1]), name)
+        return _on_globe(_degrees(v[0], name, "lat"), _degrees(v[1], name, "lon"), name)
     if isinstance(v, str):
         m = re.fullmatch(r"\s*([-+]?\d+(?:\.\d+)?)\s*,\s*([-+]?\d+(?:\.\d+)?)\s*", v)
         if m:
@@ -301,14 +387,81 @@ def _tz_for_place(p: dict[str, Any]) -> dict[str, Any]:
     if len(zs) > 1 and not p.get("all"):
         raise Ambiguous(f"'{place}' spans {len(zs)} timezones", field="place", options=zs)
     entries = [_zone_entry(z) for z in zs]
-    return ok(entries[0] if len(entries) == 1 else {"zones": entries, "count": len(entries)}, assumptions=[f"'{place}' matched via alias table" if _norm(str(place)) in _CITY_ALIASES else ""] if len(zs) == 1 else [])
+    assumptions: list[str] = []
+    if len(zs) == 1:
+        exact = canonical_zone(str(place))
+        if exact and exact[1]:
+            assumptions.append(exact[1])
+        elif _norm(str(place)) in _CITY_ALIASES:
+            assumptions.append(f"'{place}' matched via alias table")
+    return ok(entries[0] if len(entries) == 1 else {"zones": entries, "count": len(entries)}, assumptions=assumptions)
+
+
+#: Reference points beyond tzdata's one city per zone: with Kolkata as India's only point,
+#: New Delhi is nearer Kathmandu and Bengaluru nearer Colombo. (lat, lon, zone)
+_EXTRA_REFERENCES: list[tuple[float, float, str]] = [
+    (28.61, 77.21, "Asia/Kolkata"), (19.08, 72.88, "Asia/Kolkata"), (12.97, 77.59, "Asia/Kolkata"), (13.08, 80.27, "Asia/Kolkata"),
+    (17.39, 78.49, "Asia/Kolkata"), (23.02, 72.57, "Asia/Kolkata"), (18.52, 73.86, "Asia/Kolkata"), (26.91, 75.79, "Asia/Kolkata"),
+    (26.85, 80.95, "Asia/Kolkata"), (21.15, 79.09, "Asia/Kolkata"), (30.73, 76.78, "Asia/Kolkata"), (9.93, 76.27, "Asia/Kolkata"),
+    (25.59, 85.14, "Asia/Kolkata"), (26.14, 91.74, "Asia/Kolkata"), (8.52, 76.94, "Asia/Kolkata"), (34.08, 74.80, "Asia/Kolkata"),
+    (39.90, 116.40, "Asia/Shanghai"), (23.13, 113.26, "Asia/Shanghai"), (30.57, 104.07, "Asia/Shanghai"), (34.34, 108.94, "Asia/Shanghai"),
+    (45.75, 126.65, "Asia/Shanghai"), (36.06, 103.83, "Asia/Shanghai"), (25.04, 102.71, "Asia/Shanghai"), (29.65, 91.13, "Asia/Shanghai"),
+    (43.83, 87.62, "Asia/Urumqi"), (31.55, 74.34, "Asia/Karachi"), (33.69, 73.04, "Asia/Karachi"), (34.02, 71.52, "Asia/Karachi"),
+    (24.71, 46.68, "Asia/Riyadh"), (21.49, 39.19, "Asia/Riyadh"), (35.69, 51.39, "Asia/Tehran"), (29.60, 52.53, "Asia/Tehran"),
+    (38.07, 46.30, "Asia/Tehran"), (36.29, 59.61, "Asia/Tehran"), (33.31, 44.37, "Asia/Baghdad"), (36.19, 44.01, "Asia/Baghdad"),
+    (41.01, 28.98, "Europe/Istanbul"), (39.93, 32.86, "Europe/Istanbul"), (38.42, 27.14, "Europe/Istanbul"), (37.87, 32.48, "Europe/Istanbul"),
+    (55.76, 37.62, "Europe/Moscow"), (59.94, 30.32, "Europe/Moscow"), (55.03, 82.92, "Asia/Novosibirsk"), (56.84, 60.60, "Asia/Yekaterinburg"),
+    (43.12, 131.89, "Asia/Vladivostok"), (52.30, 104.30, "Asia/Irkutsk"), (30.04, 31.24, "Africa/Cairo"), (31.20, 29.92, "Africa/Cairo"),
+    (6.52, 3.38, "Africa/Lagos"), (9.06, 7.49, "Africa/Lagos"), (12.00, 8.52, "Africa/Lagos"), (-1.29, 36.82, "Africa/Nairobi"),
+    (-4.04, 39.67, "Africa/Nairobi"), (9.03, 38.74, "Africa/Addis_Ababa"), (-26.20, 28.05, "Africa/Johannesburg"), (-33.93, 18.42, "Africa/Johannesburg"),
+    (-29.86, 31.02, "Africa/Johannesburg"), (15.60, 32.53, "Africa/Khartoum"), (-6.79, 39.28, "Africa/Dar_es_Salaam"), (-4.44, 15.27, "Africa/Kinshasa"),
+    (-6.21, 106.85, "Asia/Jakarta"), (-7.25, 112.75, "Asia/Jakarta"), (3.60, 98.67, "Asia/Jakarta"), (-8.65, 115.22, "Asia/Makassar"),
+    (13.76, 100.50, "Asia/Bangkok"), (18.79, 98.98, "Asia/Bangkok"), (21.03, 105.85, "Asia/Ho_Chi_Minh"), (10.82, 106.63, "Asia/Ho_Chi_Minh"),
+    (16.87, 96.20, "Asia/Yangon"), (23.81, 90.41, "Asia/Dhaka"), (22.36, 91.78, "Asia/Dhaka"), (27.72, 85.32, "Asia/Kathmandu"),
+    (6.93, 79.85, "Asia/Colombo"), (3.14, 101.69, "Asia/Kuala_Lumpur"), (14.60, 120.98, "Asia/Manila"), (10.32, 123.90, "Asia/Manila"),
+    (35.68, 139.69, "Asia/Tokyo"), (34.69, 135.50, "Asia/Tokyo"), (43.06, 141.35, "Asia/Tokyo"), (33.59, 130.40, "Asia/Tokyo"),
+    (37.57, 126.98, "Asia/Seoul"), (35.18, 129.08, "Asia/Seoul"), (25.03, 121.57, "Asia/Taipei"), (22.63, 120.30, "Asia/Taipei"),
+    (-33.87, 151.21, "Australia/Sydney"), (-37.81, 144.96, "Australia/Melbourne"), (-27.47, 153.03, "Australia/Brisbane"), (-31.95, 115.86, "Australia/Perth"),
+    (-34.93, 138.60, "Australia/Adelaide"), (-12.46, 130.84, "Australia/Darwin"), (-42.88, 147.33, "Australia/Hobart"), (-36.85, 174.76, "Pacific/Auckland"),
+    (-43.53, 172.64, "Pacific/Auckland"), (40.71, -74.01, "America/New_York"), (42.36, -71.06, "America/New_York"), (25.76, -80.19, "America/New_York"),
+    (33.75, -84.39, "America/New_York"), (39.95, -75.17, "America/New_York"), (38.90, -77.04, "America/New_York"), (42.33, -83.05, "America/Detroit"),
+    (41.88, -87.63, "America/Chicago"), (29.76, -95.37, "America/Chicago"), (32.78, -96.80, "America/Chicago"), (44.98, -93.27, "America/Chicago"),
+    (39.74, -104.99, "America/Denver"), (40.76, -111.89, "America/Denver"), (33.45, -112.07, "America/Phoenix"), (34.05, -118.24, "America/Los_Angeles"),
+    (37.77, -122.42, "America/Los_Angeles"), (47.61, -122.33, "America/Los_Angeles"), (36.17, -115.14, "America/Los_Angeles"), (45.52, -122.68, "America/Los_Angeles"),
+    (61.22, -149.90, "America/Anchorage"), (21.31, -157.86, "Pacific/Honolulu"), (43.65, -79.38, "America/Toronto"), (45.50, -73.57, "America/Toronto"),
+    (49.28, -123.12, "America/Vancouver"), (51.05, -114.07, "America/Edmonton"), (49.90, -97.14, "America/Winnipeg"), (19.43, -99.13, "America/Mexico_City"),
+    (20.67, -103.35, "America/Mexico_City"), (25.69, -100.32, "America/Monterrey"), (-23.55, -46.63, "America/Sao_Paulo"), (-22.91, -43.17, "America/Sao_Paulo"),
+    (-15.79, -47.88, "America/Sao_Paulo"), (-12.97, -38.51, "America/Bahia"), (-3.12, -60.02, "America/Manaus"), (-34.60, -58.38, "America/Argentina/Buenos_Aires"),
+    (-31.42, -64.18, "America/Argentina/Cordoba"), (-33.45, -70.67, "America/Santiago"), (-12.05, -77.04, "America/Lima"), (4.71, -74.07, "America/Bogota"),
+    (10.48, -66.88, "America/Caracas"), (-0.18, -78.47, "America/Guayaquil"), (-16.50, -68.15, "America/La_Paz"), (51.51, -0.13, "Europe/London"),
+    (53.48, -2.24, "Europe/London"), (55.95, -3.19, "Europe/London"), (52.52, 13.41, "Europe/Berlin"), (48.14, 11.58, "Europe/Berlin"),
+    (48.86, 2.35, "Europe/Paris"), (43.30, 5.37, "Europe/Paris"), (40.42, -3.70, "Europe/Madrid"), (41.39, 2.17, "Europe/Madrid"),
+    (41.90, 12.50, "Europe/Rome"), (45.46, 9.19, "Europe/Rome"), (52.37, 4.90, "Europe/Amsterdam"), (50.85, 4.35, "Europe/Brussels"),
+    (47.38, 8.54, "Europe/Zurich"), (48.21, 16.37, "Europe/Vienna"), (52.23, 21.01, "Europe/Warsaw"), (50.08, 14.44, "Europe/Prague"),
+    (59.33, 18.07, "Europe/Stockholm"), (59.91, 10.75, "Europe/Oslo"), (55.68, 12.57, "Europe/Copenhagen"), (60.17, 24.94, "Europe/Helsinki"),
+    (38.72, -9.14, "Europe/Lisbon"), (53.35, -6.26, "Europe/Dublin"), (37.98, 23.73, "Europe/Athens"), (50.45, 30.52, "Europe/Kyiv"),
+    (44.43, 26.10, "Europe/Bucharest"), (47.50, 19.04, "Europe/Budapest"), (25.20, 55.27, "Asia/Dubai"), (24.45, 54.38, "Asia/Dubai"),
+    (23.59, 58.41, "Asia/Muscat"), (25.29, 51.53, "Asia/Qatar"), (29.38, 47.98, "Asia/Kuwait"), (32.08, 34.78, "Asia/Jerusalem"),
+    (31.95, 35.93, "Asia/Amman"), (33.89, 35.50, "Asia/Beirut"), (33.51, 36.29, "Asia/Damascus"), (43.24, 76.95, "Asia/Almaty"),
+    (41.30, 69.24, "Asia/Tashkent"), (34.53, 69.17, "Asia/Kabul"), (33.57, -7.59, "Africa/Casablanca"), (36.75, 3.06, "Africa/Algiers"),
+    (36.81, 10.18, "Africa/Tunis"), (5.60, -0.19, "Africa/Accra"), (14.69, -17.44, "Africa/Dakar"), (-18.88, 47.51, "Indian/Antananarivo"),
+    (-15.42, 28.28, "Africa/Lusaka"), (-17.83, 31.05, "Africa/Harare"), (-25.97, 32.57, "Africa/Maputo"), (-8.84, 13.23, "Africa/Luanda"),
+]
 
 
 def _tz_for_coords(p: dict[str, Any]) -> dict[str, Any]:
     assumptions: list[str] = []
-    lat, lon = _point({"lat": p.get("lat"), "lon": p.get("lon", p.get("lng"))} if p.get("lat") is not None else p.get("point"), "point", assumptions)
+    given = p.get("lat") is not None or p.get("lon") is not None or p.get("lng") is not None
+    lat, lon = _point({"lat": p.get("lat"), "lon": p.get("lon", p.get("lng"))} if given else p.get("point"), "point", assumptions)
     zones, _, _ = _tables()
-    best = sorted(((haversine_km(lat, lon, m["lat"], m["lon"]), z) for z, m in zones.items() if m["lat"] is not None))[:3]
+    refs = [(m["lat"], m["lon"], z) for z, m in zones.items() if m["lat"] is not None] + _EXTRA_REFERENCES
+    ranked = sorted((haversine_km(lat, lon, rlat, rlon), z) for rlat, rlon, z in refs)
+    best: list[tuple[float, str]] = []
+    for d, z in ranked:  # the three nearest *distinct* zones
+        if all(z != b for _, b in best):
+            best.append((d, z))
+        if len(best) == 3:
+            break
     if not best:
         raise ToolError("no zone data available")
     entry = _zone_entry(best[0][1])
@@ -322,27 +475,20 @@ def _country(p: dict[str, Any]) -> dict[str, Any]:
     if not q:
         raise ToolError("'country' is required")
     zones, countries, by_country = _tables()
-    key = _norm(q)
-    code = _COUNTRY_ALIASES.get(key) or (q.upper() if q.upper() in countries else None)
-    if code is None:
-        for c, name in countries.items():
-            if _norm(name) == key:
-                code = c
-                break
+    code = country_code(q)
     if code is None:
         raise ToolError(f"unknown country {q!r}")
     zs = by_country.get(code, [])
-    return ok({"code": code, "name": countries.get(code), "zones": [_zone_entry(z) for z in zs], "zone_count": len(zs), "single_timezone": len(zs) == 1})
+    warnings = [f"tzdata lists no zones for {code} ({countries.get(code) or q}); its time is kept under a neighbour's zone"] if not zs else []
+    return ok({"code": code, "name": countries.get(code), "zones": [_zone_entry(z) for z in zs], "zone_count": len(zs), "single_timezone": len(zs) == 1}, warnings=warnings)
 
 
 def _zone_info(p: dict[str, Any]) -> dict[str, Any]:
     z = p.get("zone") or p.get("value")
-    zones, _, _ = _tables()
-    from zoneinfo import available_timezones
-
-    if not z or str(z) not in available_timezones():
+    exact = canonical_zone(str(z)) if z else None
+    if not exact:
         raise ToolError("'zone' must be a valid IANA zone name")
-    return ok(_zone_entry(str(z)))
+    return ok(_zone_entry(exact[0]), assumptions=[exact[1]] if exact[1] else [])
 
 
 @tool

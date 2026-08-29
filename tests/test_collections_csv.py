@@ -158,7 +158,8 @@ def test_a_blank_cell_in_csv_is_null_and_unflatten_still_wants_an_object():
 
 def test_record_input_is_untouched_by_the_csv_path():
     r = lb.collections_tool("sort_by", items=[{"n": "b", "a": "1,200"}, {"n": "a", "a": 2}], key="a")
-    assert r["assumptions"] == ["stable multi-key sort; None sorts last; strings case-insensitive"]
+    assert r["assumptions"][0] == "stable multi-key sort; None sorts last; strings case-insensitive"
+    assert any("sort as text" in a for a in r["assumptions"])  # "1,200" stays a string, and that is said
     assert r["result"]["items"] == [{"n": "a", "a": 2}, {"n": "b", "a": "1,200"}]
     assert lb.collections_tool("chunk", items=[[1, 2], [3]], size=1)["result"]["chunks"] == [[[1, 2]], [[3]]]
 

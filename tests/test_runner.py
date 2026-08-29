@@ -16,10 +16,24 @@ pytest.importorskip("pebble", reason="compute isolation needs pebble: pip instal
 
 from leftbrain import runner  # noqa: E402
 
-#: An expression Layer 0 cannot judge and so cannot refuse: the tower is literal, but
-#: multiplying it by a symbol makes the estimate return "unknown" rather than "enormous".
-#: This is exactly the shape the worker exists to catch.
-UNESTIMABLE_BOMB = "9^9^9^9*x"
+#: An expression Layer 0 cannot judge and so cannot refuse: the cost of factorising a
+#: 62-digit semiprime is not in the size of any number written down, so the digit estimate
+#: has nothing to measure. This is the shape the worker exists to catch.
+UNESTIMABLE_BOMB = "factorint(10000000000000000000000000000603000000000000000000000000001881)"
+
+#: A tower multiplied by a symbol. Layer 0 sizes every literal subtree, so this one is
+#: refused before a worker is asked for.
+ESTIMABLE_BOMB = "9^9^9^9*x"
+
+
+def test_a_bomb_layer_0_can_size_never_reaches_a_worker():
+    """Every literal subtree is measured, whatever it sits beside."""
+    import time
+
+    started = time.monotonic()
+    r = runner.run_guarded("math", "eval", {"expr": ESTIMABLE_BOMB})
+    assert time.monotonic() - started < 1.0
+    assert r["ok"] is False and r["error"] == "too_large" and "digits" in r["message"], r
 
 
 @pytest.fixture

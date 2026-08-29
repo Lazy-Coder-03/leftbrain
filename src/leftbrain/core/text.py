@@ -7,7 +7,7 @@ import re
 import unicodedata
 from typing import Any
 
-from ..contract import TooLarge, ToolError, Unsupported, check_params, ok, tool
+from ..contract import TooLarge, ToolError, Unsupported, check_params, flag, ok, tool, whole
 
 MODES = ("count", "regex_match", "regex_replace", "diff", "sort", "dedupe", "extract", "find", "similarity")
 
@@ -30,6 +30,8 @@ _FLAGS = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL, "x": re.VERBOSE
 _MAX_TEXT = 2_000_000
 #: Characters a replacement may produce. `a`*10000 -> `x`*1000 each is 10 MB (#28 SS2e).
 MAX_OUTPUT_CHARS = 200_000
+#: Characters per side that a `char` diff will compare; difflib is quadratic.
+MAX_DIFF_CHARS = 3_000
 #: Lines, words or characters per side that `diff` will compare. difflib is quadratic:
 #: 100 000 lines never returns, and 30 000 words is worse still (#28 SS1).
 MAX_DIFF_UNITS = 10_000
@@ -64,6 +66,14 @@ def _text(p: dict[str, Any], key: str = "text") -> str:
 # --------------------------------------------------------------------------- #
 
 _UNBOUNDED = ("*", "+")
+#: Ways a quantified group may match the same text before it is refused outright.
+MAX_WAYS = 1_000_000
+#: Backtracking steps a pattern may need over the text it is given (about a second in `sre`).
+MAX_STEPS = 20_000_000
+_DIGITS = frozenset("0123456789")
+_SPACES = frozenset(" \t\n\r\f\v")
+_WORD = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+ANY = "any"
 
 
 def _groups(pattern: str) -> list[tuple[int, str]]:
@@ -92,33 +102,92 @@ def _groups(pattern: str) -> list[tuple[int, str]]:
     return out
 
 
+def _strip_verbose(pattern: str) -> str:
+    """The pattern with `x`-mode comments and whitespace removed, so they cannot hide a shape."""
+    out: list[str] = []
+    i, n, in_class = 0, len(pattern), False
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            out.append(pattern[i : i + 2])
+            i += 2
+            continue
+        if in_class:
+            if ch == "]":
+                in_class = False
+            out.append(ch)
+        elif ch == "[":
+            in_class = True
+            out.append(ch)
+        elif ch == "#":
+            while i < n and pattern[i] != "\n":
+                i += 1
+        elif not ch.isspace():
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _quantifier_at(pattern: str, i: int) -> tuple[str, int]:
+    """The quantifier starting at `i` (with a lazy/possessive suffix), and where it ends."""
+    if i >= len(pattern):
+        return "", i
+    ch = pattern[i]
+    if ch in "*+?":
+        j = i + 1
+    elif ch == "{":
+        close = pattern.find("}", i)
+        if close < 0 or not re.fullmatch(r"\{\d*(?:,\d*)?\}", pattern[i : close + 1]) or pattern[i : close + 1] == "{}":
+            return "", i
+        j = close + 1
+    else:
+        return "", i
+    if j < len(pattern) and pattern[j] in "?+":
+        j += 1
+    return pattern[i:j], j
+
+
+def _bounds(q: str) -> tuple[int, int | None]:
+    """(min, max) repetitions a quantifier allows; max None is unbounded."""
+    if not q:
+        return 1, 1
+    q = q.rstrip("?+") if len(q) > 1 and q[0] != "{" else q
+    core = q[:-1] if len(q) > 1 and q[-1] in "?+" and q[0] == "{" and q.count("}") == 1 and not q.endswith("}") else q
+    if core == "*":
+        return 0, None
+    if core == "+":
+        return 1, None
+    if core == "?":
+        return 0, 1
+    inner = core[1:-1]
+    if "," in inner:
+        lo, hi = inner.split(",", 1)
+        return int(lo or 0), (int(hi) if hi else None)
+    return int(inner), int(inner)
+
+
 def _open_ended(quantifier: str) -> bool:
     """`{2,}` is unbounded; `{2,4}` is not."""
-    inner = quantifier[1:-1]
-    return "," in inner and inner.split(",")[1].strip() == ""
+    return _bounds(quantifier)[1] is None
 
 
 def _quantifier_after(pattern: str, close: int) -> str | None:
     """The unbounded quantifier applied to the group closing at `close`, if there is one."""
-    rest = pattern[close + 1 :]
-    if not rest:
-        return None
-    if rest[0] in _UNBOUNDED:
-        return rest[0]
-    if rest.startswith("{"):
-        end = rest.find("}")
-        if end > 0 and _open_ended(rest[: end + 1]):
-            return rest[: end + 1]
-    return None
+    q, _ = _quantifier_at(pattern, close + 1)
+    return q if q and _open_ended(q) else None
 
 
 def _body(raw: str) -> str:
-    """The pattern inside a group, with `?:`, `?P<name>` and inline flags removed."""
+    """The pattern inside a group, with `?:`, `?P<name>`, lookarounds and inline flags removed."""
     if not raw.startswith("?"):
         return raw
     if raw.startswith("?P<"):
         end = raw.find(">")
         return raw[end + 1 :] if end > 0 else raw
+    if raw[:2] in ("?=", "?!"):
+        return raw[2:]
+    if raw[:3] in ("?<=", "?<!"):
+        return raw[3:]
     end = raw.find(":")
     return raw[end + 1 :] if end > 0 else raw
 
@@ -154,105 +223,269 @@ def _branches(body: str) -> list[str]:
     return out
 
 
-def _has_unbounded(body: str) -> bool:
-    i, n, in_class = 0, len(body), False
+def _class_set(cls: str) -> Any:
+    """The characters a `[...]` class can match, or ANY when it is negated or too rich to enumerate."""
+    inner = cls[1:-1]
+    if inner.startswith("^"):
+        return ANY
+    out: set[str] = set()
+    i, n = 0, len(inner)
     while i < n:
-        ch = body[i]
-        if ch == "\\":
+        ch = inner[i]
+        if ch == "\\" and i + 1 < n:
+            esc = inner[i + 1]
+            got = _escape_set(esc)
+            if got is ANY:
+                return ANY
+            out |= got
             i += 2
             continue
-        if in_class:
-            if ch == "]":
-                in_class = False
-            i += 1
+        if i + 2 < n and inner[i + 1] == "-":
+            lo, hi = ord(ch), ord(inner[i + 2])
+            if hi - lo > 300:
+                return ANY
+            out |= {chr(c) for c in range(lo, hi + 1)}
+            i += 3
             continue
-        if ch == "[":
-            in_class = True
-        elif ch in _UNBOUNDED:
-            return True
-        elif ch == "{":
-            end = body.find("}", i)
-            if end > 0 and _open_ended(body[i : end + 1]):
-                return True
+        out.add(ch)
         i += 1
-    return False
+    return out
 
 
-def _atoms(branch: str) -> int:
-    """Roughly how many things are concatenated, so `a?` is one and `ab?` is two."""
-    count, i, n, in_class = 0, 0, len(branch), False
+def _escape_set(esc: str) -> Any:
+    if esc == "d":
+        return set(_DIGITS)
+    if esc == "s":
+        return set(_SPACES)
+    if esc == "w":
+        return set(_WORD)
+    if esc in "DSW":
+        return ANY
+    if esc in "bBAZ":
+        return set()  # an anchor consumes nothing
+    return {esc}
+
+
+def _atoms(branch: str) -> list[tuple[Any, int, int | None]]:
+    """The atoms of one branch as (first-character set, min, max) - groups as one atom each."""
+    out: list[tuple[Any, int, int | None]] = []
+    i, n = 0, len(branch)
     while i < n:
         ch = branch[i]
+        first: Any
         if ch == "\\":
-            count += 1
+            first = _escape_set(branch[i + 1]) if i + 1 < n else set()
             i += 2
-            continue
-        if in_class:
-            if ch == "]":
-                in_class = False
-                count += 1
+        elif ch == "[":
+            depth_end = i + 1
+            if depth_end < n and branch[depth_end] == "^":
+                depth_end += 1
+            if depth_end < n and branch[depth_end] == "]":
+                depth_end += 1
+            while depth_end < n and branch[depth_end] != "]":
+                depth_end += 2 if branch[depth_end] == "\\" else 1
+            first = _class_set(branch[i : depth_end + 1])
+            i = depth_end + 1
+        elif ch == "(":
+            depth, j = 1, i + 1
+            while j < n and depth:
+                if branch[j] == "\\":
+                    j += 2
+                    continue
+                if branch[j] == "[":
+                    k = j + 1
+                    while k < n and branch[k] != "]":
+                        k += 2 if branch[k] == "\\" else 1
+                    j = k + 1
+                    continue
+                depth += 1 if branch[j] == "(" else (-1 if branch[j] == ")" else 0)
+                j += 1
+            inner = _body(branch[i + 1 : j - 1])
+            first = _first_set(inner)
+            i = j
+        elif ch in "^$":
+            first = set()
             i += 1
-            continue
-        if ch == "[":
-            in_class = True
-        elif ch == "{":
-            end = branch.find("}", i)
-            i = end if end > 0 else i
-        elif ch not in "*+?()":
-            count += 1
-        i += 1
-    return count
+        elif ch == ".":
+            first = ANY
+            i += 1
+        else:
+            first = {ch}
+            i += 1
+        q, i = _quantifier_at(branch, i)
+        lo, hi = _bounds(q)
+        out.append((first, lo, hi))
+    return out
+
+
+def _union(a: Any, b: Any) -> Any:
+    return ANY if a is ANY or b is ANY else a | b
+
+
+def _overlap(a: Any, b: Any) -> bool:
+    if a is ANY or b is ANY:
+        return True
+    return bool(a & b)
+
+
+def _first_set(body: str) -> Any:
+    """Every character a match of `body` can start with (ANY when it cannot be pinned down)."""
+    total: Any = set()
+    for branch in _branches(body):
+        for first, lo, _hi in _atoms(branch):
+            total = _union(total, first)
+            if lo > 0 and first:  # a required atom that consumes something ends the prefix
+                break
+    return total
+
+
+def _min_len(body: str) -> int:
+    """The fewest characters one match of `body` consumes."""
+    best = None
+    for branch in _branches(body):
+        n = sum(lo * (1 if first is ANY or first else 0) for first, lo, _hi in _atoms(branch))
+        best = n if best is None else min(best, n)
+    return best or 0
+
+
+def _variability(body: str) -> float:
+    """How many ways one match of `body` can be laid over the same text: the product of each
+    quantifier's range, taken over the most variable branch. Infinite when unbounded.
+    Alternation itself is not counted; overlapping branches are judged separately."""
+    ways = 1.0
+    for branch in _branches(body):
+        branch_ways = 1.0
+        for _first, lo, hi in _atoms(branch):
+            if hi is None:
+                return float("inf")
+            branch_ways *= hi - lo + 1
+        ways = max(ways, branch_ways)
+    return ways
 
 
 def _nullable(branch: str) -> bool:
     """True when the branch can match nothing - the classic way a quantifier runs away."""
-    if not branch:
-        return True
-    return branch[-1] in ("*", "?") and len(_branches(branch)) == 1 and _atoms(branch) == 1
+    return all(lo == 0 or not first for first, lo, _hi in _atoms(branch)) if branch else True
+
+
+def _growth(lo: int, hi: int | None, ways: float) -> float:
+    """Per-character growth of the ways to tile text with runs of `lo`..`hi` characters."""
+    if hi is None or ways == float("inf"):
+        return 2.0
+    lo = max(lo, 1)
+    # the largest root of x^hi = x^(hi-lo) + ... + 1, found by bisection
+    a, b = 1.0, 2.0
+    for _ in range(40):
+        m = (a + b) / 2
+        if m**hi - sum(m**k for k in range(hi - lo, hi)) > 0:
+            b = m
+        else:
+            a = m
+    return b
 
 
 def redos_risk(pattern: str) -> str | None:
-    """Why `pattern` can backtrack exponentially, or ``None`` when it cannot.
+    """Why `pattern` can backtrack exponentially on some input, or ``None`` when it cannot.
 
-    Three shapes, each of which gives the engine two ways to consume the same characters:
-    a quantified group that is itself unbounded, one that can match nothing, and a
-    quantified alternation whose branches overlap.
+    A quantified group is dangerous when the engine has more than one way to lay it over the
+    same characters: a body that is itself unbounded, a body that can match nothing, an
+    alternation whose branches can start with the same character, or a body whose own
+    quantifiers allow so many layouts that the outer repetition multiplies them past reason.
     """
+    pattern = _strip_verbose(pattern) if "#" in pattern or any(c.isspace() for c in pattern) else pattern
     for close, raw in _groups(pattern):
-        quantifier = _quantifier_after(pattern, close)
-        if quantifier is None:
+        q, _ = _quantifier_at(pattern, close + 1)
+        if not q:
+            continue
+        lo, hi = _bounds(q)
+        if hi is not None and hi < 2:
             continue
         body = _body(raw)
-        shown = f"({body}){quantifier}"
+        shown = f"({body}){q}"
         branches = _branches(body)
-        if len(branches) == 1:
-            if _has_unbounded(body):
+        ways = _variability(body)
+        if hi is None:
+            if ways == float("inf"):
                 return f"{shown} applies a quantifier to a group that is already unbounded"
-            if _nullable(body):
+            if any(_nullable(b) for b in branches):
                 return f"{shown} applies a quantifier to a group that can match nothing"
-            continue
-        if any(_nullable(b) for b in branches):
-            return f"{shown} quantifies an alternation with a branch that can match nothing"
-        for i, a in enumerate(branches):
-            for b in branches[i + 1 :]:
-                if a and b and (a.startswith(b) or b.startswith(a)):
-                    return f"{shown} quantifies an alternation whose branches overlap ({a!r} and {b!r})"
+            if ways > 1 and _min_len(body) <= 1:
+                return f"{shown} repeats without bound a group that can be one character or several, which is {int(ways)} layouts per repetition"
+        elif ways != float("inf") and ways > 1 and ways**hi > MAX_WAYS:
+            return f"{shown} allows about {int(ways)}^{hi} ways to match the same text"
+        elif ways == float("inf") and hi > 5:
+            return f"{shown} repeats an unbounded group {hi} times, which backtracks as a polynomial of degree {hi}"
+        if len(branches) > 1:
+            firsts = [_first_set(b) for b in branches]
+            for i, a in enumerate(branches):
+                for j in range(i + 1, len(branches)):
+                    if _overlap(firsts[i], firsts[j]):
+                        return f"{shown} quantifies an alternation whose branches overlap ({a!r} and {branches[j]!r})"
     return None
 
 
-def check_pattern(pattern: str, *, where: str = "pattern") -> None:
-    """Refuse a pattern that would backtrack exponentially. Raises; returns nothing."""
+def _polynomial_degree(pattern: str) -> int:
+    """How many consecutive unbounded atoms can start with the same character: `a*a*a*b` is 3.
+
+    No group is involved, so the exponential guard says nothing, yet over long text the
+    engine walks n^3 positions before giving up.
+    """
+    degree = 1
+    for branch in _branches(pattern):
+        run, prev = 1, None
+        for first, _lo, hi in _atoms(branch):
+            if hi is None and prev is not None and _overlap(prev, first):
+                run += 1
+            elif hi is None:
+                run = 1
+            else:
+                run = 1
+                prev = None
+                continue
+            prev = first
+            degree = max(degree, run)
+    return degree
+
+
+def _slow_growth(pattern: str, text_len: int) -> str | None:
+    """A group whose repetition grows only slowly - `(a{2,4})+` - is fine on a line and not on a page."""
+    for close, raw in _groups(pattern):
+        q, _ = _quantifier_at(pattern, close + 1)
+        if not q or _bounds(q)[1] is not None:
+            continue
+        body = _body(raw)
+        ways = _variability(body)
+        if ways == float("inf") or ways <= 1:
+            continue
+        growth = _growth(_min_len(body), max(hi for _f, _lo, hi in _atoms(_branches(body)[0]) if hi is not None) if any(hi is not None for _f, _lo, hi in _atoms(_branches(body)[0])) else None, ways)
+        if growth**text_len > MAX_STEPS:
+            return f"({body}){q} can be laid over {text_len:,} characters in about {growth:.2f}^{text_len:,} ways"
+    return None
+
+
+def check_pattern(pattern: str, *, where: str = "pattern", text_len: int | None = None) -> None:
+    """Refuse a pattern that would backtrack exponentially. Raises; returns nothing.
+
+    With ``text_len`` the polynomial shapes are budgeted too: `a*a*a*b` is harmless on a line
+    and never returns over 100,000 characters.
+    """
     risk = redos_risk(pattern)
+    if risk is None and text_len is not None:
+        degree = _polynomial_degree(_strip_verbose(pattern) if "#" in pattern else pattern)
+        if degree >= 2 and text_len**degree > MAX_STEPS:
+            risk = f"{degree} consecutive unbounded repeats can start with the same character, which is up to {text_len:,}^{degree} steps over {text_len:,} characters"
+        else:
+            risk = _slow_growth(pattern, text_len)
     if risk is None:
         return
     raise Unsupported(
         f"{where} {pattern!r} can backtrack exponentially, so it is refused rather than run: {risk}",
         details={"pattern": pattern, "reason": risk},
-        hint="Rewrite the inner quantifier away - `(a+)+` is `a+`, `(a|aa)+` is `a+` - or match a bounded number of times.",
+        hint="Rewrite the inner quantifier away - `(a+)+` is `a+`, `(a|aa)+` is `a+` - or match a bounded number of times over less text.",
     )
 
 
-def _compile(pattern: Any, flags: Any) -> re.Pattern[str]:
+def _compile(pattern: Any, flags: Any, text_len: int | None = None) -> re.Pattern[str]:
     if not pattern:
         raise ToolError("'pattern' is required")
     f = 0
@@ -260,7 +493,7 @@ def _compile(pattern: Any, flags: Any) -> re.Pattern[str]:
         if ch.lower() not in _FLAGS:
             raise ToolError(f"unknown regex flag {ch!r}")
         f |= _FLAGS[ch.lower()]
-    check_pattern(str(pattern))
+    check_pattern(_strip_verbose(str(pattern)) if f & re.VERBOSE else str(pattern), text_len=text_len)
     try:
         return re.compile(str(pattern), f)
     except re.error as e:
@@ -334,7 +567,7 @@ def _count(p: dict[str, Any]) -> dict[str, Any]:
         "digits": sum(c.isdigit() for c in t),
         "words": len(words),
         "unique_words": len({w.lower() for w in words}),
-        "lines": t.count("\n") + 1 if t else 0,
+        "lines": len(t.splitlines()) if t else 0,  # the same splitting as non_empty_lines; `\r` alone is a line break too
         "non_empty_lines": sum(1 for line in t.splitlines() if line.strip()),
         "sentences": len(sentences),
         "paragraphs": len(paragraphs),
@@ -353,15 +586,14 @@ def _count(p: dict[str, Any]) -> dict[str, Any]:
         sub = p.get("substring") or p.get("needle")
         if not sub:
             raise ToolError("'substring' is required for occurrences")
-        cs = p.get("case_sensitive", True)
-        hay, needle = (t, sub) if cs else (t.lower(), sub.lower())
-        overlapping = p.get("overlapping", False)
-        if overlapping:
-            n = len(re.findall(f"(?={re.escape(needle)})", hay))
-        else:
-            n = hay.count(needle)
-        positions = [m.start() for m in re.finditer(f"(?={re.escape(needle)})" if overlapping else re.escape(needle), hay)][:500]
-        return ok({"count": n, "substring": sub, "positions": positions}, assumptions=[f"case-{'sensitive' if cs else 'insensitive'}"])
+        sub = str(sub)
+        cs = flag(p.get("case_sensitive", True), "case_sensitive")
+        overlapping = flag(p.get("overlapping", False), "overlapping")
+        # matched on the caller's text with IGNORECASE, not on `t.lower()`: lower-casing
+        # changes the length of İ, and positions belong to the caller's string
+        rx = re.compile(f"(?={re.escape(sub)})" if overlapping else re.escape(sub), 0 if cs else re.IGNORECASE)
+        found = [m.start() for m in rx.finditer(t)]
+        return ok({"count": len(found), "substring": sub, "positions": found[:500]}, assumptions=[f"case-{'sensitive' if cs else 'insensitive'}"])
     if what in ("char", "character") and p.get("substring"):
         return ok({"count": t.count(p["substring"])})
     if what in stats:
@@ -374,8 +606,8 @@ def _count(p: dict[str, Any]) -> dict[str, Any]:
 
 def _regex_match(p: dict[str, Any]) -> dict[str, Any]:
     t = _text(p)
-    rx = _compile(p.get("pattern"), p.get("flags"))
-    limit = int(p.get("limit", 1000))
+    rx = _compile(p.get("pattern"), p.get("flags"), len(t))
+    limit = whole(p.get("limit", 1000), "limit", lo=1)
     matches = []
     total = 0
     for m in rx.finditer(t):
@@ -388,21 +620,21 @@ def _regex_match(p: dict[str, Any]) -> dict[str, Any]:
     # truncated response used to get the limit and believe it was the answer (#28 SS2f).
     truncated = total > len(matches)
     return ok(
-        {"count": total, "returned": len(matches), "truncated": truncated, "matches": matches, "any": bool(matches), "full_match": rx.fullmatch(t) is not None},
+        {"count": total, "returned": len(matches), "truncated": truncated, "matches": matches, "any": total > 0, "full_match": rx.fullmatch(t) is not None},
         warnings=[f"{total:,} matches found; the list is truncated to the first {limit:,} (raise 'limit' to see more)"] if truncated else [],
     )
 
 
 def _regex_replace(p: dict[str, Any]) -> dict[str, Any]:
     t = _text(p)
-    rx = _compile(p.get("pattern"), p.get("flags"))
+    rx = _compile(p.get("pattern"), p.get("flags"), len(t))
     repl = p.get("replacement")
     if repl is None:
         raise ToolError("'replacement' is required")
-    count = int(p.get("count", 0))
+    count = whole(p.get("count", 0), "count", lo=0)
     try:
         out, n = rx.subn(str(repl), t, count=count)
-    except re.error as e:
+    except (re.error, IndexError) as e:  # `\g<nope>` is an IndexError, not a re.error
         raise ToolError(f"bad replacement: {e}") from None
     if len(out) > MAX_OUTPUT_CHARS:
         raise TooLarge(
@@ -425,10 +657,11 @@ def _diff(p: dict[str, Any]) -> dict[str, Any]:
     else:
         raise ToolError("granularity must be line, word or char")
     biggest = max(len(al), len(bl))
-    if biggest > MAX_DIFF_UNITS:
+    cap = MAX_DIFF_CHARS if mode == "char" else MAX_DIFF_UNITS
+    if biggest > cap:
         raise TooLarge(
-            f"{biggest:,} {mode}s to compare; the limit is {MAX_DIFF_UNITS:,}",
-            details={mode + "s": biggest, "limit": MAX_DIFF_UNITS, "granularity": mode},
+            f"{biggest:,} {mode}s to compare; the limit is {cap:,}",
+            details={mode + "s": biggest, "limit": cap, "granularity": mode},
             hint="Diff a smaller section, or use granularity='line' on shorter input.",
         )
     sm = difflib.SequenceMatcher(None, al, bl, autojunk=False)
@@ -444,7 +677,11 @@ def _diff(p: dict[str, Any]) -> dict[str, Any]:
         if tag in ("insert", "replace"):
             added += j2 - j1
     unified = "\n".join(difflib.unified_diff(a.splitlines(), b.splitlines(), "a", "b", lineterm="")) if mode == "line" else None
-    return ok({"identical": a == b, "similarity": round(sm.ratio(), 6), "added": added, "removed": removed, "changes": ops[:500], "unified": unified, "granularity": mode}, warnings=["changes truncated to 500"] if len(ops) > 500 else [])
+    warnings = ["changes truncated to 500"] if len(ops) > 500 else []
+    if a != b and not ops:
+        # `identical: false` with no changes listed needs the reason
+        warnings.append("the texts differ only in line endings, trailing newlines or whitespace, which this granularity does not compare")
+    return ok({"identical": a == b, "similarity": round(sm.ratio(), 6), "added": added, "removed": removed, "changes": ops[:500], "unified": unified, "granularity": mode}, warnings=warnings)
 
 
 def _natural_key(s: str) -> list[Any]:
@@ -456,22 +693,27 @@ def _sort(p: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(items, list):
         raise ToolError("'items' must be a list")
     key = p.get("key")
-    natural = p.get("natural", True)
-    ci = p.get("case_insensitive", True)
+    natural = flag(p.get("natural", True), "natural")
+    ci = flag(p.get("case_insensitive", True), "case_insensitive")
     reverse = str(p.get("order", "asc")).lower() in ("desc", "descending", "reverse")
     assumptions = []
+    warnings: list[str] = []
+    from .collections_ import get_path  # dotted paths, as sort_by reads them
 
     def val(x: Any) -> Any:
         if key is not None and isinstance(x, dict):
-            return x.get(key)
+            return get_path(x, key)
         return x
+
+    if key is not None and items and all(val(x) is None for x in items):
+        warnings.append(f"no item has a '{key}' key, so the order is unchanged")
 
     def kf(x: Any) -> Any:
         v = val(x)
         if v is None:
             return (2, "")
         if isinstance(v, bool):
-            return (1, int(v))
+            return (0, int(v))
         if isinstance(v, (int, float)):
             return (0, v)
         s = str(v)
@@ -489,20 +731,28 @@ def _sort(p: dict[str, Any]) -> dict[str, Any]:
         assumptions.append("case-insensitive")
     if reverse:
         assumptions.append("descending")
-    return ok({"sorted": srt, "changed": srt != items, "count": len(srt)}, assumptions=assumptions)
+    return ok({"sorted": srt, "changed": srt != items, "count": len(srt)}, assumptions=assumptions, warnings=warnings)
 
 
 def _dedupe(p: dict[str, Any]) -> dict[str, Any]:
     items = p.get("items")
     if not isinstance(items, list):
         raise ToolError("'items' must be a list")
-    ci = p.get("case_insensitive", False)
-    ws = p.get("normalize_whitespace", True)
+    ci = flag(p.get("case_insensitive", False), "case_insensitive")
+    ws = flag(p.get("normalize_whitespace", True), "normalize_whitespace")
     key = p.get("key")
     seen: dict[Any, int] = {}
     unique, dupes = [], []
+    missing = 0
+    from .collections_ import get_path
+
     for i, x in enumerate(items):
-        v = x.get(key) if (key and isinstance(x, dict)) else x
+        v = get_path(x, key) if key else x
+        if key and v is None:
+            # rows without the key are not duplicates of each other
+            missing += 1
+            unique.append(x)
+            continue
         k: Any
         if isinstance(v, str):
             k = " ".join(v.split()) if ws else v
@@ -518,14 +768,15 @@ def _dedupe(p: dict[str, Any]) -> dict[str, Any]:
         else:
             seen[k] = i
             unique.append(x)
-    return ok({"unique": unique, "removed": len(dupes), "duplicates": dupes[:500], "count": len(unique)}, assumptions=[f"case-{'in' if ci else ''}sensitive", "whitespace normalised" if ws else "exact whitespace"])
+    warnings = [f"{missing} of {len(items)} items have no '{key}' and were kept as they are"] if missing else []
+    return ok({"unique": unique, "removed": len(dupes), "duplicates": dupes[:500], "count": len(unique)}, assumptions=[f"case-{'in' if ci else ''}sensitive", "whitespace normalised" if ws else "exact whitespace"], warnings=warnings)
 
 
 _EXTRACTORS = {
     "emails": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
     "urls": re.compile(r"\b(?:https?://|www\.)[^\s<>\"')\]]+"),
     "phones": re.compile(r"(?<![\w.])(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{2,5}\)?[\s-]?)?\d{3,5}[\s-]?\d{3,5}(?![\w.])"),
-    "numbers": re.compile(r"(?<![\w.])[-+]?(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d+)?%?(?![\w.])"),
+    "numbers": re.compile(r"(?<![\w.])[-+]?(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\d+)?%?(?!\w|\.\d)"),  # `3.14.` at the end of a sentence is 3.14
     "dates": re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|(?:\d{1,2}\s+)?(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}|\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?\s+\d{4})\b", re.I),
     "times": re.compile(r"\b\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\b|\b\d{1,2}\s*(?:am|pm|AM|PM)\b"),
     "hashtags": re.compile(r"(?<!\w)#\w+"),
@@ -541,13 +792,18 @@ _EXTRACTORS = {
 def _extract(p: dict[str, Any]) -> dict[str, Any]:
     t = _text(p)
     what = p.get("what") or p.get("kinds") or "all"
+    if not isinstance(what, (str, list)):
+        raise ToolError(f"'what' must be a kind name or a list of them, not {what!r}")
     kinds = list(_EXTRACTORS) if what == "all" else ([what] if isinstance(what, str) else list(what))
+    unique = flag(p.get("unique", True), "unique")
     out: dict[str, list[str]] = {}
     for k in kinds:
         if k not in _EXTRACTORS:
             raise ToolError(f"unknown kind {k!r}; options: {', '.join(_EXTRACTORS)}")
-        found = [m.group(0) for m in _EXTRACTORS[k].finditer(t)]
-        if p.get("unique", True):
+        found = [m.group(0).strip() for m in _EXTRACTORS[k].finditer(t)]
+        if k == "urls":
+            found = [u.rstrip(",.;:!?)") for u in found]  # the comma after a URL is the sentence's, not the URL's
+        if unique:
             found = list(dict.fromkeys(found))
         out[k] = found
     return ok(out, assumptions=["regex-based extraction; validate ids with the validate tool"])
@@ -558,11 +814,11 @@ def _find(p: dict[str, Any]) -> dict[str, Any]:
     needle = p.get("substring") or p.get("needle") or p.get("query")
     if not needle:
         raise ToolError("'substring' is required")
-    cs = p.get("case_sensitive", False)
-    hay, nd = (t, needle) if cs else (t.lower(), needle.lower())
+    cs = flag(p.get("case_sensitive", False), "case_sensitive")
+    needle = str(needle)
     hits = []
-    ctx = int(p.get("context", 40))
-    for m in re.finditer(re.escape(nd), hay):
+    ctx = whole(p.get("context", 40), "context", lo=0)
+    for m in re.finditer(re.escape(needle), t, 0 if cs else re.IGNORECASE):  # positions in the caller's text
         s, e = m.start(), m.end()
         line = t.count("\n", 0, s) + 1
         hits.append({"start": s, "end": e, "line": line, "context": t[max(0, s - ctx):e + ctx]})
@@ -572,6 +828,8 @@ def _find(p: dict[str, Any]) -> dict[str, Any]:
 
 
 _MAX_SIMILARITY_LEN = 5000
+#: Character comparisons one call may make: one pair at the length cap.
+_MAX_SIMILARITY_WORK = _MAX_SIMILARITY_LEN * _MAX_SIMILARITY_LEN
 
 
 def levenshtein(a: str, b: str) -> int:
@@ -596,8 +854,8 @@ def _sim_pair(a: str, b: str) -> dict[str, Any]:
 
 
 def _similarity(p: dict[str, Any]) -> dict[str, Any]:
-    ci = p.get("case_insensitive", True)
-    ws = p.get("normalize_whitespace", True)
+    ci = flag(p.get("case_insensitive", True), "case_insensitive")
+    ws = flag(p.get("normalize_whitespace", True), "normalize_whitespace")
 
     def norm(s: Any) -> str:
         s = str(s)
@@ -615,6 +873,14 @@ def _similarity(p: dict[str, Any]) -> dict[str, Any]:
         q = norm(query)
         if len(q) > _MAX_SIMILARITY_LEN or any(len(norm(x)) > _MAX_SIMILARITY_LEN for x in items):
             raise ToolError(f"strings longer than {_MAX_SIMILARITY_LEN} characters are not compared")
+        work = len(q) * sum(len(norm(x)) for x in items)
+        if work > _MAX_SIMILARITY_WORK:
+            # the per-string cap bounds one pair; the work is the sum over all candidates
+            raise TooLarge(
+                f"comparing a {len(q):,}-character text against {len(items):,} candidates is {work:,} character comparisons; the limit is {_MAX_SIMILARITY_WORK:,}",
+                details={"work": work, "limit": _MAX_SIMILARITY_WORK},
+                hint="Shorten the text or the candidates, or send fewer candidates per call.",
+            )
         scored = [{"index": i, "value": x, **_sim_pair(q, norm(x))} for i, x in enumerate(items)]
         ranked = sorted(scored, key=lambda r: (-r["ratio"], r["levenshtein"], r["index"]))
         limit = int(p.get("limit", 5))
