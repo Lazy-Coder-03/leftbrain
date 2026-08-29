@@ -396,126 +396,175 @@ _GROWERS = ("factorial", "gamma", "exp")
 _LOG10_E = _pymath.log10(_pymath.e)
 
 
-def _digits(v: float) -> float:
+def _digits(v: Any) -> float:
     """log10 of a magnitude, floored at 0 - a value below 1 does not shrink a result."""
+    if isinstance(v, Fraction):
+        if not v:
+            return 0.0
+        # log10 of an int is exact in CPython however big it is; float(v) could overflow
+        return max(0.0, _pymath.log10(abs(v.numerator)) - _pymath.log10(v.denominator))
     return max(0.0, _pymath.log10(abs(v))) if v else 0.0
 
 
-def _value_of(node: ast.AST) -> float | int | None:
-    """What a literal-only node evaluates to, or ``None`` when it is not literal or too big.
+class _Estimator:
+    """Sizes of what an expression's literal parts evaluate to, without evaluating them.
 
-    Nothing here can produce a large intermediate: every operation is size-checked in
-    log space before it runs.
+    ``src`` is the text the tree was parsed from, so a float literal can be read back
+    exactly - the AST holds ``1e400`` as ``inf``, which is 401 digits misjudged as
+    unbounded. ``env`` holds the numeric ``vars`` a caller will substitute, so
+    ``x^1000000`` with ``x = 1.000001`` is judged like the literal it becomes.
     """
-    if isinstance(node, ast.Constant):
-        return node.value if isinstance(node.value, (int, float)) and not isinstance(node.value, bool) else None
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        v = _value_of(node.operand)
-        return None if v is None else (-v if isinstance(node.op, ast.USub) else v)
-    if isinstance(node, ast.BinOp):
-        a, b = _value_of(node.left), _value_of(node.right)
-        if a is None or b is None:
-            return None
-        op = type(node.op)
-        try:
-            if op is ast.Add:
-                return a + b
-            if op is ast.Sub:
-                return a - b
-            if op is ast.Mult:
-                return a * b if _digits(a) + _digits(b) <= _VALUE_DIGITS else None
-            if op is ast.Div:
-                return a / b if b else None
-            if op is ast.Pow:
-                return a**b if b <= 0 or b * _digits(a) <= _VALUE_DIGITS else None
-        except (ArithmeticError, ValueError, TypeError):
-            return None
-    return None
 
+    def __init__(self, src: str, env: dict[str, Fraction] | None = None):
+        self.src = src
+        self.env = env or {}
 
-def _size_of(node: ast.AST) -> float | None:
-    """Estimated digits in what ``node`` evaluates to.
-
-    ``None`` when the node is not literal - a symbol, an unknown function - and the size
-    therefore cannot be estimated at all; ``inf`` when it is past any useful bound.
-    """
-    value = _value_of(node)
-    if value is not None:
-        return _digits(value)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        return _size_of(node.operand)
-    if isinstance(node, ast.BinOp):
-        left, right = _size_of(node.left), _size_of(node.right)
-        if left is None or right is None:
+    def literal(self, node: ast.AST) -> Fraction | None:
+        """The exact rational a number literal or a known variable stands for."""
+        if isinstance(node, ast.Name):
+            return self.env.get(node.id)
+        if not isinstance(node, ast.Constant) or isinstance(node.value, bool):
             return None
-        op = type(node.op)
-        if op in (ast.Add, ast.Sub):
-            return max(left, right) + 1
-        if op is ast.Mult:
-            return left + right
-        if op is ast.Div:
-            return left
-        if op is ast.Pow:
-            exponent = _value_of(node.right)
-            if exponent is None:  # the exponent itself is already too big to write down
-                return _ASTRONOMICAL if right > _UNBOUNDED_EXPONENT_DIGITS else 10**right * left
-            return 0.0 if exponent <= 0 else exponent * left
+        if isinstance(node.value, int):
+            return Fraction(node.value)
+        if isinstance(node.value, float):
+            text = ast.get_source_segment(self.src, node)
+            for candidate in ((text or "").replace("_", ""), repr(node.value)):
+                try:
+                    return Fraction(candidate)
+                except (ValueError, OverflowError):
+                    continue
         return None
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _GROWERS:
-        if len(node.args) != 1:
-            return None
-        n = _value_of(node.args[0])
-        if n is None:
-            return None if _size_of(node.args[0]) is None else _ASTRONOMICAL
-        if node.func.id == "exp":
-            return max(0.0, n * _LOG10_E)
-        n = n - 1 if node.func.id == "gamma" else n  # gamma(n) = (n-1)!
-        if n < 2:
-            return 0.0
-        # Stirling: log10(n!) = n*log10(n/e) + log10(2*pi*n)/2
-        return n * (_pymath.log10(n) - _LOG10_E) + _pymath.log10(2 * _pymath.pi * n) / 2
-    return None
 
+    def value(self, node: ast.AST) -> Fraction | float | None:
+        """What a literal-only node evaluates to, or ``None`` when it is not literal or too big.
 
-def _shape_of(node: ast.AST) -> tuple[float, float] | None:
-    """Estimated digits in the (numerator, denominator) of the exact rational ``node`` is.
-
-    The magnitude estimate above is blind to this: `(1+1/10^6)^10^6` is about 2.7, and
-    also a six-million-digit integer over another, which took the hosted server to its
-    deadline to build and could never have been printed (#52 §3). ``None`` when the node
-    is not a literal rational.
-    """
-    if isinstance(node, ast.Constant):
-        v = node.value
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
-            return None
-        if isinstance(v, int):
-            return _digits(v), 0.0
-        try:
-            f = Fraction(repr(v))
-        except (ValueError, OverflowError):  # inf, nan
-            return None
-        return _digits(f.numerator), _digits(f.denominator)
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
-        return _shape_of(node.operand)
-    if isinstance(node, ast.BinOp):
-        a, b = _shape_of(node.left), _shape_of(node.right)
-        if a is None or b is None:
-            return None
-        op = type(node.op)
-        if op in (ast.Add, ast.Sub):
-            return max(a[0] + b[1], b[0] + a[1]) + 1, a[1] + b[1]
-        if op is ast.Mult:
-            return a[0] + b[0], a[1] + b[1]
-        if op is ast.Div:
-            return a[0] + b[1], a[1] + b[0]
-        if op is ast.Pow:
-            e = _value_of(node.right)
-            if e is None or not float(e).is_integer():
+        Nothing here can produce a large intermediate: every operation is size-checked in
+        log space before it runs.
+        """
+        lit = self.literal(node)
+        if lit is not None:
+            return lit if _digits(lit.numerator) <= _VALUE_DIGITS and _digits(lit.denominator) <= _VALUE_DIGITS else None
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            v = self.value(node.operand)
+            return None if v is None else (-v if isinstance(node.op, ast.USub) else v)
+        if isinstance(node, ast.BinOp):
+            a, b = self.value(node.left), self.value(node.right)
+            if a is None or b is None:
                 return None
-            num, den = (a[1], a[0]) if e < 0 else a
-            return abs(e) * num, abs(e) * den
-    return None
+            op = type(node.op)
+            try:
+                if op is ast.Add:
+                    out: Any = a + b
+                elif op is ast.Sub:
+                    out = a - b
+                elif op is ast.Mult:
+                    if _digits(a) + _digits(b) > _VALUE_DIGITS:
+                        return None
+                    out = a * b
+                elif op is ast.Div:
+                    if not b:
+                        return None
+                    out = a / b
+                elif op is ast.Pow:
+                    if isinstance(b, Fraction) and b.denominator == 1:
+                        # the *representation* of the base, not its magnitude: 1000001/1000000 is
+                        # seven digits over seven, and its millionth power is millions over millions
+                        base_digits = max(_digits(a.numerator), _digits(a.denominator)) if isinstance(a, Fraction) else _digits(a)
+                        if abs(b) * base_digits > _VALUE_DIGITS:
+                            return None
+                        out = a ** int(b)
+                    else:
+                        out = float(a) ** float(b)  # a root: not rational, a float will do for the magnitude
+                        if isinstance(out, complex):
+                            return None
+                else:
+                    return None
+            except (ArithmeticError, ValueError, TypeError):
+                return None
+            if isinstance(out, Fraction) and (_digits(out.numerator) > _VALUE_DIGITS or _digits(out.denominator) > _VALUE_DIGITS):
+                return None
+            return out
+        return None
+
+    def size(self, node: ast.AST) -> float | None:
+        """Estimated digits in what ``node`` evaluates to.
+
+        ``None`` when the node is not literal - a symbol, an unknown function - and the size
+        therefore cannot be estimated at all; ``inf`` when it is past any useful bound.
+        """
+        value = self.value(node)
+        if value is not None:
+            return _digits(value)
+        lit = self.literal(node)
+        if lit is not None:
+            return _digits(lit)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            return self.size(node.operand)
+        if isinstance(node, ast.BinOp):
+            left, right = self.size(node.left), self.size(node.right)
+            if left is None or right is None:
+                return None
+            op = type(node.op)
+            if op in (ast.Add, ast.Sub):
+                return max(left, right) + 1
+            if op is ast.Mult:
+                return left + right
+            if op is ast.Div:
+                return left
+            if op is ast.Pow:
+                exponent = self.value(node.right)
+                if exponent is None:  # the exponent itself is already too big to write down
+                    return _ASTRONOMICAL if right > _UNBOUNDED_EXPONENT_DIGITS else 10**right * left
+                return 0.0 if exponent <= 0 else float(exponent) * left
+            return None
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _GROWERS:
+            if len(node.args) != 1:
+                return None
+            n = self.value(node.args[0])
+            if n is None:
+                return None if self.size(node.args[0]) is None else _ASTRONOMICAL
+            n = float(n)
+            if node.func.id == "exp":
+                return max(0.0, n * _LOG10_E)
+            n = n - 1 if node.func.id == "gamma" else n  # gamma(n) = (n-1)!
+            if n < 2:
+                return 0.0
+            # Stirling: log10(n!) = n*log10(n/e) + log10(2*pi*n)/2
+            return n * (_pymath.log10(n) - _LOG10_E) + _pymath.log10(2 * _pymath.pi * n) / 2
+        return None
+
+    def shape(self, node: ast.AST) -> tuple[float, float] | None:
+        """Estimated digits in the (numerator, denominator) of the exact rational ``node`` is.
+
+        The magnitude estimate is blind to this: `(1+1/10^6)^10^6` is about 2.7, and also a
+        six-million-digit integer over another, which took the hosted server to its deadline
+        to build and could never have been printed (#52 §3). ``None`` when the node is not a
+        literal rational.
+        """
+        lit = self.literal(node)
+        if lit is not None:
+            return _digits(lit.numerator), _digits(lit.denominator)
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            return self.shape(node.operand)
+        if isinstance(node, ast.BinOp):
+            a, b = self.shape(node.left), self.shape(node.right)
+            if a is None or b is None:
+                return None
+            op = type(node.op)
+            if op in (ast.Add, ast.Sub):
+                return max(a[0] + b[1], b[0] + a[1]) + 1, a[1] + b[1]
+            if op is ast.Mult:
+                return a[0] + b[0], a[1] + b[1]
+            if op is ast.Div:
+                return a[0] + b[1], a[1] + b[0]
+            if op is ast.Pow:
+                e = self.value(node.right)
+                if e is None or not float(e).is_integer():
+                    return None
+                num, den = (a[1], a[0]) if e < 0 else a
+                return abs(float(e)) * num, abs(float(e)) * den
+        return None
 
 
 class _ExactTooLarge(TooLarge):
@@ -530,18 +579,26 @@ class _ExactTooLarge(TooLarge):
         )
 
 
-def _check_result_size(s: str) -> None:
-    """Refuse an expression whose answer could not be returned, before evaluating it."""
+def _check_result_size(s: str, env: dict[str, Fraction] | None = None) -> None:
+    """Refuse an expression whose answer could not be returned, before evaluating it.
+
+    Every literal subtree is judged, not only the whole: SymPy builds `2^100000` while
+    parsing `x * 2^100000` just the same, and `sin(1) * 9^9^9^9` never returned.
+    """
+    src = s.replace("^", "**")
     try:
-        tree = ast.parse(s.replace("^", "**"), mode="eval")
+        tree = ast.parse(src, mode="eval")
     except (SyntaxError, ValueError, MemoryError, RecursionError):
         return  # not Python-shaped (implicit multiplication, factorials); SymPy will judge it
+    est = _Estimator(src, env)
     try:
-        digits = _size_of(tree.body)
-        shape = _shape_of(tree.body)
+        nodes = list(ast.walk(tree.body))
+        sizes = [d for d in (est.size(n) for n in nodes) if d is not None]
+        shapes = [max(sh) for sh in (est.shape(n) for n in nodes) if sh is not None]
     except RecursionError:
         return
-    if digits is not None and digits > MAX_RESULT_DIGITS:
+    digits = max(sizes, default=0.0)
+    if digits > MAX_RESULT_DIGITS:
         estimated = f"more than 10^{_UNBOUNDED_EXPONENT_DIGITS}" if digits == _ASTRONOMICAL else int(digits)
         raise TooLarge(
             f"the result would have {estimated if isinstance(estimated, str) else format(estimated, ',')} digits; "
@@ -549,8 +606,9 @@ def _check_result_size(s: str) -> None:
             details={"estimated_digits": estimated, "limit_digits": MAX_RESULT_DIGITS},
             hint="Reduce the exponent, or evaluate a smaller sub-expression.",
         )
-    if shape is not None and max(shape) > MAX_RESULT_DIGITS:
-        raise _ExactTooLarge(max(shape))
+    exact = max(shapes, default=0.0)
+    if exact > MAX_RESULT_DIGITS:
+        raise _ExactTooLarge(exact)
 
 
 def _bounded(raw: Any, field: str, cap: int, unit: str) -> int:
@@ -570,14 +628,14 @@ def _bounded(raw: Any, field: str, cap: int, unit: str) -> int:
     return n
 
 
-def _check_safe(s: str, *, size: bool = True) -> None:
+def _check_safe(s: str, *, size: bool = True, env: dict[str, Fraction] | None = None) -> None:
     if len(s) > MAX_EXPR_LEN:
         raise ToolError(f"expression too long (> {MAX_EXPR_LEN} chars)")
     m = _FORBIDDEN.search(s)
     if m:
         raise ToolError(f"disallowed token in expression: {m.group(0)!r}")
     if size:
-        _check_result_size(s)
+        _check_result_size(s, env)
 
 
 def _parse(
@@ -586,11 +644,13 @@ def _parse(
     angle: str | None = None,
     local: dict[str, Any] | None = None,
     numeric: bool = False,
+    env: dict[str, Fraction] | None = None,
 ) -> tuple[Any, list[str]]:
     """Parse ``src`` into a SymPy object.
 
     ``numeric`` leaves the tree unevaluated, for a caller that will take ``N()`` of it
-    because the exact form is too big to build (#52 §3).
+    because the exact form is too big to build (#52 §3). ``env`` is the numeric value of
+    each variable the caller will substitute, for the size estimate.
     """
     if not isinstance(src, str) or not src.strip():
         raise ToolError("expression is empty")
@@ -602,10 +662,7 @@ def _parse(
             f"{src!r} is an equation, but this takes an expression: drop the '{s[m.start():].strip()}' part",
             hint="To solve it, use mode='solve' with equations=[...].",
         )
-    if numeric:
-        _check_safe(s, size=False)  # the size was judged by the evaluated parse that sent us here
-    else:
-        _check_safe(s)
+    _check_safe(s, size=not numeric, env=env)  # numeric: the size was judged by the evaluated parse that sent us here
     unknown = sorted({m.group(1) for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", s) if m.group(1) not in _SAFE_NAMES and m.group(1) not in (local or {})})
     if unknown:
         raise ToolError(f"unknown function(s): {', '.join(unknown)}")
@@ -846,16 +903,54 @@ def _check_defined(expr: Any, src: str) -> None:
     )
 
 
+def _split_into(name: str, known: set[str]) -> list[str] | None:
+    """`xy` as `["x", "y"]` when both are names the caller gave - the parser read them as one symbol."""
+    if name in known or len(name) < 2:
+        return None
+    parts: list[str] = []
+    rest = name
+    while rest:
+        head = next((k for k in sorted(known, key=len, reverse=True) if rest.startswith(k)), None)
+        if head is None:
+            return None
+        parts.append(head)
+        rest = rest[len(head):]
+    return parts if len(parts) > 1 else None
+
+
+def _refuse_concatenated(expr: Any, known: set[str]) -> None:
+    if not isinstance(expr, sp.Basic):
+        return
+    for sym in sorted(expr.free_symbols, key=str):
+        parts = _split_into(str(sym), known)
+        if parts:
+            raise ToolError(
+                f"{sym} was read as one symbol, not as {' times '.join(parts)}",
+                hint=f"If you meant {'*'.join(parts)}, write it with * between the names.",
+            )
+
+
 def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
     precision = p.get("precision", 15)
+    subs: dict[Any, Any] = {}
+    env: dict[str, Fraction] = {}
+    for k, v in (p.get("vars") or {}).items():
+        value = _num(v)
+        subs[sp.Symbol(k)] = value
+        if isinstance(value, sp.Rational):
+            env[k] = Fraction(int(value.p), int(value.q))
     try:
-        expr, assumptions = _parse(p["expr"], angle=p.get("angle"))
+        expr, assumptions = _parse(p["expr"], angle=p.get("angle"), env=env)
     except _ExactTooLarge as e:
         if exact_only:
             raise
         # The caller asked for `precision` digits, not six million: take the tree
         # unevaluated and go straight to a decimal (#52 §3).
         expr, assumptions = _parse(p["expr"], angle=p.get("angle"), numeric=True)
+        if subs:
+            with sp.evaluate(False):
+                expr = expr.subs(subs)
+        _refuse_concatenated(expr, set(env))
         value = sp.N(expr, precision)
         _check_defined(value, p["expr"])
         d = _describe(value, precision)
@@ -867,11 +962,9 @@ def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
             assumptions=assumptions,
             warnings=[f"the exact form would have about {e.digits:,} digits, so only the decimal is returned"],
         )
-    subs: dict[str, Any] = {}
-    if p.get("vars"):
-        for k, v in p["vars"].items():
-            subs[sp.Symbol(k)] = _num(v)
+    if subs:
         expr = expr.subs(subs)
+        _refuse_concatenated(expr, {str(s) for s in subs})
     if exact_only:
         expr = sp.nsimplify(expr, rational=True)
     elif isinstance(expr, sp.Basic):
@@ -1008,6 +1101,14 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
         # positive and `Eq(x^2 + 1, 0)` is simply False. That is an answer - no solutions
         # here - not a failure to find them (#52 §5).
         return _no_solutions(domain, plain_eqs, plain_syms, precision, assumptions)
+    if all(e is sp.true for e in eqs):
+        # `x = x`: solve() returns [] for an identity, which read as "no solutions".
+        names = ", ".join(str(s) for s in syms)
+        return ok(
+            {"solutions": [], "count": None, "identity": True},
+            assumptions=assumptions + [f"the equation holds for every value of {names}: infinitely many solutions, not none"],
+        )
+    eqs = [e for e in eqs if e is not sp.true]
     is_ineq = any(e.is_Relational and not isinstance(e, sp.Eq) for e in eqs)
     try:
         if is_ineq:
@@ -1028,13 +1129,23 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
         raise Unsupported("no closed-form solution found") from None
 
     solutions = []
+    dropped = 0
     for s in sols:
+        # solve() with a real symbol still returns the roots it cannot classify: x^40 = 2
+        # came back with 26 "real" solutions, 24 of them complex. Keep what is in the domain.
+        if not all(_in_domain(v, domain) for v in s.values()):
+            dropped += 1
+            continue
         entry = {}
         for k, v in s.items():
             entry[str(k)] = _describe(v, precision)
         solutions.append(entry)
     warnings = []
+    if dropped:
+        assumptions.append(f"{dropped} solution{'s' if dropped != 1 else ''} outside domain={domain} dropped (domain='complex' to see them)")
     if not solutions:
+        if sols:  # every closed-form solution was outside the domain
+            return _no_solutions(domain, plain_eqs, plain_syms, precision, assumptions)
         # A degree-40 polynomial has 40 complex roots. "no solutions found" said the
         # opposite of the truth; what solve() means is "no closed form" (#28 SS2d).
         numeric = _numeric_roots(eqs, syms, precision, domain)
@@ -1046,6 +1157,9 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
             )
         if numeric is not None:  # a polynomial whose roots all lie outside the domain
             return _no_solutions(domain, plain_eqs, plain_syms, precision, assumptions)
+        if len(eqs) > 1 and all(_polynomial(e, syms) for e in eqs):
+            # For a polynomial system [] from solve() is definite: nothing satisfies all of them.
+            return _no_solutions(domain, plain_eqs, plain_syms, precision, assumptions + ["the equations are inconsistent: no assignment satisfies all of them"])
         raise Unsupported(
             "solve() found no solutions, and the equation is not a polynomial whose roots could be searched numerically",
             details={"equations": [str(e) for e in eqs]},
@@ -1065,15 +1179,42 @@ def _no_solutions(domain: str, plain_eqs: list[Any], plain_syms: list[Any], prec
     return ok({"solutions": [], "count": 0}, assumptions=assumptions + [note])
 
 
+def _polynomial(eq: Any, syms: list[Any]) -> bool:
+    expr = eq.lhs - eq.rhs if isinstance(eq, sp.Eq) else eq
+    try:
+        return bool(expr.is_polynomial(*syms))
+    except Exception:
+        return False
+
+
 def _in_domain(root: Any, domain: str) -> bool:
+    """Whether a root - exact or numeric - lies in the solve domain.
+
+    SymPy's `is_real` is `None` for many exact roots, so a numeric check decides those.
+    """
     if domain in ("complex", "c"):
         return True
-    if not root.is_real:
+    real = root.is_real
+    if real is None:
+        try:
+            real = bool(abs(sp.N(sp.im(root), 30)) < sp.Float("1e-25"))
+        except Exception:
+            return True  # cannot tell; keep rather than hide
+    if not real:
         return False
     if domain == "positive":
-        return bool(root > 0)
+        try:
+            return bool(sp.N(sp.re(root), 30) > 0)
+        except Exception:
+            return True
     if domain in ("integer", "z"):
-        return bool(abs(root - sp.Integer(round(root))) < sp.Float("1e-9"))
+        if root.is_integer:
+            return True
+        try:
+            value = sp.N(sp.re(root), 30)
+            return bool(abs(value - sp.Integer(round(value))) < sp.Float("1e-9"))
+        except Exception:
+            return True
     return True
 
 
@@ -1208,6 +1349,7 @@ def _mode_ode(p: dict[str, Any]) -> dict[str, Any]:
         eq = sp.Eq(_parse(lhs, angle="rad", local=local)[0], _parse(rhs, angle="rad", local=local)[0])
     else:
         eq = sp.Eq(_parse(s, angle="rad", local=local)[0], 0)
+    _refuse_concatenated(eq, {xname, fname})  # `y' = xy` read xy as a parameter, and solved that
     ics = None
     if p.get("ics"):
         ics = {}

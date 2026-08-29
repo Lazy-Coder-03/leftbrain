@@ -176,3 +176,69 @@ def test_an_equation_where_an_expression_is_expected_is_explained():
 def test_parse_failures_do_not_leak_the_interpreter(expr):
     r = math_tool("eval", expr=expr)
     assert r["ok"] is False and "<string>" not in r["message"] and "line 1" not in r["message"], r["message"]
+
+
+# --- second-order: what the fixes above did not cover -------------------------
+
+
+def test_a_huge_literal_subtree_is_refused_even_next_to_a_symbolic_one():
+    """The estimators returned None as soon as any sibling was non-literal, but SymPy still
+    builds every literal subtree while parsing - so `sin(30) * (1+1/10^6)^10^6` took 6 s and
+    leaked `Exceeds the limit (4300 digits)`."""
+    started = time.monotonic()
+    r = math_tool("eval", expr="sin(30) * (1+1/1000000)^1000000", angle="deg", precision=20)
+    assert time.monotonic() - started < 2.0
+    assert r["ok"] and r["result"]["decimal"].startswith("1.359140234659688"), r
+    started = time.monotonic()
+    r = math_tool("eval", expr="sin(1) * 9^9^9^9", angle="rad")
+    assert time.monotonic() - started < 1.0 and r["ok"] is False and r["error"] == "too_large", r
+    r = math_tool("eval", expr="x * 2^100000")
+    assert r["ok"] is False and r["error"] == "too_large" and "4300" not in r["message"].replace("4,300", ""), r
+
+
+def test_a_literal_the_float_type_cannot_hold_is_measured_from_its_text():
+    """`1e400` is 401 digits, not "more than 10^12": the AST float is inf."""
+    r = math_tool("eval", expr="1e400")
+    assert r["ok"] and r["result"]["exact"] == "1" + "0" * 400, r
+    r = math_tool("eval", expr="1e400^1000")
+    assert r["ok"] is False and r["error"] == "too_large"
+
+
+def test_the_size_estimate_sees_through_vars():
+    started = time.monotonic()
+    r = math_tool("eval", expr="x^1000000", vars={"x": "1.000001"}, precision=20)
+    assert time.monotonic() - started < 2.0, "the exact rational must not be built"
+    assert r["ok"] and r["result"]["decimal"].startswith("2.7182804693193768838") and "exact" not in r["result"], r
+    r = math_tool("eval", expr="x^y", vars={"x": 9, "y": "9^9^9"})
+    assert r["ok"] is False and r["error"] == "too_large"
+
+
+def test_solve_over_the_reals_drops_the_complex_roots_sympy_cannot_classify():
+    """solve() with a real symbol returned 26 roots of x^40 - 2 = 0; 24 of them are complex."""
+    r = math_tool("solve", equations=["x^40 - 2 = 0"], domain="real")
+    assert r["ok"] and r["result"]["count"] == 2, r["result"]["count"]
+    assert {s["x"]["value"] for s in r["result"]["solutions"]} == {"2**(1/40)", "-2**(1/40)"}
+    r = math_tool("solve", equations=["x^40 - 2 = 0"], domain="positive")
+    assert r["result"]["count"] == 1 and r["result"]["solutions"][0]["x"]["value"] == "2**(1/40)"
+
+
+def test_an_identity_is_not_no_solutions():
+    r = math_tool("solve", equations=["x = x"])
+    assert r["ok"] and r["result"]["count"] is None and r["result"]["identity"] is True, r
+    assert any("every value" in a for a in r["assumptions"])
+
+
+def test_an_inconsistent_system_is_no_solutions_not_unsupported():
+    r = math_tool("solve", equations=["x + y = 1", "x + y = 2"])
+    assert r["ok"] and r["result"]["count"] == 0, r
+    assert any("inconsistent" in a for a in r["assumptions"]), r["assumptions"]
+
+
+def test_concatenated_variable_names_are_pointed_out():
+    """`xy` is one symbol to the parser. With vars x and y given, that is never what was meant."""
+    r = math_tool("eval", expr="2xy + 1", vars={"x": 3, "y": 4})
+    assert r["ok"] is False and "xy" in r["message"] and "x*y" in r["hint"], r
+    r = math_tool("ode", equation="y' = xy", func="y(x)")
+    assert r["ok"] is False and "xy" in r["message"] and "x*y" in r["hint"], r
+    assert math_tool("ode", equation="y' = x*y", func="y(x)")["ok"]
+    assert math_tool("ode", equation="y' = k*y", func="y(x)")["ok"]  # a parameter is fine
