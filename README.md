@@ -28,11 +28,11 @@ Design rules:
 
 | Tool | Modes | Replaces the model's guess at… |
 |---|---|---|
-| `math` | eval, exact, simplify, expand, factor, solve, diff, integrate, limit, series, ode, matrix, stats, convert_form, plot_points | any arithmetic, `15% of 200`, complex numbers `(3+4i)(1-2i)`, trig (`angle` required), calculus, linear algebra, statistics — SymPy, sandboxed |
+| `math` | eval, exact, simplify, expand, factor, solve, diff, integrate, limit, series, ode, matrix, stats, convert_form, plot_points | any arithmetic, `15% of 200`, complex numbers `(3+4i)(1-2i)`, trig (`angle` required), `is_prime`/`is_even` and friends, the physical constants (`G`, `c`, `h`), calculus, linear algebra, statistics — SymPy, sandboxed |
 | `datetime` | now, convert_tz, parse, add, diff, weekday, nth_weekday, business_days, overlap, duration_sum, free_slots, recurrence, cron_next, age, fiscal | the current time, DST-correct conversions, "next Friday 5pm", month-end clamping, working days with public holidays, common free slots across time zones, RRULE expansion, cron |
 | `scale` | – | 4 → 7 servings, price per kg → per 250 g, 3 workers × 5 days → 12 workers (`mode=inverse`), with every dependent quantity |
 | `convert` | units, temperature, currency, fuel_economy, cooking, sizes | km→mi, sqft→sqm, °C→°F (absolute or delta), GB→GiB, USD→INR (needs a rate), mpg↔L/100 km (US or UK gallon, never guessed), cups↔grams by ingredient density, shoe and clothing size charts |
-| `holidays` | list, check, next, countries, subdivisions | public holidays for 150+ countries and their states |
+| `holidays` | list, check, next, countries, subdivisions, festival, upcoming, compare, categories | public holidays and festivals for 150+ countries and their states — "when is Durga Puja", what is coming up, which dates two states differ on, and an ICS or CSV of any of it |
 | `numbers` | compare, round, format, allocate, sequence, parse, to_words, semver | `9.11` vs `9.9`, half-up vs banker's rounding, `₹1,23,45,678.50`, splitting ₹100 three ways with no lost paisa, "One lakh twenty-three thousand… only", `1.10` > `1.9` |
 | `finance` | emi, compound, cagr, npv_irr, gst, percent | ₹10L at 8.5% for 20 years → ₹8,678.23 with the schedule that reconciles to zero, SIP future value, CAGR, NPV/IRR by bisection, ₹1,180 inclusive → ₹1,000 + ₹90 CGST + ₹90 SGST, 20% then 10% off is 28% not 30% |
 | `text` | count, regex_match, regex_replace, diff, sort, dedupe, extract, find, similarity | character/word/occurrence counts, running a regex, exact diffs, natural sort, extracting emails/phones/GSTINs, edit distance and best-match from a list |
@@ -347,6 +347,12 @@ and the key API behaves like this:
 - **Self-serve signup**: `POST /keys/signup {"email": "dev@example.com"}` → `{"key": "lblz_…", "daily_quota": 1000, "rpm": 60}`. Throttled to 3 signups per IP per day and 5 active keys per email. Anonymous signup is **off** unless `LEFTBRAIN_OPEN_SIGNUP=1`; with the web site, people sign in at `/login` instead.
 - **Every request** carries `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key, and `403 {"error": "expired", "message": "key expired on 2026-11-25; create a new one at /dashboard"}` once a key's lifetime is up. Expired keys stop counting towards the active-key cap.
 - **The daily quota counts tool calls, not requests.** One `tools/call` that did work spends exactly one unit. The MCP handshake (`initialize`, `tools/list`, …), `GET /keys/me`, and any call the server refused before doing the work — bad input, an ambiguity it would not guess, a tool outside the key's scope — cost nothing. The per-minute limit is deliberately different: it sees *every* request, because it is abuse protection rather than a budget. `X-RateLimit-Remaining-Today` and `meta.quota.remaining_today` are always the same number, and both count the call carrying them.
+- **Feedback**: `POST /feedback` with a key files an issue on the tracker, and signed-in people
+  get a form at `/report` — the repository is private, so there is otherwise nowhere to report a
+  wrong answer. Off unless `LEFTBRAIN_FEEDBACK_TOKEN` and `LEFTBRAIN_FEEDBACK_REPO` are set;
+  without them it answers `unsupported` rather than swallowing the report. Anything key-shaped is
+  blanked before filing, the reporter is recorded as a key prefix or GitHub login and never an
+  email address, and filing costs no daily quota because it is not a tool call.
 - **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`, and `tools` (the key's scope, or `null` for every tool).
 - **Scoped keys**: a key can be limited to specific tools, and to specific modes of a tool — from the dashboard (the **Tools** disclosure on the create form, or **Edit scope** on a key's row) or with `leftbrain-keys … --tools "math,datetime,holidays:list+check"`. A scoped key's `tools/list` shows only the tools it may call, and a `tools/call` outside the scope returns the contract error `{"ok": false, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: list, check"}` — a result, not an HTTP error, so an agent reads it and stops. Keys without a scope may call everything; a changed scope applies on the key's next call.
 

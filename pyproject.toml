@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "leftbrain"
-version = "0.4.0"
+version = "0.4.1"
 description = "The left brain for your AI agent - exact, deterministic answers for everything LLMs are bad at: math, dates, units, scaling, validation, and more."
 readme = "README.md"
 license = "MIT"

@@ -4,6 +4,79 @@ All notable changes to leftbrain are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-30
+
+### Added
+
+- **Number-theory predicates in `math`** — `is_even`, `is_odd`, `is_negative`, `is_positive`,
+  `is_integer`, `is_square`, `is_perfect`, `is_prime`, `is_coprime`. They live in the
+  expression namespace so they compose, and they return booleans that coerce to 1 and 0, so
+  `is_prime(11) + is_prime(12) + is_prime(13)` is 2 — which is the only batching `math` has,
+  and is now documented rather than left to be rediscovered. A predicate applied to a free
+  symbol names the symbol instead of answering `None`. (#57, #63)
+- **Bounded ranges in `numbers.sequence`** — `kind=primes start=50 end=80` gives
+  53, 59, 61, 67, 71, 73, 79. Same for `squares` and `fibonacci`. `end` is what asks for a
+  range, so a `start` on its own is still ignored and still says so. (#57)
+- **The physical constants in `math`** — `gravitational_constant` … `fine_structure_constant`,
+  each under a long name everywhere and its conventional short name (`G`, `c`, `h`, `R`) only
+  in the modes whose answer is a number. `c` and `G` are the most common single-letter
+  variables in algebra, so `solve(["a + b = c"])` still treats `c` as an unknown, and a `vars`
+  entry always wins. Values come from pint's CODATA registry, and every use is named in
+  `assumptions` with its value and unit. (#55)
+- **`holidays` modes `festival`, `upcoming` and `compare`.** `check` and `next` are date-first;
+  these are name-first and window-first — "when is Durga Puja", "what is coming up in October",
+  "which dates does West Bengal observe that Assam does not". A multi-day festival comes back
+  as one thing with its days named, not as unrelated rows sharing a prefix, and common names
+  resolve to whatever the dataset calls the same festival (Durga Puja is filed as `Dussehra`)
+  with the substitution stated. A name it does not carry is refused with the near misses,
+  because "not in this dataset" and "no such festival" are different claims. (#87, #88, #94)
+- **`holidays.list` can return iCalendar or CSV** — `format="ics"` puts the calendar in a
+  calendar, which is the thing people actually do with one. (#93)
+- **Holiday names in other languages** — `language="hi"`, `"bn"`, `"ta"` and eight more for
+  India, discoverable through mode `categories`. (#76)
+- **A festival can anchor date arithmetic** — `{"festival": "Saptami", "year": 2026, "region":
+  "IN", "subdiv": "WB"}` works wherever `datetime` takes a date, so "three days before Saptami"
+  is one call rather than a lookup, some arithmetic and hoping both were right. (#92)
+- **Somewhere to report a wrong answer.** `POST /feedback` for agents holding a key and a form
+  at `/report` for signed-in people, both filing an issue on the tracker nobody outside can
+  see. Off unless `LEFTBRAIN_FEEDBACK_TOKEN` and `LEFTBRAIN_FEEDBACK_REPO` are set. Anything
+  key-shaped is blanked before filing, and the reporter is recorded — a key prefix or a GitHub
+  login — never their email. (#53)
+- **Every published parameter now says what it is for**, and `mode` lists what each tool can
+  do. 0.4.0 gave them types; this gives them meanings, from the same text the documentation
+  site already carries. (#64)
+
+### Fixed
+
+- **`17 % 5` returned 0.85.** `%` was read as a percentage wherever it appeared, so it became
+  `(17/100) 5` — wrong by a factor of 20, with `% read as /100` as the only tell. Both are
+  legitimate readings of `%`, so it now asks which was meant and takes
+  `percent="modulus"|"percent"` as the answer, the way `angle` already works. `mod` is the
+  spelling with one meaning and never asks. **This also uncovered a precedence bug in `mod`
+  itself**: `2^10 mod 7` matched `10` as its left operand and answered 2^(10 mod 7) = 8
+  instead of 1024 mod 7 = 2. (#97)
+- **A SIP with no opening balance was refused.** "growth and SIPs" is advertised at tool level,
+  but `principal` was required — so "5,000 a month for ten years", which is what a SIP
+  normally is, came back as `'principal' is required`. The arithmetic was right all along.
+  (#98)
+- **A year the holiday source does not reach answered with an empty list.** India's tables run
+  1948–2100; asking for 2200 returned nothing, which reads exactly like "no holidays that
+  year". It is refused now, naming the window. Every date also carries its provenance — source,
+  calendar, covered years, language and categories. (#90)
+- **`holidays.check` could not say that a date was a festival.** `is_holiday` and `is_weekend`
+  had to carry every question. It now answers with `is_observed`, `day_off` and
+  `observances[]`, each classified in one vocabulary that means the same thing in every
+  country. `is_holiday` keeps its old meaning. (#89, #95)
+- **A rejected `math` function named only what failed.** `primepi` now comes back with the near
+  misses and the accepted set, `factorint` returns real factors instead of a stringified dict,
+  and the description no longer claims "ANY arithmetic" against a partial allowlist. (#63)
+
+### Changed
+
+- **`toolref` moved out of `leftbrain.web`** to `leftbrain.toolref`. It only ever needed
+  `contract` and `core`, and `leftbrain.web.__init__` imports starlette — a `server` extra an
+  MCP-only install does not have. This is internal; nothing about the published tools changed.
+
 ## [0.4.0] - 2026-08-30
 
 Two batches of reported bugs, most of them the same shape: a parameter accepted and then
