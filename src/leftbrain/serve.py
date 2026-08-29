@@ -459,6 +459,42 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
             return JSONResponse({"ok": True, "result": {"kind": "static", "quota": "unlimited"}})
         return JSONResponse({"ok": False, "error": "unauthorized", "message": "no key"}, status_code=401)
 
+    async def me_scope(request: Request) -> JSONResponse:
+        """Propose narrowing this credential's own key. A human approves it; this does not (#34).
+
+        Widening is refused outright rather than queued, because a credential that can *ask*
+        for more is one whose scope is a suggestion — and anything that hijacks the agent
+        inherits the ability to ask.
+        """
+        from .scopes import narrows, parse_scope, summarize
+
+        info = (request.scope.get("state", {}).get("auth") or {}).get("key")
+        if info is None:
+            return JSONResponse({"ok": False, "error": "unsupported", "message": "this server's credential has no scope to narrow"}, status_code=400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        try:
+            proposed = parse_scope((body or {}).get("tools"))
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": "invalid", "message": str(e)}, status_code=400)
+        if proposed is None:
+            return JSONResponse({"ok": False, "error": "invalid", "message": 'name the tools to keep, e.g. {"tools": ["math", "convert"]}'}, status_code=400)
+        if not narrows(info.scope, proposed):
+            return JSONResponse({"ok": False, "error": "forbidden", "message": f"a key may only narrow its own scope; it holds {summarize(info.scope)} and asked for {proposed.summary()}. Widen it at /dashboard."}, status_code=403)
+        from .keys import SCOPE_REQUEST_TTL
+
+        request_id = store.open_scope_request(info.prefix, proposed)
+        url = f"{cfg.base_url or ''}/keys/scope-request/{request_id}"
+        return JSONResponse({"ok": True, "result": {
+            "status": "pending_approval",
+            "approve_url": url,
+            "tell_your_user": f"I would like to give up some of my own access to leftbrain, keeping only {proposed.listing()}. Approve at {url}",
+            "expires_in": SCOPE_REQUEST_TTL,
+            "check": "GET /keys/me",
+        }}, status_code=202)
+
     @asynccontextmanager
     async def lifespan(_: Starlette) -> AsyncIterator[None]:
         from . import runner
@@ -492,7 +528,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     # documents and /register must answer for their own sake (#34)
     oauth_routes = build_oauth_routes(store, cfg)
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None)

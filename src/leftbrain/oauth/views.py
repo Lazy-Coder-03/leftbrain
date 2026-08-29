@@ -18,19 +18,12 @@ from starlette.routing import Route
 
 from ..scopes import CATALOGUE
 from ..web import auth
-from ..web.views import fail_page_for, no_store, parse_grid_scope, render
+from ..web.views import armoured, fail_page_for, parse_grid_scope, render
 from .naming import connector_key_name
 from .redirects import is_loopback, redirect_uri_matches
 
 #: Everything the authorization request carries across the consent page and back again.
 FIELDS = ("client_id", "redirect_uri", "explicit", "code_challenge", "scopes", "state", "resource")
-
-
-def armoured(response: Response) -> Response:
-    """No framing, no caching. A consent screen inside an iframe is a clickjacking target."""
-    response.headers["x-frame-options"] = "DENY"
-    response.headers["content-security-policy"] = "frame-ancestors 'none'"
-    return no_store(response)
 
 
 def back_to_client(redirect_uri: str, **params: str) -> RedirectResponse:

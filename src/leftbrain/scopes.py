@@ -257,6 +257,26 @@ def enforce(tool_name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]
     return decorate
 
 
+def narrows(current: Scope | None, proposed: Scope) -> bool:
+    """Whether ``proposed`` grants no more than ``current`` does.
+
+    An agent may put its own privileges down; picking them back up is its owner's decision,
+    made signed in on the dashboard. Without that asymmetry the scope is a suggestion rather
+    than a ceiling, and anything that hijacks the agent inherits the ability to lift it.
+    """
+    if current is None:
+        return True  # every tool is currently allowed, so any selection is narrower
+    for tool, modes in proposed.tools.items():
+        if tool not in current.tools:
+            return False
+        allowed = current.tools[tool]
+        if allowed is None:
+            continue  # every mode of this tool is allowed, so any subset of them is narrower
+        if modes is None or not set(modes) <= set(allowed):
+            return False  # asking for every mode, or for modes it does not currently hold
+    return True
+
+
 def allowed_tools(scope: Scope | None, names: list[str]) -> list[str]:
     """``names`` trimmed to what ``scope`` permits, order kept; every name when there is no scope."""
     if scope is None:

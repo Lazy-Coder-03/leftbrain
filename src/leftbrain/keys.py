@@ -56,6 +56,7 @@ MAX_ACTIVE_KEYS_PER_EMAIL = int(os.environ.get("LEFTBRAIN_MAX_KEYS_PER_EMAIL", "
 LIFETIME_CHOICES = (30, 90, 365)  # days offered at creation; None means never
 DEFAULT_LIFETIME_DAYS = 90
 EXPIRY_WARNING_DAYS = 7  # "expires soon" once this close
+SCOPE_REQUEST_TTL = 900  # fifteen minutes: long enough to walk to another device
 NEVER_EXPIRES_WARNING = "Keys that never expire are a liability if leaked; prefer a lifetime and rotate."
 # ISO strings in one fixed shape compare correctly as text, in SQLite and Postgres alike
 _ACTIVE = "disabled=0 AND (expires_at IS NULL OR expires_at > ?)"
@@ -150,6 +151,15 @@ _SCHEMA = [
         count     INTEGER NOT NULL DEFAULT 0,
         last_used TEXT NOT NULL,
         PRIMARY KEY (prefix, tool)
+    )""",
+    # A narrowing an agent asked for and a human has not yet approved. Nothing is granted
+    # or removed by a row here; it only records what was proposed (#34).
+    """CREATE TABLE IF NOT EXISTS scope_requests (
+        request_id   TEXT PRIMARY KEY,
+        prefix       TEXT NOT NULL,
+        proposed     TEXT NOT NULL,
+        requested_at TEXT NOT NULL,
+        expires_at   TEXT NOT NULL
     )""",
 ]
 
@@ -391,8 +401,32 @@ class KeyStore:
                 return False
             self.db.run("DELETE FROM usage WHERE key_hash=?", (row["key_hash"],))
             self.db.run("DELETE FROM tool_usage WHERE prefix=?", (prefix,))
+            self.db.run("DELETE FROM scope_requests WHERE prefix=?", (prefix,))
             self.db.run("DELETE FROM keys WHERE key_hash=?", (row["key_hash"],))
         return True
+
+    def open_scope_request(self, prefix: str, proposed: Scope) -> str:
+        """Record a narrowing an agent has asked for. Nothing changes until it is approved."""
+        request_id = secrets.token_urlsafe(24)
+        expires = (datetime.now(UTC) + timedelta(seconds=SCOPE_REQUEST_TTL)).isoformat(timespec="seconds")
+        with self._lock:
+            self.db.run(
+                "INSERT INTO scope_requests(request_id, prefix, proposed, requested_at, expires_at) "
+                "VALUES (?,?,?,?,?)",
+                (request_id, prefix, proposed.to_json(), _now(), expires),
+            )
+        return request_id
+
+    def scope_request(self, request_id: str) -> dict[str, Any] | None:
+        row = self.db.one(
+            "SELECT * FROM scope_requests WHERE request_id=? AND expires_at > ?",
+            (request_id, _now()),
+        )
+        return dict(row) if row else None
+
+    def close_scope_request(self, request_id: str) -> None:
+        with self._lock:
+            self.db.run("DELETE FROM scope_requests WHERE request_id=?", (request_id,))
 
     def record_tool_call(self, prefix: str, tool: str) -> None:
         """One lifetime counter per key per tool, for the scope editor to show.

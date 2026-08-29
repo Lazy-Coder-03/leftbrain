@@ -17,9 +17,8 @@ from starlette.routing import Route
 
 from ..scopes import CATALOGUE
 from ..web import auth
-from ..web.views import fail_page_for, parse_grid_scope, render
+from ..web.views import armoured, fail_page_for, parse_grid_scope, render
 from .naming import connector_key_name
-from .views import armoured
 
 DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code"
 DEVICE_PATH = "/oauth/device_authorization"
