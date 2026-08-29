@@ -4,7 +4,31 @@ All notable changes to leftbrain are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-08-30
+
+Two batches of reported bugs, most of them the same shape: a parameter accepted and then
+ignored, or a filter applied and never mentioned. Several answers that looked exact were
+wrong, and this release makes each of them either right or refused.
+
+**If you read fields rather than prose, four response shapes moved:**
+
+- `geo_offline` — `coordinates` is now `zone_reference`, because that is what it always held.
+  `tz_for_coords` gained a `coordinates` echoing the point asked about, and a
+  `nearest_reference`.
+- `holidays.countries` — 250 entries of `{code, name, aliases}` instead of ~500 bare strings
+  mixing ISO-2, ISO-3 and the dataset's own abbreviations.
+- `holidays.locale` — renamed `date_locale`, which is what it does. `locale` still works.
+- `numbers.allocate` — `exact_unrounded` is a fraction (`1000/7`) where the decimal repeats.
+
+**And three behaviours changed on purpose:**
+
+- The daily quota now counts tool calls, not HTTP requests. A handshake and a refused call
+  cost nothing; a `tools/call` that did work costs exactly one.
+- `collections.sort_by` honours `order` when the key is given as `keys`. Anything relying on
+  that silently sorting ascending will now sort descending, correctly.
+- `math` refuses trigonometry without an `angle` even where the expression folds to a
+  constant, and `datetime.recurrence` refuses "every 2nd tuesday" rather than picking one of
+  its two readings.
 
 ### Added
 
