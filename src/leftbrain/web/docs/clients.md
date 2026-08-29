@@ -46,7 +46,7 @@ Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/m
 ```
 :::
 
-## Two ways to connect
+<h2 id="two-ways-to-connect">Two ways to connect</h2>
 
 **Paste a key.** Create one on the [Keys page](/dashboard), copy it, and put it in your client's
 config — the sections above. Works with every client, and it is the only way for a client with no

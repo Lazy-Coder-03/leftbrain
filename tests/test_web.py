@@ -59,6 +59,31 @@ def test_the_docs_offer_both_ways_to_connect():
     assert "cloudflare worker" not in clients.lower()
 
 
+def test_the_quickstart_says_a_key_can_be_skipped_entirely():
+    """It is the first page anyone reads; a second way in that it never mentions is hidden."""
+    from pathlib import Path
+
+    quickstart = Path("src/leftbrain/web/docs/quickstart.md").read_text(encoding="utf-8")
+    assert "OAuth" in quickstart
+    assert "/docs/clients#two-ways-to-connect" in quickstart
+    assert "/docs/agents/auth" in quickstart
+
+
+def test_every_in_page_docs_anchor_resolves():
+    """Headings are not given ids automatically, so a `#link` needs a hand-written target."""
+    import re
+    from pathlib import Path
+
+    docs = Path("src/leftbrain/web/docs")
+    targets, refs = set(), []
+    for page in docs.rglob("*.md"):
+        text = page.read_text(encoding="utf-8")
+        targets |= set(re.findall(r'<h[1-6] id="([^"]+)"', text))
+        refs += [(page.name, r) for r in re.findall(r"\]\((?:/docs/[a-z/-]*)?#([a-z0-9-]+)\)", text)]
+    assert refs, "no in-page anchors found; this test is checking nothing"
+    assert [f"{p}#{r}" for p, r in refs if r not in targets] == []
+
+
 def test_session_roundtrip_and_tamper():
     u = auth.User(login="octo", email="octo@example.com", avatar_url=None)
     tok = auth.sign_session("s3cret", u)
