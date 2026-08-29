@@ -59,7 +59,7 @@ implementation would otherwise miss.
 
 | Client | Static `lblz_` key | OAuth identity | Redirect URI |
 |---|---|---|---|
-| Claude Code | Configurable, but see the header bug below | **CIMD** | `http://localhost:PORT/callback`, **ephemeral port** |
+| Claude Code | **Works** — verified on 2.1.251, header reaches `tools/call` | **CIMD** | `http://localhost:PORT/callback`, **ephemeral port** |
 | Claude web / Desktop / mobile | `static_headers`, **beta**, entered by an org admin | CIMD, else DCR | `https://claude.ai/api/mcp/auth_callback` |
 | ChatGPT plugins | **No** — no key field, no header editor | CIMD, else DCR | `https://chatgpt.com/connector_platform_oauth_redirect` |
 | Codex | Yes | CIMD when advertised, else DCR | loopback |
@@ -100,15 +100,51 @@ Further requirements taken from the same source, all cheap and all load-bearing:
   Different parsers, same server.
 - DCR clients accumulate. Unused registrations with no consent row are pruned after 30 days.
 
-**Claude Code's header bug, to verify not assume.**
-[claude-code#28293](https://github.com/anthropics/claude-code/issues/28293) reports that custom
-headers from `.mcp.json` reach the initial connection but not tool-call POSTs, on both `sse` and
-`streamable-http`, and is closed as not planned. If that reproduces against leftbrain it means
-static keys are already broken there and OAuth is the only working path for Claude Code — which
-would raise this work from convenience to the sole remedy. It is one command to check
-(`claude mcp add --transport http … --header "Authorization: Bearer lblz_…"`, then call a tool)
-and the result is recorded here before the build starts, because it changes what the docs should
-tell a Claude Code user to do.
+**Claude Code's header bug: measured, and it does not reproduce.**
+[claude-code#28293](https://github.com/anthropics/claude-code/issues/28293) reports custom headers
+reaching the initial connection but not tool-call POSTs. Tested 2026-08-29 against a local
+leftbrain on **Claude Code 2.1.251**, `--transport http`, with an instrumented middleware logging
+every request:
+
+```
+POST /mcp  rpc=initialize            auth=YES  -> 200
+POST /mcp  rpc=server/discover       auth=YES  -> 200
+POST /mcp  rpc=tools/list            auth=YES  -> 200
+POST /mcp  rpc=subscriptions/listen  auth=YES  -> 200
+POST /mcp  rpc=tools/call:math       auth=YES  -> 200   <- the request the bug is about
+```
+
+Every request carried the header, the tool call included, and returned the right answer. The
+reported bug is about the `sse` transport's separate `/messages` endpoint; on streamable-http
+every message is a POST to `/mcp` and the header rides along. **So a pasted `lblz_` key works in
+Claude Code today**, and the docs say so rather than steering people to OAuth for a problem they
+do not have.
+
+**What the failure actually is, reproduced exactly.** Registering the same server with *no*
+header gives the reported error, and the log shows why:
+
+```
+GET  /.well-known/oauth-protected-resource/mcp   -> 404
+GET  /.well-known/oauth-protected-resource       -> 404
+GET  /.well-known/oauth-authorization-server     -> 404
+GET  /.well-known/openid-configuration           -> 404
+POST /register                                   -> 404   <- "Dynamic Client Registration rejected"
+POST /mcp                                        -> 401
+```
+
+Two things worth building to, neither of which was obvious:
+
+1. **Claude Code probes the well-known paths *before* it ever calls `/mcp`.** The 401 and its
+   `WWW-Authenticate: resource_metadata=…` pointer arrive last, after discovery has already
+   failed. The pointer is still correct and other clients rely on it, but for Claude Code the
+   well-known documents must simply *exist* at the origin — a pointer on the 401 alone would be
+   too late.
+2. **It also probes `/.well-known/openid-configuration`**, which the SDK does not serve. It is
+   tried after the RFC 8414 path, so serving that one is enough; no OIDC document is needed.
+
+Both `/.well-known/oauth-protected-resource/mcp` and the bare `/.well-known/oauth-protected-resource`
+are probed, so the RFC 9728 route must answer at the path-suffixed form the SDK generates — which
+it does — and the bare form is a harmless miss.
 
 **Why the device grant is in, and what it is not.** No shipping MCP client drives RFC 8628 for
 MCP today — Claude Code's request for it was closed as a duplicate — so **it will not make Claude
