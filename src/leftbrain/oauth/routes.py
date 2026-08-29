@@ -128,7 +128,9 @@ def build_oauth_routes(keys: Any, cfg: Any) -> list[Route]:
     allow_insecure = os.environ.get("LEFTBRAIN_CIMD_ALLOW_INSECURE", "0") in ("1", "true", "yes")
     if allow_insecure:
         print(json.dumps({"warning": "LEFTBRAIN_CIMD_ALLOW_INSECURE is on; client metadata may be fetched from private addresses"}), flush=True)
-    provider = LeftbrainOAuthProvider(oauth, keys, allow_insecure_cimd=allow_insecure)
+    provider = LeftbrainOAuthProvider(
+        oauth, keys, allow_insecure_cimd=allow_insecure, default_scopes=SCOPES
+    )
 
     amended = oauth_metadata(issuer, registration, revocation)
     routes: list[Route] = []

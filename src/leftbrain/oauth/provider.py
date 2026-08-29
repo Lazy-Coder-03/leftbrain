@@ -48,11 +48,14 @@ class LeftbrainOAuthProvider:
     """Implements the SDK's `OAuthAuthorizationServerProvider` over `OAuthStore`."""
 
     def __init__(self, oauth: OAuthStore, keys: Any, *, consent_path: str = "/oauth/consent",
-                 allow_insecure_cimd: bool = False) -> None:
+                 allow_insecure_cimd: bool = False, default_scopes: list[str] | None = None) -> None:
         self.oauth = oauth
         self.keys = keys
         self.consent_path = consent_path
         self.allow_insecure_cimd = allow_insecure_cimd
+        #: What a client that names no scope of its own is given. The SDK applies this at
+        #: registration; CIMD has no registration step, so we apply it on fetch.
+        self.default_scope = " ".join(default_scopes) if default_scopes else None
         self._cimd_cache: dict[str, OAuthClientInformationFull] = {}
 
     # -- clients -------------------------------------------------------------
@@ -76,6 +79,12 @@ class LeftbrainOAuthProvider:
             return cached
         client = await fetch_client_metadata(client_id, allow_insecure=self.allow_insecure_cimd)
         if client is not None:
+            # Anthropic's CIMD document declares no `scope`, and there is no registration
+            # step here to supply one — so the client would hold none, and the SDK refuses
+            # every scope a client does not hold. What the server grants by default is the
+            # server's call; the document only describes the client.
+            if client.scope is None:
+                client.scope = self.default_scope
             self._cimd_cache[client_id] = client
         return client
 

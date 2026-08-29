@@ -548,6 +548,39 @@ def test_a_url_client_id_is_fetched_when_it_is_not_registered(tmp_path, monkeypa
     assert fetched is not None and fetched.client_id == CIMD_URL
 
 
+def test_a_cimd_client_is_given_the_servers_default_scopes(tmp_path, monkeypatch):
+    """Anthropic's CIMD document declares no `scope`, and CIMD has no registration step.
+
+    Without this the client holds no scope at all, and the SDK's `validate_scope` computes
+    `allowed_scopes = []` and refuses *every* scope requested — which is what live Claude web
+    hit as `oauth_error=invalid_scope`. The server decides what a client may hold; a CIMD
+    document is the client describing itself, not the server granting anything.
+    """
+    from mcp.shared.auth import OAuthClientInformationFull
+
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    provider = LeftbrainOAuthProvider(OAuthStore(keys), keys, default_scopes=["mcp", "offline_access"])
+    scopeless = OAuthClientInformationFull(
+        client_id=CIMD_URL, client_secret=None, token_endpoint_auth_method="none",
+        redirect_uris=[AnyUrl("http://localhost/callback")], client_name="Claude",
+    )
+    assert scopeless.scope is None  # exactly as Anthropic publishes it
+    stub_cimd(monkeypatch, scopeless)
+
+    fetched = run(provider.get_client(CIMD_URL))
+    assert fetched.scope == "mcp offline_access"
+    assert fetched.validate_scope("mcp offline_access") == ["mcp", "offline_access"]
+
+
+def test_a_cimd_document_that_names_its_own_scope_keeps_it(tmp_path, monkeypatch):
+    keys = KeyStore(str(tmp_path / "k.sqlite3"))
+    provider = LeftbrainOAuthProvider(OAuthStore(keys), keys, default_scopes=["mcp", "offline_access"])
+    narrow = a_client(client_id=CIMD_URL, secret=None)
+    narrow.scope = "mcp"
+    stub_cimd(monkeypatch, narrow)
+    assert run(provider.get_client(CIMD_URL)).scope == "mcp"
+
+
 def test_a_registered_client_is_never_fetched(tmp_path, monkeypatch):
     """A stored registration wins, so a DCR client id is never treated as a URL to visit."""
     provider, _ = a_provider(tmp_path)
