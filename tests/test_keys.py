@@ -39,6 +39,22 @@ def test_signup_limits(tmp_path):
     assert all(keys[:3]) and keys[3] is None  # 3 per IP per day
 
 
+def test_the_key_cap_is_five_and_still_reads_the_environment(monkeypatch):
+    """Five because a connector now takes a slot; still a number an operator can change."""
+    import importlib
+
+    from leftbrain import keys as keys_mod
+
+    assert keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL == 5
+    monkeypatch.setenv("LEFTBRAIN_MAX_KEYS_PER_EMAIL", "9")
+    try:
+        assert importlib.reload(keys_mod).MAX_ACTIVE_KEYS_PER_EMAIL == 9
+    finally:
+        monkeypatch.delenv("LEFTBRAIN_MAX_KEYS_PER_EMAIL")
+        importlib.reload(keys_mod)
+    assert keys_mod.MAX_ACTIVE_KEYS_PER_EMAIL == 5
+
+
 def test_http_server_with_keys(tmp_path):
     app = build_app(
         include_external=False,
@@ -77,11 +93,11 @@ def test_http_server_static_key():
 
 def test_create_for_owner_cap_and_owns(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
-    made = [store.create_for_owner("Me@Example.com", f"key {i}") for i in range(3)]
+    made = [store.create_for_owner("Me@Example.com", f"key {i}") for i in range(MAX_ACTIVE_KEYS_PER_EMAIL)]
     assert all(raw and raw.startswith("lblz_") for raw, _ in made)
     assert made[0][1].owner == "me@example.com" and made[0][1].note == "key 0"
     raw, reason = store.create_for_owner("me@example.com", None)
-    assert raw is None and "3 active" in reason
+    assert raw is None and f"{MAX_ACTIVE_KEYS_PER_EMAIL} active" in reason
     prefix = made[0][1].prefix
     assert store.owns("me@example.com", prefix) and not store.owns("other@example.com", prefix)
     assert store.set_disabled(prefix, True)
@@ -212,12 +228,12 @@ def test_expired_key_is_rejected_with_403_and_a_dated_message(tmp_path):
 
 def test_expired_keys_do_not_count_towards_the_active_cap(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
-    made = [store.create_for_owner("me@example.com", f"k{i}", lifetime_days=30) for i in range(3)]
+    made = [store.create_for_owner("me@example.com", f"k{i}", lifetime_days=30) for i in range(MAX_ACTIVE_KEYS_PER_EMAIL)]
     assert store.create_for_owner("me@example.com", "full")[0] is None
     _expire(store, made[0][1].prefix, "2026-01-01T00:00:00.000000+00:00")
     raw, info = store.create_for_owner("me@example.com", "replacement", lifetime_days=None)
     assert raw and info.expires_at is None
-    assert store.stats()["active"] == 3
+    assert store.stats()["active"] == MAX_ACTIVE_KEYS_PER_EMAIL
 
 
 def test_expired_key_is_not_revealed(tmp_path):

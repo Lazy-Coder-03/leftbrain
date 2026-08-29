@@ -2,6 +2,7 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
+from leftbrain.keys import MAX_ACTIVE_KEYS_PER_EMAIL
 from leftbrain.serve import build_app
 from leftbrain.web import auth
 from leftbrain.web.config import WebConfig
@@ -284,10 +285,10 @@ def test_dashboard_create_list_cap_revoke(tmp_path):
         assert key.startswith("lblz_") and len(key) > 20
         # the key works on the API
         assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]["owner"] == "octo@example.com"
-        for i in range(2):
+        for i in range(MAX_ACTIVE_KEYS_PER_EMAIL - 1):  # one already exists
             assert c.post("/dashboard/keys", data={"name": f"k{i}", "csrf": csrf}).status_code == 200
         r = c.post("/dashboard/keys", data={"name": "one-too-many", "csrf": csrf})
-        assert r.status_code == 200 and "3 active" in r.text and "new-key" not in r.text
+        assert r.status_code == 200 and f"{MAX_ACTIVE_KEYS_PER_EMAIL} active" in r.text and "new-key" not in r.text
         prefix = key[:13]
         r = c.post(f"/dashboard/keys/{prefix}/revoke", data={"csrf": csrf}, follow_redirects=False)
         assert r.status_code == 302
@@ -1113,17 +1114,17 @@ def test_dashboard_marks_keys_that_predate_reveal(tmp_path):
         page = c.get("/dashboard").text
         assert "created before reveal was enabled" not in page and "/reveal" not in page
         assert page.count('class="pill off">legacy<') == 2 and "active<" not in page
-        assert "does not hold one of your 3 slots" in page
+        assert f"does not hold one of your {MAX_ACTIVE_KEYS_PER_EMAIL} slots" in page
         row = page.split(signup.prefix)[1].split("</tr>")[0]
         assert "issued by email signup" in row  # the origin is explained, not just the note echoed
-        assert '>0 <span class="sub">/ 3</span>' in page  # legacy rows are not active slots
+        assert f'>0 <span class="sub">/ {MAX_ACTIVE_KEYS_PER_EMAIL}</span>' in page  # legacy rows are not active slots
         body = article(c.get("/docs/quickstart").text)
         assert "lblz_…" in body and 'id="keypick"' not in body
-        # the cap is still 3 keys of the user's own: the legacy rows do not eat it
+        # the cap still counts only the user's own keys: the legacy rows do not eat it
         csrf = csrf_from(page)
-        for i in range(3):
+        for i in range(MAX_ACTIVE_KEYS_PER_EMAIL):
             assert "new-key" in c.post("/dashboard/keys", data={"name": f"k{i}", "csrf": csrf}).text
-        assert "3 active" in c.post("/dashboard/keys", data={"name": "k3", "csrf": csrf}).text
+        assert f"{MAX_ACTIVE_KEYS_PER_EMAIL} active" in c.post("/dashboard/keys", data={"name": "over", "csrf": csrf}).text
 
 
 def test_docs_without_a_key_keep_the_placeholder(tmp_path):
@@ -1295,14 +1296,14 @@ def test_expired_key_is_403_with_a_dated_message_and_frees_a_slot(tmp_path):
     with TestClient(oauth_app(tmp_path)) as c:
         login_via_github(c)
         csrf = csrf_from(c.get("/dashboard").text)
-        keys = [new_key(c, f"k{i}", csrf) for i in range(3)]
-        assert "3 active" in c.post("/dashboard/keys", data={"name": "no", "csrf": csrf}).text
+        keys = [new_key(c, f"k{i}", csrf) for i in range(MAX_ACTIVE_KEYS_PER_EMAIL)]
+        assert f"{MAX_ACTIVE_KEYS_PER_EMAIL} active" in c.post("/dashboard/keys", data={"name": "no", "csrf": csrf}).text
         backdate(tmp_path, keys[0][:13])
         r = c.get("/keys/me", headers={"Authorization": f"Bearer {keys[0]}"})
         assert r.status_code == 403
         assert r.json() == {"ok": False, "error": "expired", "message": "key expired on 2026-01-02; create a new one at /dashboard"}
         page = c.get("/dashboard").text
-        assert "expired 2026-01-02" in page and "2 <span" in page  # active count drops
+        assert "expired 2026-01-02" in page and f"{MAX_ACTIVE_KEYS_PER_EMAIL - 1} <span" in page  # active count drops
         assert f"/dashboard/keys/{keys[0][:13]}/reveal" not in page  # no Show for an expired key
         assert f"/dashboard/keys/{keys[0][:13]}/revoke" not in page  # nothing left to revoke
         assert f"/dashboard/keys/{keys[0][:13]}/delete" in page  # but it can still be cleaned up
