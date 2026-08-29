@@ -100,8 +100,8 @@ _CITY_ALIASES: dict[str, str] = {
     "argentina": "America/Argentina/Buenos_Aires", "chile": "America/Santiago", "peru": "America/Lima", "colombia": "America/Bogota",
     "medellin": "America/Bogota", "guadalajara": "America/Mexico_City", "monterrey": "America/Monterrey",
 }
-#: Names that mean more than one place. `Washington` answered New York with a footnote;
-#: the state is on Pacific time, and nobody typing `LA` means Laos without Los Angeles offered.
+#: Names that mean more than one place: the state of Washington is on Pacific time, and
+#: `LA` is Los Angeles as often as Laos.
 _AMBIGUOUS_PLACES: dict[str, list[str]] = {
     "washington": ["America/New_York", "America/Los_Angeles"],
     "portland": ["America/Los_Angeles", "America/New_York"],
@@ -397,8 +397,8 @@ def _tz_for_place(p: dict[str, Any]) -> dict[str, Any]:
     return ok(entries[0] if len(entries) == 1 else {"zones": entries, "count": len(entries)}, assumptions=assumptions)
 
 
-#: Reference points beyond tzdata's one-city-per-zone. India's only reference is Kolkata, so
-#: New Delhi (800 km away) was nearer Kathmandu and Bengaluru nearer Colombo. (lat, lon, zone)
+#: Reference points beyond tzdata's one city per zone: with Kolkata as India's only point,
+#: New Delhi is nearer Kathmandu and Bengaluru nearer Colombo. (lat, lon, zone)
 _EXTRA_REFERENCES: list[tuple[float, float, str]] = [
     (28.61, 77.21, "Asia/Kolkata"), (19.08, 72.88, "Asia/Kolkata"), (12.97, 77.59, "Asia/Kolkata"), (13.08, 80.27, "Asia/Kolkata"),
     (17.39, 78.49, "Asia/Kolkata"), (23.02, 72.57, "Asia/Kolkata"), (18.52, 73.86, "Asia/Kolkata"), (26.91, 75.79, "Asia/Kolkata"),

@@ -95,7 +95,7 @@ MAX_NUMERIC_DEGREE = 200
 
 _TRANSFORMS = standard_transformations + (
     # A decimal literal is the rational it prints as: 0.1 is 1/10, not the binary float
-    # 0.1000000000000000055…, so `0.1 + 0.2 - 0.3` is 0 and not 5.55e-17 (#52 §1).
+    # 0.1000000000000000055…, so `0.1 + 0.2 - 0.3` is exactly 0 (#52 §1).
     rationalize,
     convert_xor,
     implicit_multiplication,
@@ -317,10 +317,9 @@ _EQUALS = re.compile(r"(?<![<>!])={1,2}(?!=)")
 def _strip_grouping_commas(s: str) -> tuple[str, list[str]]:
     """Read `8,45,000` as one number.
 
-    Python's parser reads a comma as a tuple separator, so `17.5% of 8,45,000` came back as
-    five numbers with no warning (#52 §2). A grouping-shaped run outside any call becomes
-    one number; inside a call's brackets the comma keeps separating arguments, since
-    `max(10,200)` is what it looks like.
+    Python's parser reads a comma as a tuple separator (#52 §2). A grouping-shaped run outside
+    any call is one number; inside a call's brackets the comma keeps separating arguments,
+    since `max(10,200)` is what it looks like.
     """
     if "," not in s:
         return s, []
@@ -538,9 +537,8 @@ class _Estimator:
         """Estimated digits in the (numerator, denominator) of the exact rational ``node`` is.
 
         The magnitude estimate is blind to this: `(1+1/10^6)^10^6` is about 2.7, and also a
-        six-million-digit integer over another, which took the hosted server to its deadline
-        to build and could never have been printed (#52 §3). ``None`` when the node is not a
-        literal rational.
+        six-million-digit integer over another, which cannot be printed and takes seconds to
+        build (#52 §3). ``None`` when the node is not a literal rational.
         """
         lit = self.literal(node)
         if lit is not None:
@@ -656,8 +654,8 @@ def _parse(
         raise ToolError("expression is empty")
     s, assumptions = _preprocess(src)
     if (m := _EQUALS.search(s)) is not None:
-        # `factor` a minute after `solve` on the same polynomial is an easy slip; CPython's
-        # `invalid syntax (<string>, line 1)` said nothing useful about it (#52 §8).
+        # `factor` a minute after `solve` on the same polynomial is an easy slip, and CPython's
+        # own message for it is not actionable (#52 §8).
         raise ToolError(
             f"{src!r} is an equation, but this takes an expression: drop the '{s[m.start():].strip()}' part",
             hint="To solve it, use mode='solve' with equations=[...].",
@@ -981,12 +979,11 @@ def _mode_eval(p: dict[str, Any], exact_only: bool) -> dict[str, Any]:
 
 
 def _factor_integer(n: sp.Integer, precision: int) -> dict[str, Any]:
-    """`factor 12` is `2**2 * 3`. SymPy's factor() hands an integer straight back, and nothing
-    else in leftbrain factorises one (#52 §7)."""
+    """`factor 12` is `2**2 * 3`. SymPy's factor() is the identity on an integer (#52 §7)."""
     if abs(n) <= 1:
         return ok(_describe(n, precision), assumptions=[f"{n} has no prime factors"])
     primes = sp.factorint(abs(n))
-    # spelled by hand: SymPy's printer reorders an unevaluated product (-360 came out -5*2**3*3**2)
+    # spelled by hand: SymPy's printer reorders an unevaluated product
     sign = "-" if n < 0 else ""
     value = sign + "*".join(f"{q}**{e}" if e > 1 else str(q) for q, e in sorted(primes.items()))
     latex = sign + r" \cdot ".join(f"{q}^{{{e}}}" if e > 1 else str(q) for q, e in sorted(primes.items()))
@@ -1006,8 +1003,8 @@ def _mode_transform(p: dict[str, Any], *, mode: str) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     precision = p.get("precision", 15)
     if mode == "expand":
-        # SymPy's default is trig=False, so sin(2x) came back untouched while exp(x+y)
-        # split - both are "a function of a sum", and the identity holds unconditionally (#52 §6).
+        # trig=True: sin(2x) expands like exp(x+y) does - both are a function of a sum, and
+        # the identity holds unconditionally (#52 §6).
         res = sp.expand(expr, trig=True)
     elif mode == "factor":
         if isinstance(expr, sp.Integer):
@@ -1131,8 +1128,8 @@ def _mode_solve(p: dict[str, Any]) -> dict[str, Any]:
     solutions = []
     dropped = 0
     for s in sols:
-        # solve() with a real symbol still returns the roots it cannot classify: x^40 = 2
-        # came back with 26 "real" solutions, 24 of them complex. Keep what is in the domain.
+        # solve() with a real symbol still returns the roots it cannot classify (24 of the 40
+        # roots of x^40 = 2 are complex). Keep what is in the domain.
         if not all(_in_domain(v, domain) for v in s.values()):
             dropped += 1
             continue

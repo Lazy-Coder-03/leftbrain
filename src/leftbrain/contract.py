@@ -319,8 +319,7 @@ def exclusive(given: dict[str, Any], *names: str, chosen: str | None = None) -> 
 def whole(value: Any, name: str, *, lo: int | None = None, hi: int | None = None) -> int:
     """``value`` as a whole number, refused in words when it is not one.
 
-    `decimals="two"` used to reach `int()` and answer `invalid literal for int() with base
-    10: 'two'`; `decimals=True` was silently 1 and `decimals=2.7` silently 2.
+    A boolean is not a count, and 2.7 is not a whole number, so neither is coerced.
     """
     if isinstance(value, bool):
         raise ToolError(f"{name} must be a whole number, not a boolean")
@@ -342,7 +341,7 @@ def whole(value: Any, name: str, *, lo: int | None = None, hi: int | None = None
 def flag(value: Any, name: str) -> bool:
     """``value`` as a boolean. Accepts true/false/yes/no/1/0 in any case; refuses anything else.
 
-    `schedule="false"` and `accounting="false"` used to be truthy strings.
+    The string "false" is false, not a non-empty (truthy) string.
     """
     if isinstance(value, bool):
         return value

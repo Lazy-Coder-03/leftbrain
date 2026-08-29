@@ -35,12 +35,11 @@ from ..contract import (
 
 #: Digits the largest term of a generated sequence may have.
 MAX_TERM_DIGITS = 1000
-#: Significant digits any value here may carry. Decimal's default context is 28, and every
-#: operation past it rounded in silence: F(139) lost its last digit, `-d` on a 29-digit
-#: number lost one, `quantize` on a 30-digit one raised a bare InvalidOperation.
+#: Significant digits any value here may carry. Decimal's default context is 28, past which
+#: every operation rounds silently and `quantize` raises.
 MAX_DIGITS = 1200
 #: Parts an allocation may be split into. Each part is ~120 bytes of response and the
-#: response is capped at 256 KB, so 10,000 passed the pre-check and failed the size check.
+#: response is capped at 256 KB.
 MAX_PARTS = 2000
 #: The spaces a French or Swiss document groups digits with.
 _THIN_SPACES = str.maketrans({" ": "", " ": "", " ": "", " ": ""})
@@ -127,8 +126,8 @@ def parse_number(v: Any) -> tuple[Decimal, list[str]]:
 def parse_percent(v: Any) -> tuple[Decimal, list[str]]:
     """A value that is a percentage already: `"12%"` is 12, not 0.12.
 
-    `finance.emi rate="12%"` was read as 0.12% - parse_number divided by 100 and the note
-    was dropped on the way - so an EMI at a fraction of the rate came back with nothing said.
+    parse_number divides a `%` value by 100, which is right for a plain number and wrong for
+    a field that is a percentage by definition.
     """
     if isinstance(v, str) and v.strip().endswith("%"):
         d, notes = parse_number(v.strip()[:-1])
@@ -223,9 +222,8 @@ _INDIAN = re.compile(r"[+-]?\d{1,2}(?:,\d{2})*,\d{3}")
 def _separators(num: str, original: Any) -> tuple[str, list[str]]:
     """Resolve `,` and `.` in a digit string to a plain decimal, or refuse.
 
-    `1.234,56` was read as 1.23456: the dot kept as a decimal point, the comma dropped as
-    grouping. `1,2345` and `10,000,00` were read as 12345 and 1000000 with nothing said,
-    though the first is at least as likely a typo for 1.2345.
+    Western (`1,234.56`), Indian (`12,34,567.89`) and European (`1.234,56`) groupings are
+    read; commas that group nothing (`1,2345`, `10,000,00`) are refused rather than guessed.
     """
     if "," not in num and num.count(".") <= 1:
         return num, []
@@ -667,7 +665,6 @@ def _sequence(p: dict[str, Any]) -> dict[str, Any]:
             count = 0
             warnings.append(f"step {_dec_str(step)} points away from end {_dec_str(end)}, so there are no terms")
         if count > MAX_TERMS:
-            # used to stop quietly at 10,001 terms, as though that were the whole range
             raise TooLarge(f"the range would have {count:,} terms; the most that can be returned is {MAX_TERMS:,}", details={"terms": count, "limit": MAX_TERMS}, hint="Use a larger step or a nearer end.")
         seq = [start + step * i for i in range(count)]
     else:
@@ -706,7 +703,6 @@ def _words_international(n: int) -> str:
     if n == 0:
         return "zero"
     if n >= 1000 ** len(_SCALES):
-        # used to be an IndexError past quadrillion
         raise Unsupported(
             f"numbers of 10^{3 * len(_SCALES)} and above have no name in the short scale here (it stops at decillion); system='indian' names any size in crores of crores",
             hint="Pass system='indian'.",
@@ -794,7 +790,7 @@ def _parse(p: dict[str, Any]) -> dict[str, Any]:
     assumptions: list[str] = []
     for v in vals:
         d, a = parse_number(v)
-        number, note = saturate_to_float(d, "value")  # `1e400` used to be `Infinity` with nothing said
+        number, note = saturate_to_float(d, "value")
         out.append({"input": v, "value": _dec_str(d), "number": number})
         assumptions += [x for x in a + ([note] if note else []) if x not in assumptions]
     return ok(out[0] if single else out, assumptions=assumptions)

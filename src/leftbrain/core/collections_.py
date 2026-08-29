@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
-from ..contract import Ambiguous, TooLarge, ToolError, check_params, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, check_params, flag, ok, tool, whole
 from .numbers import _dec_str, parse_number
 
 MODES = ("set_ops", "group_by", "pick_fields", "flatten", "unflatten", "paginate", "find_duplicates", "sort_by", "aggregate", "chunk", "filter", "pivot", "running", "outliers", "summarize", "to_csv")
@@ -38,6 +38,10 @@ MODE_PARAMS: dict[str, frozenset[str]] = {
     "to_csv": frozenset({"columns", "delimiter", "escape_formulas", "has_header", "items"}),
 }
 
+#: Levels a nested structure may go before flatten refuses it.
+MAX_DEPTH = 1000
+#: The largest list index unflatten will allocate up to.
+MAX_INDEX = 100_000
 #: Above this many rows a CSV or record table is refused rather than answered slowly or partially.
 MAX_ROWS = 5000
 #: Distinct values of 'pivot_columns' that may become columns.
@@ -96,6 +100,9 @@ def _hashable(v: Any, ci: bool = False) -> Any:
         return ("str", v.strip().casefold() if ci else v)
     if isinstance(v, (dict, list)):
         return (type(v).__name__, json.dumps(v, sort_keys=True, default=str))
+    if isinstance(v, (int, float, Decimal)) and not isinstance(v, bool):
+        # a cell loaded from CSV is a Decimal and the same value from JSON is an int
+        return ("num", Decimal(repr(v)) if isinstance(v, float) else Decimal(v))
     return (type(v).__name__, v)
 
 
@@ -112,11 +119,27 @@ def _set_ops(p: dict[str, Any]) -> dict[str, Any]:
     key = p.get("key")
     ci = bool(p.get("case_insensitive", False))
 
+    warnings: list[str] = []
+    missing = 0
+
     def k(x: Any) -> Any:
         return _hashable(get_path(x, key) if key else x, ci)
 
-    ka = {k(x): x for x in a}
-    kb = {k(x): x for x in b}
+    def keyed(xs: list[Any], name: str) -> dict[Any, Any]:
+        nonlocal missing
+        out: dict[Any, Any] = {}
+        for x in xs:
+            if key and get_path(x, key) is None and not (isinstance(x, dict) and key in x):
+                missing += 1  # a row without the key matches nothing, least of all another such row
+                continue
+            out[k(x)] = x
+        return out
+
+    ka, kb = keyed(a, "a"), keyed(b, "b")
+    if missing:
+        warnings.append(f"{missing} row(s) have no '{key}' and were left out of the comparison")
+    if a and b and all(isinstance(x, dict) for x in a) != all(isinstance(x, dict) for x in b) and not key:
+        warnings.append("one side is a list of records and the other a list of values; nothing can match without a 'key'")
     only_a = [ka[x] for x in ka if x not in kb]
     only_b = [kb[x] for x in kb if x not in ka]
     both = [ka[x] for x in ka if x in kb]
@@ -130,9 +153,9 @@ def _set_ops(p: dict[str, Any]) -> dict[str, Any]:
         out["result"] = res[op]
         out["count"] = len(res[op])
     assumptions = ["difference = a minus b"] if op == "difference" else []
-    if len(ka) != len(a) or len(kb) != len(b):
+    if len(ka) + (missing if missing else 0) != len(a) + len(b) - len(kb) and (len(ka) != len(a) - sum(1 for x in a if key and get_path(x, key) is None) or len(kb) != len(b) - sum(1 for x in b if key and get_path(x, key) is None)):
         assumptions.append("duplicates within a list were collapsed")
-    return ok(out, assumptions=assumptions)
+    return ok(out, assumptions=assumptions, warnings=warnings)
 
 
 def _num(v: Any) -> Decimal | None:
@@ -140,13 +163,16 @@ def _num(v: Any) -> Decimal | None:
         return None
     if isinstance(v, Decimal):  # only ever a cell loaded from CSV text; JSON input never carries one
         return v
-    if isinstance(v, (int, float)):
-        return Decimal(repr(v)) if isinstance(v, float) else Decimal(v)
+    if isinstance(v, float):
+        return None if v != v or v in (float("inf"), float("-inf")) else Decimal(repr(v))
+    if isinstance(v, int):
+        return Decimal(v)
     if isinstance(v, str):
         try:
-            return Decimal(v.replace(",", ""))
+            d, _ = parse_number(v)  # the same reading the table loader makes: "12,34" is 12.34 in both
         except Exception:
             return None
+        return d if d.is_finite() else None
     return None
 
 
@@ -253,10 +279,32 @@ def _pick_fields(p: dict[str, Any]) -> dict[str, Any]:
     return ok({"items": out, "count": len(out)})
 
 
+def _depth_of(obj: Any) -> int:
+    """How deep `obj` nests, counted without recursion so it can be measured before the walk."""
+    deepest, stack = 0, [(obj, 1)]
+    while stack:
+        cur, d = stack.pop()
+        deepest = max(deepest, d)
+        if d > MAX_DEPTH:
+            return d
+        if isinstance(cur, dict):
+            stack.extend((v, d + 1) for v in cur.values())
+        elif isinstance(cur, list):
+            stack.extend((v, d + 1) for v in cur)
+    return deepest
+
+
+def _too_deep(obj: Any, what: str) -> None:
+    depth = _depth_of(obj)
+    if depth > MAX_DEPTH:
+        raise TooLarge(f"{what} nests more than {MAX_DEPTH:,} levels deep", details={"limit_depth": MAX_DEPTH}, hint=f"Flatten it in stages, or keep nesting under {MAX_DEPTH:,}.")
+
+
 def _flatten(p: dict[str, Any]) -> dict[str, Any]:
     data = p.get("data") if "data" in p else p.get("items")
     depth = p.get("depth")
     sep = p.get("separator", ".")
+    _too_deep(data, "'data'")
     if isinstance(data, list):
         def fl(xs: Any, d: int) -> list[Any]:
             out = []
@@ -279,6 +327,9 @@ def _flatten(p: dict[str, Any]) -> dict[str, Any]:
                 for i, v in enumerate(obj):
                     walk(v, f"{prefix}[{i}]", d + 1)
             else:
+                if prefix in out:
+                    # {"a.b": 1, "a": {"b": 2}} produces "a.b" twice
+                    raise ToolError(f"key {prefix!r} is produced twice: once as a literal key and once from the nested path", hint="Rename one of the two, or use a different 'separator'.")
                 out[prefix] = obj
 
         walk(data, "", 0)
@@ -318,6 +369,10 @@ def _unflatten(p: dict[str, Any]) -> dict[str, Any]:
             last = i == len(parts) - 1
             nxt_is_idx = not last and isinstance(parts[i + 1], int)
             if isinstance(part, int):
+                if not isinstance(cur, list):
+                    raise ToolError(f"key {k!r} indexes into {sep.join(str(x) for x in parts[:i]) or 'the root'!r}, which another key made an object", hint="A path is either a list index or an object key at each level, not both.")
+                if part > MAX_INDEX:
+                    raise TooLarge(f"key {k!r} asks for list index {part:,}; the most that can be allocated is {MAX_INDEX:,}", details={"index": part, "limit": MAX_INDEX}, hint="Use an object key instead of a sparse list index.")
                 while len(cur) <= part:
                     cur.append(None)
                 if last:
@@ -327,7 +382,12 @@ def _unflatten(p: dict[str, Any]) -> dict[str, Any]:
                         cur[part] = [] if nxt_is_idx else {}
                     cur = _descend(cur[part], parts, i, str(k), sep)
             else:
+                if not isinstance(cur, dict):
+                    raise ToolError(f"key {k!r} names a field of {sep.join(str(x) for x in parts[:i]) or 'the root'!r}, which another key made a list", hint="A path is either a list index or an object key at each level, not both.")
                 if last:
+                    if isinstance(cur.get(part), (dict, list)):
+                        # {"a.b": 2, "a": 1}: the scalar arrives after the prefix
+                        raise ToolError(f"key {k!r} is both a value and a prefix of another key; it cannot be a value and an object at once", details={"key": k}, hint="Rename one of the two keys, or drop the scalar one.")
                     cur[part] = v
                 else:
                     if part not in cur or cur[part] is None:
@@ -338,10 +398,8 @@ def _unflatten(p: dict[str, Any]) -> dict[str, Any]:
 
 def _paginate(p: dict[str, Any]) -> dict[str, Any]:
     items = _items(p)
-    per = int(p.get("per_page", 20))
-    page = int(p.get("page", 1))
-    if per < 1 or page < 1:
-        raise ToolError("page and per_page must be >= 1")
+    per = whole(p.get("per_page", 20), "per_page", lo=1)
+    page = whole(p.get("page", 1), "page", lo=1)
     total_pages = max(1, -(-len(items) // per))
     start = (page - 1) * per
     return ok({"items": items[start:start + per], "page": page, "per_page": per, "total": len(items), "total_pages": total_pages, "has_next": page < total_pages, "has_prev": page > 1, "range": [start + 1, min(start + per, len(items))] if start < len(items) else None})
@@ -366,10 +424,17 @@ def _find_duplicates(p: dict[str, Any]) -> dict[str, Any]:
         where[_hashable(value, ci)].append(i)
     dupes = [{"value": items[idx[0]] if not key else get_path(items[idx[0]], key), "indices": idx, "count": len(idx)} for idx in where.values() if len(idx) > 1]
     warnings = [f"{missing} of {len(items)} rows have no '{key}' and were left out of the comparison"] if missing else []
+    assumptions: list[str] = []
+    if not ci and not dupes:
+        loose = Counter(_hashable(get_path(x, key) if key else x, True) for x in items if not key or get_path(x, key) is not None)
+        near = sum(1 for c in loose.values() if c > 1)
+        if near:
+            assumptions.append(f"{near} group(s) differ only by case or surrounding spaces; pass case_insensitive=true to treat them as duplicates")
     return ok(
         {"duplicates": dupes, "duplicate_groups": len(dupes), "has_duplicates": bool(dupes), "compared": len(items) - missing, "skipped_missing_key": missing,
          "counts": {str(k[1]): len(v) for k, v in Counter({k: v for k, v in where.items()}).items()} if len(where) <= 200 else None},
         warnings=warnings,
+        assumptions=assumptions,
     )
 
 
@@ -396,18 +461,31 @@ def _sort_by(p: dict[str, Any]) -> dict[str, Any]:
             return (1, 0, str(v).casefold())
 
         srt.sort(key=kf, reverse=desc)
-    return ok({"items": srt, "count": len(srt), "changed": srt != items}, assumptions=["stable multi-key sort; None sorts last; strings case-insensitive"])
+    assumptions = ["stable multi-key sort; None sorts last; strings case-insensitive"]
+    warnings: list[str] = []
+    for spec in keys:
+        fld = spec.get("field")
+        values = [get_path(x, fld) for x in items]
+        if fld is None:
+            raise ToolError("each sort key needs a 'field'")
+        if items and all(v is None for v in values):
+            warnings.append(f"no item has a '{fld}' key, so it changed nothing")
+        elif any(isinstance(v, str) and _num(v) is not None for v in values):
+            assumptions.append(f"'{fld}' holds numbers written as text, which sort as text (\"10\" < \"9\"); convert them to numbers to sort numerically")
+    return ok({"items": srt, "count": len(srt), "changed": srt != items}, assumptions=assumptions, warnings=warnings)
 
 
 def _chunk(p: dict[str, Any]) -> dict[str, Any]:
     items = _items(p)
     size = p.get("size")
     n = p.get("n")
-    if size:
-        size = int(size)
+    if size is not None:
+        size = whole(size, "size", lo=1)
         chunks = [items[i:i + size] for i in range(0, len(items), size)]
-    elif n:
-        n = int(n)
+    elif n is not None:
+        n = whole(n, "n", lo=1)
+        if n > len(items):
+            raise TooLarge(f"n is {n:,} but there are only {len(items):,} items to split", details={"n": n, "items": len(items)}, hint="Use n of at most the number of items.")
         q, r = divmod(len(items), n)
         chunks, i = [], 0
         for c in range(n):
@@ -440,6 +518,8 @@ def _kind(v: Any) -> str:
         return "empty"
     if isinstance(v, bool):
         return "bool"
+    if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+        return "empty"  # NaN is the absence of a number
     if isinstance(v, (int, float, Decimal)):
         return "number"
     if not isinstance(v, str):
@@ -447,6 +527,8 @@ def _kind(v: Any) -> str:
     s = v.strip()
     if not s or s.casefold() in _EMPTY:
         return "empty"
+    if re.fullmatch(r"0\d+", s):
+        return "text"  # 02134 is a postcode, not the number 2134
     if s.casefold() in _TRUE or s.casefold() in _FALSE:
         return "bool"
     if _ISO_DATE.fullmatch(s):
@@ -519,7 +601,8 @@ def _load(p: dict[str, Any], key: str = "items") -> Table:
         raise ToolError(f"'{key}' is required: CSV text or a list of records")
     assumptions: list[str] = []
     if isinstance(data, str):
-        columns, raw = _split_header(_csv_rows(data, key, p.get("delimiter"), assumptions), p.get("has_header"), assumptions)
+        header = flag(p["has_header"], "has_header") if p.get("has_header") is not None else None
+        columns, raw = _split_header(_csv_rows(data, key, p.get("delimiter"), assumptions), header, assumptions)
     elif isinstance(data, list) and data and all(isinstance(r, dict) for r in data):
         columns = [str(k) for k in dict.fromkeys(k for r in data for k in r)]
         raw = [[r.get(c) for c in columns] for r in data]
@@ -547,6 +630,8 @@ def _load(p: dict[str, Any], key: str = "items") -> Table:
                 c = None
             elif isinstance(c, str) and not c.strip():
                 c = None
+            elif not isinstance(c, str) and _kind(c) == "empty":
+                c = None  # NaN and infinities are absences, not numbers
             row.append(c)
         cells.append(row)
     if blank:
@@ -562,6 +647,9 @@ def _load(p: dict[str, Any], key: str = "items") -> Table:
         notes[name] = set()
     rows = [{name: (None if r[j] is None else _coerce(r[j], types[name], notes[name])) for j, name in enumerate(columns)} for r in cells]
     assumptions.append("inferred types: " + ", ".join(f"{c}={t}" for c, t in types.items()))
+    for j, name in enumerate(columns):
+        if types[name] == "text" and any(isinstance(r[j], str) and re.fullmatch(r"0\d+", r[j].strip()) for r in cells):
+            assumptions.append(f"'{name}' has values with leading zeros, so it is read as text (an identifier), not as numbers")
     for name in columns:
         for note in sorted(notes[name]):
             assumptions.append(f"field '{name}': {note}")
@@ -686,9 +774,9 @@ def _metric(t: Table, p: dict[str, Any], assumptions: list[str]) -> str:
 
 
 def _dec_note(p: dict[str, Any], assumptions: list[str]) -> int | None:
-    decimals = p.get("decimals")
+    decimals = whole(p["decimals"], "decimals", lo=0, hi=20) if p.get("decimals") is not None else None
     if decimals is not None:
-        assumptions.append(f"computed values rounded to {int(decimals)} decimals, half-up")
+        assumptions.append(f"computed values rounded to {decimals} decimals, half-up")
     return decimals
 
 
@@ -770,7 +858,11 @@ def _expected(kind: str, op: str, value: Any) -> Any:
             raise ToolError(f"cannot compare a number with {value!r}")
         return _coerce(value, "number", set())
     if kind == "bool":
+        if op in ("eq", "ne"):
+            return flag(value, "value")
         return _coerce(value, "bool", set())
+    if op in ("gt", "gte", "lt", "lte") and _num(value) is not None and not isinstance(value, str):
+        raise ToolError(f"'{op}' compares numbers, but this column holds text (or a mix of text and numbers), so it would compare as text", hint="Clean the column so every value is a number, or use contains/eq.")
     return _label(value)
 
 

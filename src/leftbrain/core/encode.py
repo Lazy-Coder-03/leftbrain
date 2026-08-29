@@ -14,7 +14,7 @@ from datetime import UTC
 from typing import Any
 from urllib.parse import quote, quote_plus, unquote, unquote_plus
 
-from ..contract import ToolError, check_params, ok, tool
+from ..contract import TooLarge, ToolError, check_params, flag, ok, tool, whole
 
 MODES = ("hash", "hmac", "checksum", "base64", "hex", "url", "html", "jwt_decode", "json")
 
@@ -52,7 +52,13 @@ def _bytes(p: dict[str, Any]) -> bytes:
         raise ToolError("'text' (or bytes_base64 / bytes_hex) is required")
     if not isinstance(t, str):
         t = json.dumps(t, separators=(",", ":"), sort_keys=True)
-    return t.encode(p.get("encoding") or "utf-8")
+    encoding = str(p.get("encoding") or "utf-8")
+    try:
+        return t.encode(encoding)
+    except LookupError:
+        raise ToolError(f"unknown text encoding {encoding!r}", hint="Use utf-8, utf-16, latin-1, ascii or another codec Python knows.") from None
+    except UnicodeEncodeError as e:
+        raise ToolError(f"the text cannot be written in {encoding}: {e.object[e.start:e.end]!r} has no {encoding} form", hint="Use encoding='utf-8'.") from None
 
 
 def clean_expected(expected: Any) -> str:
@@ -62,12 +68,17 @@ def clean_expected(expected: Any) -> str:
 
 
 def digest_matches(expected: Any, *forms: str) -> bool:
-    """Constant-time comparison of ``expected`` against every textual form of a digest (hex, Base64, decimal)."""
+    """Constant-time comparison of ``expected`` against every textual form of a digest.
+
+    Hex and decimal are case-free; Base64 is not.
+    """
     exp = clean_expected(expected)
     hit = False
     for form in forms:
-        hit |= _hmac.compare_digest(form.lower(), exp.lower())  # hex and decimal are case-free; Base64 is compared exactly below
-        hit |= _hmac.compare_digest(form, exp)
+        if re.fullmatch(r"[0-9a-fA-F]+", form):
+            hit |= _hmac.compare_digest(form.lower(), exp.lower())
+        else:
+            hit |= _hmac.compare_digest(form, exp)
     return hit
 
 
@@ -90,7 +101,13 @@ def _hmac_mode(p: dict[str, Any]) -> dict[str, Any]:
     algo = (p.get("algo") or "sha256").lower().replace("-", "_")
     if algo not in _ALGOS:
         raise ToolError(f"algo must be one of {', '.join(sorted(_ALGOS))}")
-    kb = str(key).encode("utf-8") if not p.get("key_base64") else base64.b64decode(str(key))
+    if flag(p.get("key_base64", False), "key_base64"):
+        try:
+            kb = base64.b64decode(str(key), validate=True)
+        except (binascii.Error, ValueError) as e:
+            raise ToolError(f"key_base64 is set but the key is not valid base64: {e}", hint="Pass the key as text, or fix its base64.") from None
+    else:
+        kb = str(key).encode("utf-8")
     mac = _hmac.new(kb, _bytes(p), algo)
     out = {"algo": algo, "hex": mac.hexdigest(), "base64": base64.b64encode(mac.digest()).decode()}
     if p.get("expected") is not None:
@@ -114,17 +131,23 @@ def _checksum(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _base64(p: dict[str, Any]) -> dict[str, Any]:
-    action = (p.get("action") or p.get("op") or "encode").lower()
-    urlsafe = bool(p.get("urlsafe", False))
+    action = str(p.get("action") or p.get("op") or "encode").lower()
+    urlsafe = flag(p.get("urlsafe", False), "urlsafe")
     if action == "encode":
         data = _bytes(p)
         enc = base64.urlsafe_b64encode(data) if urlsafe else base64.b64encode(data)
         s = enc.decode()
-        if p.get("strip_padding"):
+        if flag(p.get("strip_padding", False), "strip_padding"):
             s = s.rstrip("=")
         return ok({"encoded": s, "bytes": len(data)})
     if action == "decode":
-        s = str(p.get("text") or p.get("value") or "").strip()
+        s = re.sub(r"\s+", "", str(p.get("text") or p.get("value") or ""))
+        alphabet = "A-Za-z0-9\\-_" if (urlsafe or "-" in s or "_" in s) else "A-Za-z0-9+/"
+        stray = sorted(set(re.sub(f"[{alphabet}=]", "", s)))
+        if stray:
+            raise ToolError(f"invalid base64: {', '.join(repr(c) for c in stray)} is not in the base64 alphabet", hint="Check the text was pasted whole and is not URL-encoded.")
+        if "=" in s.rstrip("="):
+            raise ToolError("invalid base64: padding ('=') in the middle of the text; only the end may be padded", hint="Two base64 strings may have been joined.")
         s += "=" * (-len(s) % 4)
         if urlsafe and ("+" in s or "/" in s):
             # `urlsafe_b64decode` translates `-_` to `+/` and then accepts `+/` as well, so
@@ -136,7 +159,7 @@ def _base64(p: dict[str, Any]) -> dict[str, Any]:
                 hint="Drop urlsafe, or pass text encoded with the URL-safe alphabet.",
             )
         try:
-            raw = base64.urlsafe_b64decode(s) if (urlsafe or "-" in s or "_" in s) else base64.b64decode(s, validate=False)
+            raw = base64.urlsafe_b64decode(s) if (urlsafe or "-" in s or "_" in s) else base64.b64decode(s, validate=True)
         except (binascii.Error, ValueError) as e:
             raise ToolError(f"invalid base64: {e}") from None
         out: dict[str, Any] = {"bytes": len(raw), "hex": raw.hex()}
@@ -150,11 +173,15 @@ def _base64(p: dict[str, Any]) -> dict[str, Any]:
 
 
 def _hex(p: dict[str, Any]) -> dict[str, Any]:
-    action = (p.get("action") or "encode").lower()
+    action = str(p.get("action") or "encode").lower()
     if action == "encode":
         data = _bytes(p)
         return ok({"hex": data.hex(), "bytes": len(data)})
-    s = str(p.get("text") or p.get("value") or "").replace(" ", "").replace("0x", "")
+    if action != "decode":
+        raise ToolError("action must be encode or decode")
+    s = re.sub(r"\s+", "", str(p.get("text") or p.get("value") or ""))
+    if s[:2].lower() == "0x":
+        s = s[2:]  # only as a prefix
     try:
         raw = bytes.fromhex(s)
     except ValueError as e:
@@ -172,15 +199,16 @@ _BAD_ESCAPE = re.compile(r"%(?![0-9a-fA-F]{2})[^\s]{0,2}")
 def _url(p: dict[str, Any]) -> dict[str, Any]:
     action = (p.get("action") or "encode").lower()
     s = str(p.get("text") if "text" in p else p.get("value") or "")
+    plus = flag(p.get("plus", False), "plus")
     if action == "encode":
-        plus = bool(p.get("plus", False))
-        return ok({"encoded": quote_plus(s, safe=p.get("safe", "")) if plus else quote(s, safe=p.get("safe", "/"))})
+        safe = str(p.get("safe", "" if plus else "/"))
+        return ok({"encoded": quote_plus(s, safe=safe) if plus else quote(s, safe=safe)})
     if action == "decode":
         # `unquote` leaves a malformed escape exactly as it found it, so `a%zz` decoded to
         # `a%zz` and the caller had no way to know an escape was broken (#28 SS3.13).
         bad = _BAD_ESCAPE.findall(s)
         return ok(
-            {"decoded": unquote_plus(s) if p.get("plus") else unquote(s)},
+            {"decoded": unquote_plus(s) if plus else unquote(s)},
             warnings=[f"{', '.join(dict.fromkeys(bad))} is not a valid percent-escape and was left as written"] if bad else [],
         )
     raise ToolError("action must be encode or decode")
@@ -190,7 +218,7 @@ def _html(p: dict[str, Any]) -> dict[str, Any]:
     action = (p.get("action") or "escape").lower()
     s = str(p.get("text") if "text" in p else p.get("value") or "")
     if action in ("escape", "encode"):
-        return ok({"escaped": html.escape(s, quote=bool(p.get("quote", True)))})
+        return ok({"escaped": html.escape(s, quote=flag(p.get("quote", True), "quote"))})
     if action in ("unescape", "decode"):
         return ok({"unescaped": html.unescape(s)})
     raise ToolError("action must be escape or unescape")
@@ -211,15 +239,26 @@ def _jwt_decode(p: dict[str, Any]) -> dict[str, Any]:
 
     header, payload = dec(parts[0]), dec(parts[1])
     out: dict[str, Any] = {"header": header, "payload": payload, "signature_b64url": parts[2], "algorithm": header.get("alg") if isinstance(header, dict) else None}
+    warnings = ["signature NOT verified; claims are untrusted"]
     if isinstance(payload, dict):
         from datetime import datetime
 
         for k in ("exp", "iat", "nbf"):
-            if isinstance(payload.get(k), (int, float)):
-                out[f"{k}_iso"] = datetime.fromtimestamp(payload[k], tz=UTC).isoformat()
-        if isinstance(payload.get("exp"), (int, float)):
-            out["expired"] = datetime.now(UTC).timestamp() > payload["exp"]
-    return ok(out, warnings=["signature NOT verified; claims are untrusted"])
+            v = payload.get(k)
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                continue
+            if v > 1e11:
+                # the commonest JWT mistake: a JavaScript Date.now() in milliseconds
+                v = v / 1000
+                warnings.append(f"'{k}' looks like milliseconds ({payload[k]}); read as seconds / 1000 - JWT claims are seconds since the epoch")
+            try:
+                out[f"{k}_iso"] = datetime.fromtimestamp(v, tz=UTC).isoformat()
+            except (OverflowError, OSError, ValueError):
+                warnings.append(f"'{k}' = {payload[k]} is not a timestamp any calendar holds")
+                continue
+            if k == "exp":
+                out["expired"] = datetime.now(UTC).timestamp() > v
+    return ok(out, warnings=warnings)
 
 
 def _count_nonfinite(value: Any) -> int:
@@ -242,14 +281,32 @@ def _json_mode(p: dict[str, Any]) -> dict[str, Any]:
             # parsed and `str()` turned it into Python's repr - `{'a': 1}` - which is not
             # JSON, so the tool reported the caller's valid document as invalid (#28 SS3.3).
             s = json.dumps(s)
+        text = str(s)
+        overflow: list[str] = []
+
+        def constant(name: str) -> Any:
+            raise ValueError(f"{name} is not JSON")  # Python's json accepts NaN and Infinity; JSON does not
+
+        def number(token: str) -> float:
+            v = float(token)
+            if v in (float("inf"), float("-inf")):
+                overflow.append(token)
+            return v
+
         try:
-            data = json.loads(str(s))
+            data = json.loads(text, parse_constant=constant, parse_float=number)
         except json.JSONDecodeError as e:
             return ok({"valid": False, "error": e.msg, "line": e.lineno, "column": e.colno, "position": e.pos})
-        return ok({"valid": True, "data": data, "type": type(data).__name__})
+        except ValueError as e:
+            msg = str(e)
+            if "Exceeds the limit" in msg:
+                raise TooLarge("an integer in the text has more digits than can be read (the limit is 4,300)", hint="Write it as a string, or as a float.") from None
+            return ok({"valid": False, "error": msg})
+        warnings = [f"{t} is beyond the range of a double and was read as {'-' if t.startswith('-') else ''}Infinity, which is not JSON" for t in overflow]
+        return ok({"valid": True, "data": data, "type": type(data).__name__}, warnings=warnings)
     if action in ("stringify", "format", "minify"):
         data = p.get("data") if "data" in p else p.get("value")
-        indent = None if action == "minify" else int(p.get("indent", 2))
+        indent = None if action == "minify" else whole(p.get("indent", 2), "indent", lo=0, hi=16)
         # `Infinity` and `NaN` are Python's spelling, not JSON's: json.dumps writes them
         # happily and every strict parser downstream rejects the result (#28 SS3.4).
         nonfinite = _count_nonfinite(data)
@@ -261,7 +318,7 @@ def _json_mode(p: dict[str, Any]) -> dict[str, Any]:
                 hint="Replace them with null, or with a string, before stringifying.",
             )
         try:
-            text = json.dumps(data, indent=indent, sort_keys=bool(p.get("sort_keys", False)), ensure_ascii=False, allow_nan=False, separators=(",", ":") if indent is None else None)
+            text = json.dumps(data, indent=indent, sort_keys=flag(p.get("sort_keys", False), "sort_keys"), ensure_ascii=False, allow_nan=False, separators=(",", ":") if indent is None else None)
         except (ValueError, TypeError) as e:
             raise ToolError(f"this value cannot be written as JSON: {e}") from None
         return ok({"text": text})

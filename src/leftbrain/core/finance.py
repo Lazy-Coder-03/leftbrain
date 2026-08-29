@@ -54,7 +54,7 @@ def _num(
 ) -> Decimal | None:
     """A parsed amount. ``percent``: the value is a percentage already, so `"12%"` is 12.
 
-    ``notes`` collects how the value was read (`10L`, `1,10`), which used to be dropped here.
+    ``notes`` collects how the value was read (`10L`, `1,10`).
     """
     if p.get(key) is None:
         if required:
@@ -148,7 +148,7 @@ def _emi(p: dict[str, Any]) -> dict[str, Any]:
         ctx.prec = _PREC
         g = (1 + r) ** n
         if r == 0 or g == 1:
-            if r != 0:  # 1e-45% a year: (1+r)^n rounds to 1 at 40 digits, and the formula divides by g - 1
+            if r != 0:  # (1+r)^n rounds to 1 at 40 digits, and the formula divides by g - 1
                 assumptions.append(f"a rate of {_dec_str(r * 100)}% per month is below the precision of the calculation and is treated as 0")
                 r = Decimal(0)
             emi_exact = principal / n
@@ -163,8 +163,7 @@ def _emi(p: dict[str, Any]) -> dict[str, Any]:
             interest = _money(opening * r, decimals, rounding)
             if m == n or opening <= emi - interest:
                 # the last instalment clears whatever is left, so closing is exactly 0. Over a
-                # long term a rounded-up instalment gets there early; the schedule used to run
-                # on past zero into negative balances and a negative final payment.
+                # long term a rounded-up instalment gets there early, and the schedule stops there.
                 repay = opening
                 payment = repay + interest
             else:
@@ -288,7 +287,7 @@ def _cagr(p: dict[str, Any]) -> dict[str, Any]:
         multiple = end / start
         cagr_pct = (multiple ** (1 / years) - 1) * 100
         total_pct = (multiple - 1) * 100
-    # 1 -> 1e40 in a year is a 41-digit percentage; quantize refused it with a bare InvalidOperation
+    # 1 -> 1e40 in a year is a 41-digit percentage, past the default context
     out = {
         "cagr_percent": _dec_str(_places(cagr_pct, 4)),
         "total_growth_percent": _dec_str(_places(total_pct, 4)),
@@ -330,8 +329,8 @@ def _bisect(flows: list[Decimal], lo: Decimal, hi: Decimal, lo_negative: bool) -
 def _irrs(flows: list[Decimal]) -> list[Decimal]:
     """Every rate between -99.99% and 1000% per period at which NPV is zero, ascending.
 
-    Bisection from the two ends alone answered "no IRR" for `[-100, 230, -132]`, whose NPV
-    is zero at both 10% and 20%: the same sign at both ends hid both roots. The grid is
+    `[-100, 230, -132]` has an IRR at 10% and another at 20%, and NPV has the same sign at
+    both ends of the range, so bisection from the ends alone finds neither. The grid is
     scanned in float (cheap) and each sign change is then bisected in Decimal.
     """
     fl = [float(f) for f in flows]
@@ -527,8 +526,7 @@ def finance(mode: str = "emi", **params: Any) -> dict[str, Any]:
     try:
         return {"emi": _emi, "compound": _compound, "cagr": _cagr, "npv_irr": _npv_irr, "gst": _gst, "percent": _percent}[mode](p)
     except (InvalidOperation, Overflow):
-        # `cagr years=1e-10` raises 2 to a power of 10^10: past what a 40-digit money
-        # calculation can carry, and a size rather than an internal error
+        # `cagr years=1e-10` raises 2 to a power of 10^10: a size, not an internal error
         raise TooLarge(f"the figures are past what a {_PREC}-digit money calculation can carry", hint="Use amounts, rates and terms of ordinary size.") from None
     except DivisionByZero:
         raise ToolError("the calculation divides by zero") from None

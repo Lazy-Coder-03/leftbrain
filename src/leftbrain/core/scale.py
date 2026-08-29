@@ -64,8 +64,7 @@ def scale(**params: Any) -> dict[str, Any]:
         from_qty = Fraction(1)
         to_qty = ratio
         if mode == "inverse":
-            # `inverse factor=2` multiplied every entity by 2 while the note said doubling
-            # halves them. The factor is the from→to ratio in both modes; inverse divides by it.
+            # The factor is the from→to ratio in both modes; inverse proportion divides by it.
             if ratio == 0:
                 raise ToolError("factor is 0; an inverse relationship cannot target zero", hint="Give a factor greater than zero.")
             factor = 1 / ratio

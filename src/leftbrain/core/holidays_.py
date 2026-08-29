@@ -14,8 +14,7 @@ MODES = ("list", "check", "next", "countries", "subdivisions")
 
 #: What each mode reads. Anything else in a call is a caller's mistake, not a default
 #: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
-#: the same map from the code and fails when the two drift. One set per mode: `n` on
-#: `check` and `date` on `list` used to pass validation and do nothing.
+#: the same map from the code and fails when the two drift. One set per mode.
 MODE_PARAMS: dict[str, frozenset[str]] = {
     "list": frozenset({"categories", "country", "month", "region", "state", "subdiv", "year", "years"}),
     "check": frozenset({"categories", "country", "date", "locale", "region", "state", "subdiv", "value"}),
@@ -38,8 +37,7 @@ def _country(region: Any) -> str:
     """The ISO 3166-1 alpha-2 code the `holidays` library files a country under.
 
     Country names ("India", "Türkiye") and alpha-3 codes ("IND") are accepted and reduced
-    to the alpha-2 code, which is what `subdivisions` and datetime's `region` expect. The
-    old loop over `include_aliases=True` matched nothing but alpha-3, and echoed it back.
+    to the alpha-2 code, which is what `subdivisions` and datetime's `region` expect.
     """
     from .geo_offline import country_code  # lazy: avoids an import cycle
 
@@ -108,8 +106,7 @@ def _mode_check(p: dict[str, Any]) -> dict[str, Any]:
     d, _, a = parse_dt(p.get("date") or p.get("value") or "today", locale=p.get("locale"), field="date")
     hm = holiday_map(code, {d.year}, subdiv, p.get("categories"))
     name = hm.get(d.date())
-    # An empty calendar for the year read as "not a holiday": Independence Day 2200 came back
-    # as a working day with nothing said.
+    # An empty calendar for the year is not the same as "not a holiday".
     warnings = [_no_data(code, [d.year])] if not hm else []
     return ok({"date": d.date().isoformat(), "is_holiday": name is not None, "name": name, "weekday": d.strftime("%A"), "is_weekend": d.weekday() >= 5}, assumptions=a, warnings=warnings)
 
@@ -158,7 +155,7 @@ def _mode_list(p: dict[str, Any]) -> dict[str, Any]:
         raw_years = [p["year"]]
     else:
         raw_years = [date.today().year]
-    years = [whole(y, "year", lo=1, hi=9999) for y in raw_years]  # year=0 used to mean "this year"
+    years = [whole(y, "year", lo=1, hi=9999) for y in raw_years]
     hm = holiday_map(code, set(years), subdiv, p.get("categories"))
     month = _month(p["month"]) if p.get("month") is not None else None
     items = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A")} for k, v in sorted(hm.items()) if (month is None or k.month == month)]
