@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import calendar
 import difflib
+import hashlib
 import re
 from datetime import date, timedelta
 from functools import lru_cache
@@ -19,7 +20,7 @@ MODES = ("list", "check", "next", "countries", "subdivisions", "festival", "upco
 #: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
 #: the same map from the code and fails when the two drift. One set per mode.
 MODE_PARAMS: dict[str, frozenset[str]] = {
-    "list": frozenset({"categories", "country", "language", "month", "region", "state", "subdiv", "year", "years"}),
+    "list": frozenset({"categories", "country", "format", "language", "month", "region", "state", "subdiv", "year", "years"}),
     "check": frozenset({"categories", "country", "date", "date_locale", "language", "locale", "region", "state", "subdiv", "value"}),
     "next": frozenset({"categories", "country", "date", "date_locale", "language", "locale", "n", "region", "state", "subdiv"}),
     "countries": frozenset(),
@@ -398,6 +399,98 @@ def _day_name(name: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+#: What `list` can hand back besides JSON rows.
+FORMATS = ("json", "ics", "csv")
+
+
+def _ics_escape(text: str) -> str:
+    """RFC 5545 escaping: backslash, semicolon, comma and newline are all special."""
+    return str(text).replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def _uid(code: str, subdiv: str | None, row: dict[str, Any]) -> str:
+    """A stable event id. Not `hash()`: PYTHONHASHSEED is randomised per process, so the same
+    calendar exported twice would carry different UIDs and a client would add the events again
+    instead of updating them."""
+    seed = "|".join([code, str(subdiv), str(row["date"]), str(row["name"])])
+    return hashlib.sha1(seed.encode()).hexdigest()[:16]
+
+
+def _as_ics(rows: list[dict[str, Any]], code: str, subdiv: str | None) -> str:
+    """An all-day VEVENT per entry, which is what a holiday is.
+
+    DTEND is exclusive in RFC 5545, so a one-day event ends on the following day. Getting that
+    wrong is the classic off-by-one that makes every imported holiday a day short.
+    """
+    name = f"{code}{'/' + subdiv if subdiv else ''} holidays"
+    out = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", f"PRODID:-//leftbrain//holidays {_hol.__version__}//EN",
+        "CALSCALE:GREGORIAN", "METHOD:PUBLISH", f"X-WR-CALNAME:{_ics_escape(name)}",
+    ]
+    for row in rows:
+        day = date.fromisoformat(row["date"])
+        out += [
+            "BEGIN:VEVENT",
+            f"UID:{row['date']}-{_uid(code, subdiv, row)}@leftbrain",
+            f"DTSTAMP:{day.strftime('%Y%m%d')}T000000Z",
+            f"DTSTART;VALUE=DATE:{day.strftime('%Y%m%d')}",
+            f"DTEND;VALUE=DATE:{(day + timedelta(days=1)).strftime('%Y%m%d')}",
+            f"SUMMARY:{_ics_escape(row['name'])}",
+            "TRANSP:TRANSPARENT",
+            "END:VEVENT",
+        ]
+    out.append("END:VCALENDAR")
+    return "\r\n".join(out) + "\r\n"
+
+
+def _as_csv(rows: list[dict[str, Any]]) -> str:
+    """Reuses `collections.to_csv`, so the formula escaping is the one already tested."""
+    from .collections_ import collections as collections_tool
+
+    answered = collections_tool("to_csv", items=rows or [{"date": "", "name": "", "weekday": ""}])
+    if not answered["ok"]:  # pragma: no cover - to_csv refusing well-formed records
+        raise ToolError(answered["message"])
+    return answered["result"]["csv"] if rows else "date,name,weekday\r\n"
+
+
+def festival_dates(name: str, year: int, region: str, subdiv: str | None = None,
+                   categories: Any = None, notes: list[str] | None = None) -> list[tuple[date, str]]:
+    """Every dated entry for one festival, or an `Ambiguous` naming the near misses.
+
+    Shared with `datetime` so a festival can anchor date arithmetic without that module
+    learning anything about holidays (#92).
+    """
+    notes = notes if notes is not None else []
+    code = _country(region, notes)
+    wanted = str(name).strip()
+    chosen = categories or list(supported_categories(code))
+    hm = holiday_map(code, {int(year)}, subdiv, chosen, notes, None)
+    groups = _grouped(hm)
+    full_names = {k: " ".join(_words(n) for _d, n in entries) for k, entries in groups.items()}
+    key = _festival_key(wanted)
+    if key in FESTIVAL_ALIASES:
+        notes.append(f"{wanted!r} looked up as {FESTIVAL_ALIASES[key]!r}, which is what this dataset calls it")
+        key = FESTIVAL_ALIASES[key]
+    matches = [k for k in groups if k == key]
+    if not matches:
+        # A named day inside a festival - "Saptami" is `Dussehra (Saptami)` - and it has to be
+        # tried before the substring pass, which would otherwise match the whole of Dussehra
+        # and hand back four dates for a question about one.
+        day_named = [(d, n) for entries in groups.values() for d, n in entries if _words(_day_name(n) or "") == key]
+        if day_named:
+            return sorted(set(day_named))
+        matches = [k for k in groups if key in k or k in key or key in full_names[k]]
+    if not matches:
+        close = difflib.get_close_matches(key, list(groups), n=5, cutoff=0.5)
+        named = sorted({n for k in (close or list(groups)[:8]) for _d, n in groups[k]})
+        raise Ambiguous(
+            f"{code}{'/' + subdiv if subdiv else ''} has no festival or day matching {wanted!r} in {year}",
+            field="name",
+            options=named,
+        )
+    return sorted({(d, n) for k in matches for d, n in groups[k]})
+
+
 def _mode_festival(p: dict[str, Any]) -> dict[str, Any]:
     """A festival by name, with its named days in order (#87, #88)."""
     notes: list[str] = []
@@ -674,7 +767,19 @@ def _mode_list(p: dict[str, Any]) -> dict[str, Any]:
     for k in sorted(k for k in hm if month is None or k.month == month):
         if k.weekday() == 4 or k.weekday() == 0:
             long_weekends.append({"date": k.isoformat(), "name": hm[k], "spans": f"{(k - timedelta(days=k.weekday() - 4 if k.weekday() == 4 else 2)).isoformat()} to {(k + timedelta(days=2 if k.weekday() == 4 else 0)).isoformat()}"})
-    out = {"region": code, "subdiv": subdiv, "years": years, "count": len(items), "holidays": items, "long_weekends": long_weekends, "provenance": provenance(code, language, p.get("categories"))}
+    fmt = str(p.get("format") or "json").lower()
+    if fmt not in FORMATS:
+        raise ToolError(f"format must be one of {', '.join(FORMATS)}")
+    out: dict[str, Any] = {"region": code, "subdiv": subdiv, "years": years, "count": len(items), "provenance": provenance(code, language, p.get("categories"))}
+    if fmt == "json":
+        out.update({"holidays": items, "long_weekends": long_weekends})
+    else:
+        # The thing people actually do with a holiday calendar is put it in a calendar, or
+        # open it in a spreadsheet. Both were the caller's job to write (#93).
+        out["format"] = fmt
+        out["content"] = _as_ics(items, code, subdiv) if fmt == "ics" else _as_csv(items)
+        out["media_type"] = "text/calendar" if fmt == "ics" else "text/csv"
+        out["filename"] = f"{code.lower()}{'-' + subdiv.lower() if subdiv else ''}-{'-'.join(str(y) for y in years)}.{fmt}"
     assumptions = list(notes) if subdiv else [*notes, "national holidays only; pass subdiv (e.g. state code) for regional ones" if _hol.list_supported_countries().get(code) else ""]
     # An empty list because the calendar has no data for that year reads exactly like an
     # empty list because there are no holidays. Say which (#28 SS3.13).

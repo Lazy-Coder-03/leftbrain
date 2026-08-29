@@ -223,3 +223,103 @@ def test_coverage_reports_what_the_source_says_about_itself():
     india = coverage("IN")
     assert india["start_year"] == 1948 and india["end_year"] == 2100
     assert "hi" in india["languages"]
+
+
+# --- #93: a calendar people can import, a table they can open ---------------------------
+
+
+def test_a_holiday_list_can_come_back_as_icalendar():
+    r = holidays("list", **WB, year=2026, month=10, format="ics")
+    assert r["ok"] and r["result"]["media_type"] == "text/calendar"
+    body = r["result"]["content"]
+    assert body.startswith("BEGIN:VCALENDAR") and body.rstrip().endswith("END:VCALENDAR")
+    assert body.count("BEGIN:VEVENT") == r["result"]["count"]
+
+
+def test_an_all_day_event_ends_the_following_day():
+    """DTEND is exclusive in RFC 5545. Getting it wrong makes every imported holiday a day
+    short, which is the classic off-by-one in a calendar export."""
+    body = holidays("list", region="IN", year=2026, month=1, format="ics")["result"]["content"]
+    assert "DTSTART;VALUE=DATE:20260126" in body
+    assert "DTEND;VALUE=DATE:20260127" in body
+
+
+def test_the_event_ids_are_stable_so_a_re_export_updates_rather_than_duplicates():
+    first = holidays("list", **WB, year=2026, month=10, format="ics")["result"]["content"]
+    again = holidays("list", **WB, year=2026, month=10, format="ics")["result"]["content"]
+    assert first == again
+    assert "@leftbrain" in first
+
+
+def test_special_characters_in_a_name_are_escaped():
+    body = holidays("list", region="IN", year=2026, format="ics")["result"]["content"]
+    for line in body.splitlines():
+        if line.startswith("SUMMARY:") and ("," in line or ";" in line):
+            assert r"\," in line or r"\;" in line, line
+
+
+def test_csv_comes_back_through_the_writer_that_already_escapes_formulas():
+    r = holidays("list", **WB, year=2026, month=10, format="csv")
+    assert r["ok"] and r["result"]["media_type"] == "text/csv"
+    assert r["result"]["content"].splitlines()[0] == "date,name,weekday"
+
+
+def test_json_is_still_the_default_and_is_unchanged():
+    r = holidays("list", **WB, year=2026, month=10)
+    assert "holidays" in r["result"] and "content" not in r["result"]
+
+
+def test_an_unknown_format_is_refused_with_the_ones_that_work():
+    r = holidays("list", region="IN", year=2026, format="pdf")
+    assert not r["ok"] and "json, ics, csv" in r["message"]
+
+
+# --- #92: a festival can anchor date arithmetic -----------------------------------------
+
+
+ANCHOR = {"festival": "Saptami", "year": 2026, "region": "IN", "subdiv": "WB"}
+
+
+def test_three_days_before_saptami():
+    """`datetime` did the arithmetic and `holidays` knew the dates; nothing joined them, so
+    this meant the agent doing both by hand and hoping."""
+    from leftbrain.core.datetimex import datetime_tool
+
+    r = datetime_tool("add", value=ANCHOR, amount=-3, unit="days")
+    assert r["ok"] and r["result"]["date"] == "2026-10-15"
+
+
+def test_the_festival_it_resolved_to_is_stated():
+    from leftbrain.core.datetimex import datetime_tool
+
+    said = " ".join(datetime_tool("add", value=ANCHOR, amount=-3, unit="days")["assumptions"])
+    assert "Dussehra (Saptami)" in said and "2026-10-18" in said
+
+
+def test_a_festival_spanning_days_is_not_one_anchor():
+    from leftbrain.core.datetimex import datetime_tool
+
+    r = datetime_tool("add", value={**ANCHOR, "festival": "Durga Puja"}, amount=-3, unit="days")
+    assert not r["ok"] and r["error"] == "ambiguous"
+    assert "Dussehra (Saptami)" in r["needs"]["options"]
+
+
+def test_a_festival_anchors_a_difference_too():
+    from leftbrain.core.datetimex import datetime_tool
+
+    r = datetime_tool("diff", start=ANCHOR, end="2026-12-25")
+    assert r["ok"] and r["result"]["total"]["days"] == 68
+
+
+def test_an_anchor_with_no_region_says_what_is_missing():
+    from leftbrain.core.datetimex import datetime_tool
+
+    r = datetime_tool("add", value={"festival": "Saptami", "year": 2026}, amount=1, unit="days")
+    assert not r["ok"] and "region" in r["message"]
+
+
+def test_an_unknown_festival_anchor_is_refused_with_near_misses():
+    from leftbrain.core.datetimex import datetime_tool
+
+    r = datetime_tool("add", value={**ANCHOR, "festival": "Jagadhatri"}, amount=1, unit="days")
+    assert not r["ok"] and r["error"] == "ambiguous" and r["needs"]["options"]
