@@ -81,6 +81,14 @@ class LeftbrainOAuthProvider:
 
     async def register_client(self, client_info: OAuthClientInformationFull) -> None:
         self.oauth.save_client(client_info)
+        # Paced by the thing that causes the growth rather than by a scheduler: a client
+        # that falls back to dynamic registration registers afresh on every connection, so
+        # the table grows exactly as often as this runs. Never fatal — housekeeping must
+        # not cost a client the registration it just made.
+        try:
+            self.oauth.prune_clients()
+        except Exception:  # noqa: BLE001 - see above
+            pass
 
     # -- authorize -----------------------------------------------------------
 

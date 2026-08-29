@@ -606,3 +606,34 @@ def test_pruning_keeps_a_recent_registration(tmp_path):
     oauth.save_client(a_client(client_id="fresh"))
     assert oauth.prune_clients(older_than_days=30) == 0
     assert oauth.load_client("fresh") is not None
+
+
+def age(oauth, when="2020-01-01T00:00:00+00:00"):
+    oauth.db.run("UPDATE oauth_clients SET created_at=?", (when,))
+
+
+def test_registering_a_client_prunes_stale_ones(tmp_path):
+    """Nothing schedules this, so it is paced by the thing that causes the growth."""
+    provider, _ = a_provider(tmp_path)
+    run(provider.register_client(a_client(client_id="stale")))
+    age(provider.oauth)
+    run(provider.register_client(a_client(client_id="fresh")))
+    assert run(provider.get_client("stale")) is None
+    assert run(provider.get_client("fresh")) is not None
+
+
+def test_registering_does_not_prune_a_client_someone_consented_to(tmp_path):
+    provider, _ = a_provider(tmp_path)
+    run(provider.register_client(a_client(client_id="in-use")))
+    provider.oauth.record_consent("a@b.co", "in-use", "lblz_AAAAAAAA")
+    age(provider.oauth)
+    run(provider.register_client(a_client(client_id="other")))
+    assert run(provider.get_client("in-use")) is not None
+
+
+def test_a_failed_prune_does_not_fail_the_registration(tmp_path):
+    """Housekeeping must never cost a client its registration."""
+    provider, keys = a_provider(tmp_path)
+    keys.db.run("DROP TABLE oauth_consents")
+    run(provider.register_client(a_client()))
+    assert run(provider.get_client("c1")) is not None
