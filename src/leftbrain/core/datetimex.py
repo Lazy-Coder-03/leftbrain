@@ -26,7 +26,7 @@ from dateutil import parser as duparser
 from dateutil.relativedelta import relativedelta
 from dateutil.rrule import rrulestr
 
-from ..contract import Ambiguous, TooLarge, ToolError, check_params, ok, tool
+from ..contract import Ambiguous, TooLarge, ToolError, check_params, flag, ok, tool, whole
 
 MODES = (
     "now",
@@ -82,6 +82,11 @@ MAX_ADD_AMOUNT = 4_000_000
 #: Days `business_days` will walk. A century is 36 525 iterations and a holiday list
 #: to match; the answer is a number, so the range is bounded rather than trimmed.
 MAX_BUSINESS_DAY_SPAN = 3660
+#: Ranges `duration_sum` will add up. A million of them were parsed for a second before the
+#: response was refused for its size.
+MAX_RANGES = 10_000
+#: Epoch seconds have 9-13 digits (1973 to 2286, or milliseconds); `2026` is a year.
+_EPOCH_MIN, _EPOCH_MAX = 10**8, 10**13
 
 # --------------------------------------------------------------------------- #
 # Timezones
@@ -171,7 +176,10 @@ def resolve_tz(name: Any) -> tuple[tzinfo, str, list[str]]:
         return timezone(delta, label), label, ["fixed offset; no daylight-saving rules applied"]
     zl = _zones_lower()
     key = s.replace(" ", "_").lower()
-    if key in zl:
+    # tzdata ships `EST`, `MST`, `HST`, `CET`... as fixed-offset legacy zones, so `EST` in
+    # August answered -05:00 for New York with nothing said while `IST` was refused. An
+    # abbreviation is an abbreviation.
+    if key in zl and up not in _ABBREV:
         return ZoneInfo(zl[key]), zl[key], []
     if up in _ABBREV:
         opts = _ABBREV[up]
@@ -205,7 +213,9 @@ _MONTHFIRST = {"US", "CA", "PH", "FM", "PW"}
 _YEARFIRST = {"JP", "CN", "KR", "TW", "HU", "LT", "MN", "ISO"}
 _WEEKDAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
 _WD_ABBR = {w[:3]: i for i, w in enumerate(_WEEKDAYS)}
-_NUMERIC_DATE = re.compile(r"^\s*(\d{1,2})([/.-])(\d{1,2})\2(\d{2}|\d{4})(\s+.*|T.*)?\s*$")
+_NUMERIC_DATE = re.compile(r"^\s*(\d{1,2})([/.-])(\d{1,2})(?:\2(\d{2}|\d{4}))?(\s+.*|T.*)?\s*$")
+#: A timezone abbreviation at the end of a written date-time (`2026-08-29 10:00 EST`).
+_TRAILING_ABBREV = re.compile(r"^(.*\S)\s+([A-Za-z]{2,5})\s*$")
 _UNIT_WORDS = {
     "second": "seconds", "sec": "seconds", "s": "seconds",
     "minute": "minutes", "min": "minutes",
@@ -411,11 +421,19 @@ def parse_dt(
         tzobj, tzname, a = resolve_tz(tz)
         assumptions += a
 
+    if isinstance(value, bool):
+        raise ToolError(f"'{field}' must be a date, not a boolean")
     if isinstance(value, datetime):
         dt, date_only = value, False
     elif isinstance(value, date):
         dt, date_only = datetime(value.year, value.month, value.day), True
-    elif (isinstance(value, (int, float)) and not isinstance(value, bool)) or (isinstance(value, str) and re.fullmatch(r"-?\d{9,13}", value.strip())):
+    elif isinstance(value, (int, float)) and not (_EPOCH_MIN <= abs(value) < _EPOCH_MAX):
+        # `2026` as an integer was read as 33 minutes past the epoch, so an age came out at 56
+        raise ToolError(
+            f"'{field}' {value!r} is not a date: a bare number is read as a Unix timestamp only when it has 9-13 digits",
+            hint="Write the date as a string, e.g. '2026-01-01' or '20260101'.",
+        )
+    elif isinstance(value, (int, float)) or (isinstance(value, str) and re.fullmatch(r"-?\d{9,13}", value.strip())):
         v = float(value if not isinstance(value, str) else value.strip())  # a 9-13 digit string is an epoch, never a year
         if v > 1e12:
             v /= 1000.0
@@ -425,6 +443,14 @@ def parse_dt(
         assumptions.append("unix timestamp read as UTC")
     else:
         s = str(value).strip()
+        tm = _TRAILING_ABBREV.match(s)
+        if tm and tm.group(2).upper() in _ABBREV:
+            # dateutil dropped `EST` here with a warning on stderr and nothing in the answer
+            abbr_tz, abbr_name, abbr_notes = resolve_tz(tm.group(2).upper())  # Ambiguous for IST, EST...
+            s = tm.group(1)
+            if tzobj is None:
+                tzobj, tzname = abbr_tz, abbr_name
+                assumptions += abbr_notes
         now = ref or datetime.now(tzobj or UTC)
         if now.tzinfo is None:
             now = now.replace(tzinfo=tzobj or UTC)
@@ -435,12 +461,26 @@ def parse_dt(
             if tzobj and dt.tzinfo is None:
                 dt = dt.replace(tzinfo=tzobj)
             return dt, date_only, assumptions
+        clock = re.fullmatch(r"(at\s+)?(\d{1,2})(?::(\d{2}))?(?::(\d{2}))?\s*(am|pm)?", s, re.I)
+        if clock and (clock.group(1) or clock.group(3) or clock.group(5)):
+            # `at 10` is ten o'clock; dateutil read it as the 10th of the month
+            hh, mm, ss = int(clock.group(2)), int(clock.group(3) or 0), int(clock.group(4) or 0)
+            ampm = (clock.group(5) or "").lower()
+            if ampm and not 1 <= hh <= 12 or hh > 23 or mm > 59 or ss > 59:
+                raise ToolError(f"could not parse {field} {s!r}: not a time of day")
+            if ampm == "pm" and hh < 12:
+                hh += 12
+            if ampm == "am" and hh == 12:
+                hh = 0
+            dt = now.replace(hour=hh, minute=mm, second=ss, microsecond=0, tzinfo=tzobj)
+            assumptions.append(f"no date given; {now.date().isoformat()} (the reference date) assumed")
+            return dt, False, assumptions
         m = _NUMERIC_DATE.match(s)
         dayfirst, yearfirst = _locale_order(locale)
         if m:
             a_, b_ = int(m.group(1)), int(m.group(3))
             if a_ <= 12 and b_ <= 12 and a_ != b_ and dayfirst is None:
-                y = m.group(4)
+                y = m.group(4) or str(now.year)  # `1/2` is as ambiguous as `1/2/2026`
                 y = int(y) if len(y) == 4 else 2000 + int(y)
                 raise Ambiguous(
                     f"'{s}' could be day/month or month/day; pass locale (e.g. 'IN' or 'US')",
@@ -459,7 +499,7 @@ def parse_dt(
                     assumptions.append("read as MM/DD (second field > 12)")
             else:
                 assumptions.append(f"read as {'DD/MM' if dayfirst else 'MM/DD'} per locale {locale}")
-            raw_year = m.group(4)
+            raw_year = m.group(4) or ""
             if len(raw_year) == 2:
                 # dateutil's own pivot silently made `01/02/50` 2050. For a date of birth
                 # that is a century out, and nothing in the response said a century had
@@ -479,10 +519,8 @@ def parse_dt(
             if len(s) == 10:
                 date_only = True
         except ValueError:
-            try:
-                dt = duparser.parse(s, dayfirst=bool(dayfirst), yearfirst=yearfirst, fuzzy=False)
-            except (ValueError, OverflowError) as e:
-                raise ToolError(f"could not parse {field} {s!r}: {e}") from None
+            dt, filled = _parse_written(s, dayfirst=bool(dayfirst), yearfirst=yearfirst, ref=now, field=field)
+            assumptions += filled
             if re.search(r"\b(noon|midnight)\b", s, re.I):
                 date_only = False
     if tzobj is not None and dt.tzinfo is None:
@@ -490,6 +528,75 @@ def parse_dt(
     elif tzobj is not None and dt.tzinfo is not None and tzname:
         dt = dt.astimezone(tzobj)
     return dt, date_only, assumptions
+
+
+def _parse_written(s: str, *, dayfirst: bool, yearfirst: bool, ref: datetime, field: str) -> tuple[datetime, list[str]]:
+    """A written date, with any part it does not state filled openly rather than from today.
+
+    dateutil fills what is missing from a default that is the current moment, so `March`
+    was the 29th of March and `2026` was the 29th of August 2026 - whichever day the call
+    was made - with nothing said. Parsing against two different defaults shows which parts
+    were stated; the rest are the first of the period, or the reference date for a bare
+    time, and every fill is reported.
+    """
+    import warnings as _warnings
+
+    probes = (datetime(2001, 1, 1, 0, 0, 0), datetime(2002, 2, 2, 1, 1, 1))
+    try:
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            one, two = (duparser.parse(s, dayfirst=dayfirst, yearfirst=yearfirst, fuzzy=False, default=d) for d in probes)
+    except (ValueError, OverflowError) as e:
+        raise ToolError(f"could not parse {field} {s!r}: {e}") from None
+    stated = {f for f in ("year", "month", "day", "hour", "minute", "second") if getattr(one, f) == getattr(two, f)}
+    notes: list[str] = []
+    if not stated & {"year", "month", "day"}:
+        # a bare time of day
+        dt = one.replace(year=ref.year, month=ref.month, day=ref.day)
+        notes.append(f"no date given; {ref.date().isoformat()} (the reference date) assumed")
+        return dt, notes
+    year = one.year if "year" in stated else ref.year
+    month = one.month if "month" in stated else 1
+    day = one.day if "day" in stated else 1
+    if "year" not in stated:
+        notes.append(f"no year given; {ref.year} assumed")
+    if "month" not in stated and "day" not in stated:
+        notes.append("no month or day given; read as the first day of the year")
+    elif "day" not in stated:
+        notes.append("no day given; read as the first of the month")
+    elif "month" not in stated:
+        notes.append("no month given; January assumed")
+    try:
+        dt = one.replace(year=year, month=month, day=day)
+    except ValueError as e:
+        raise ToolError(f"could not parse {field} {s!r}: {e}") from None
+    return dt, notes
+
+
+def _in_gap(dt: datetime) -> bool:
+    """Whether this wall time never happens in its zone - the clocks jump over it."""
+    if dt.tzinfo is None or getattr(dt.tzinfo, "key", None) is None:
+        return False
+    naive = dt.replace(tzinfo=None)
+    earlier = naive.replace(fold=0).replace(tzinfo=dt.tzinfo)
+    later = naive.replace(fold=1).replace(tzinfo=dt.tzinfo)
+    return earlier.utcoffset() != later.utcoffset() and earlier.utcoffset() < later.utcoffset()  # type: ignore[operator]
+
+
+def _skip_gap(dt: datetime) -> tuple[datetime, list[str]]:
+    """The real instant for a wall time in a DST gap, and the note that says so."""
+    if not _in_gap(dt):
+        return dt, []
+    shifted = dt.replace(fold=0).astimezone(UTC).astimezone(dt.tzinfo)
+    return shifted, [f"{dt.replace(tzinfo=None).isoformat(sep=' ')} does not exist in {getattr(dt.tzinfo, 'key', dt.tzname())} - the clocks go forward over it; moved to {shifted.isoformat(sep=' ')}"]
+
+
+def _elapsed(a: datetime, b: datetime) -> timedelta:
+    """Real time from a to b. Two aware datetimes in one ZoneInfo subtract as wall clocks in
+    Python, so a day across the spring-forward change came back as 24 hours, not 23."""
+    if a.tzinfo is not None and b.tzinfo is not None:
+        return b.astimezone(UTC) - a.astimezone(UTC)
+    return b - a
 
 
 def _info(dt: datetime, date_only: bool = False) -> dict[str, Any]:
@@ -528,8 +635,12 @@ def _weekend(spec: Any) -> set[int]:
         spec = re.split(r"[,\s/]+", spec.strip())
     out = set()
     for w in spec:
+        if isinstance(w, bool):
+            raise ToolError(f"weekend entries must be weekday names or numbers, not {w!r}")
         if isinstance(w, int):
-            out.add(w % 7)
+            if not 0 <= w <= 6:  # 7 and 13 used to wrap to Monday and Sunday in silence
+                raise ToolError(f"weekday number {w} is out of range; weekday numbers run 0 (Monday) to 6 (Sunday)")
+            out.add(w)
         else:
             k = str(w).strip().lower()
             if k not in _WD_INDEX:
@@ -544,6 +655,8 @@ def _holiday_set(region: str | None, subdiv: str | None, years: set[int], extra:
         from .holidays_ import holiday_map
 
         out.update(holiday_map(region, years, subdiv))
+    if isinstance(extra, (str, dict)):
+        extra = [extra]  # a bare date string used to be iterated character by character
     for h in extra or []:
         if isinstance(h, dict):
             d, _, _ = parse_dt(h.get("date"), field="extra_holidays.date")
@@ -605,7 +718,7 @@ def _cron_field(field: str, lo: int, hi: int, names: dict[str, int] | None = Non
     return out
 
 
-def _cron_next(expr: str, start: datetime, n: int) -> list[datetime]:
+def _cron_next(expr: str, start: datetime, n: int, skipped: list[str]) -> list[datetime]:
     expr = _CRON_ALIASES.get(expr.strip().lower(), expr.strip())
     parts = expr.split()
     if len(parts) != 5:
@@ -614,8 +727,7 @@ def _cron_next(expr: str, start: datetime, n: int) -> list[datetime]:
     hours = _cron_field(parts[1], 0, 23)
     dom = _cron_field(parts[2], 1, 31)
     months = _cron_field(parts[3], 1, 12, _MONTH_NAMES)
-    dow_raw = parts[4].replace("7", "0")
-    dow = _cron_field(dow_raw, 0, 6, _DOW_NAMES)
+    dow = {d % 7 for d in _cron_field(parts[4], 0, 7, _DOW_NAMES)}  # 7 is Sunday too; `5-7` used to become `5-0`
     dom_any, dow_any = parts[2] in ("*", "?"), parts[4] in ("*", "?")
     out: list[datetime] = []
     cur = (start + timedelta(minutes=1)).replace(second=0, microsecond=0)
@@ -638,6 +750,9 @@ def _cron_next(expr: str, start: datetime, n: int) -> list[datetime]:
                 for h in sorted(hours):
                     for mi in sorted(minutes):
                         cand = datetime(day.year, day.month, day.day, h, mi, tzinfo=cur.tzinfo)
+                        if _in_gap(cand):
+                            skipped.append(cand.replace(tzinfo=None).isoformat(sep=" "))  # this time never happens today
+                            continue
                         if cand >= cur:
                             out.append(cand)
                             if len(out) >= n:
@@ -650,7 +765,7 @@ def _cron_next(expr: str, start: datetime, n: int) -> list[datetime]:
 # Recurrence phrases -> RRULE
 # --------------------------------------------------------------------------- #
 
-_ORD = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4, "last": -1}
+_ORD = {"first": 1, "1st": 1, "second": 2, "2nd": 2, "third": 3, "3rd": 3, "fourth": 4, "4th": 4, "fifth": 5, "5th": 5, "last": -1}
 
 
 def _phrase_to_rrule(phrase: str) -> str | None:
@@ -792,7 +907,8 @@ def _mode_convert_tz(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("value has no timezone; pass from_tz")
     if date_only:
         raise ToolError("value has no time component; a bare date cannot be converted between zones")
-    warnings = list(_dst_note(dt))
+    explicit = isinstance(value, str) and re.search(r"([+-]\d{2}:?\d{2}|Z)\s*$", value.strip()) is not None
+    warnings = [] if explicit else list(_dst_note(dt))  # an offset in the value already said which occurrence
     results = []
     for t, label in _tz_targets(dst, "to_tz"):
         tz, name, a = resolve_tz(t)
@@ -814,6 +930,7 @@ def _mode_parse(p: dict[str, Any]) -> dict[str, Any]:
     if p.get("ref_date") is not None:
         ref, _, _ = parse_dt(p["ref_date"], tz=p.get("tz"), locale=p.get("locale"), field="ref_date")
     dt, date_only, a = parse_dt(value, tz=p.get("tz"), locale=p.get("locale"), ref=ref, field="value")
+    dt, gap = _skip_gap(dt) if not date_only else (dt, [])
     out = _info(dt, date_only)
     out["date_only"] = date_only
     out["components"] = {
@@ -822,7 +939,7 @@ def _mode_parse(p: dict[str, Any]) -> dict[str, Any]:
     }
     out["iso_week"] = dt.isocalendar()[1]
     out["day_of_year"] = dt.timetuple().tm_yday
-    return ok(out, assumptions=a)
+    return ok(out, assumptions=a, warnings=gap)
 
 
 def _mode_add(p: dict[str, Any]) -> dict[str, Any]:
@@ -831,7 +948,14 @@ def _mode_add(p: dict[str, Any]) -> dict[str, Any]:
     unit = p.get("unit")
     if amount is None or unit is None:
         raise ToolError("add needs 'amount' and 'unit'")
-    amount = float(amount)
+    if not isinstance(unit, str):
+        raise ToolError(f"unit must be a word such as 'days', not {unit!r}")
+    if isinstance(amount, bool) or not isinstance(amount, (int, float, str)):
+        raise ToolError(f"amount must be a number, not {amount!r}")
+    try:
+        amount = float(amount)
+    except ValueError:
+        raise ToolError(f"amount must be a number, not {amount!r}") from None
     # The proleptic Gregorian calendar Python models stops at year 9999, so an amount that
     # walks past it is a range problem, not the bare `ValueError: year must be in 1..9999`
     # that used to come back (#28 SS4).
@@ -848,6 +972,12 @@ def _mode_add(p: dict[str, Any]) -> dict[str, Any]:
     u = unit.lower().replace(" ", "_")
     if u.rstrip("s") in ("business_day", "working_day", "workday"):
         n = int(amount)
+        if abs(n) > MAX_BUSINESS_DAY_SPAN:
+            raise TooLarge(
+                f"{abs(n):,} business days is past what this mode walks ({MAX_BUSINESS_DAY_SPAN:,} days, about {MAX_BUSINESS_DAY_SPAN // 365} years)",
+                details={"amount": n, "limit_days": MAX_BUSINESS_DAY_SPAN},
+                hint="Step a year at a time.",
+            )
         weekend = _weekend(p.get("weekend"))
         years = {dt.year - 1, dt.year, dt.year + 1, dt.year + int(n // 200) + 1}
         hols = _holiday_set(p.get("region"), p.get("subdiv"), years, p.get("extra_holidays"))
@@ -866,16 +996,28 @@ def _mode_add(p: dict[str, Any]) -> dict[str, Any]:
         if not p.get("region"):
             a.append("no region given; only weekends skipped (pass region='IN' etc. for public holidays)")
         return ok(out, assumptions=a, steps=[f"{n:+d} business days from {dt.date()}"])
-    res = dt + _delta(amount, unit)
+    if p.get("region") or p.get("weekend") or p.get("subdiv") or p.get("extra_holidays"):
+        a.append("region, subdiv, weekend and extra_holidays only apply to unit='business_days'; ignored")
+    try:
+        res = dt + _delta(amount, unit)
+    except (ValueError, OverflowError):
+        raise ToolError(
+            f"{amount:g} {unit} from {dt.date().isoformat()} falls outside the calendar, which runs from year 1 to year 9999",
+            details={"amount": amount, "unit": unit},
+            hint="Use a smaller amount.",
+        ) from None
     if _unit(unit) in ("months", "years", "quarters") and res.day != dt.day:
         warnings.append(f"day clamped to month end ({dt.day} -> {res.day})")
-    if _unit(unit) in ("hours", "minutes", "seconds"):
-        date_only = False
+    if _unit(unit) in ("hours", "minutes", "seconds") or (amount != int(amount) and _unit(unit) in ("days", "weeks", "fortnights")):
+        date_only = False  # 1.5 days on a bare date is a date and a time, not a date
     steps.append(f"{dt.isoformat()} + {amount:g} {unit}")
     if dt.tzinfo is not None and getattr(dt.tzinfo, "key", None) and _unit(unit) in ("hours", "minutes", "seconds"):
         # wall-clock arithmetic across DST: recompute via UTC for correctness
         res = (dt.astimezone(UTC) + _delta(amount, unit)).astimezone(dt.tzinfo)
         steps.append("elapsed-time arithmetic done in UTC to respect DST")
+    elif not date_only:
+        res, gap = _skip_gap(res)  # a day later may land in a time that does not exist
+        warnings += gap
     out = _info(res, date_only)
     return ok(out, assumptions=a, warnings=warnings, steps=steps)
 
@@ -896,16 +1038,18 @@ def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
         else:
             d2 = d2.replace(tzinfo=d1.tzinfo)
         assumptions.append("one side had no timezone; assumed the other's")
-    delta = d2 - d1
-    sign = -1 if delta < timedelta(0) else 1
-    lo, hi = (d1, d2) if sign > 0 else (d2, d1)
+    delta = _elapsed(d1, d2)
+    sign = 0 if delta == timedelta(0) else (-1 if delta < timedelta(0) else 1)
+    lo, hi = (d1, d2) if sign >= 0 else (d2, d1)
     rd = relativedelta(hi, lo)
     total_sec = abs(delta.total_seconds())
+    if unit not in ("business_days", "working_days", "workdays") and (p.get("region") or p.get("weekend") or p.get("subdiv") or p.get("extra_holidays")):
+        assumptions.append("region, subdiv, weekend and extra_holidays only apply to unit='business_days'; ignored")
     out: dict[str, Any] = {
         "start": _info(d1, do1),
         "end": _info(d2, do2),
         "sign": sign,
-        "direction": "end is after start" if sign > 0 else ("same instant" if delta == timedelta(0) else "end is before start"),
+        "direction": "same instant" if sign == 0 else ("end is after start" if sign > 0 else "end is before start"),
         "calendar": {
             "years": rd.years, "months": rd.months, "days": rd.days,
             "hours": rd.hours, "minutes": rd.minutes, "seconds": rd.seconds,
@@ -923,6 +1067,12 @@ def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
         "human": _human_delta(rd),
     }
     if unit in ("business_days", "working_days", "workdays"):
+        if (hi.date() - lo.date()).days > MAX_BUSINESS_DAY_SPAN:
+            raise TooLarge(
+                f"the range spans {(hi.date() - lo.date()).days:,} days; the most this mode counts is {MAX_BUSINESS_DAY_SPAN:,} (about {MAX_BUSINESS_DAY_SPAN // 365} years)",
+                details={"days": (hi.date() - lo.date()).days, "limit_days": MAX_BUSINESS_DAY_SPAN},
+                hint="Count one year at a time and add the results.",
+            )
         weekend = _weekend(p.get("weekend"))
         years = set(range(lo.year, hi.year + 1))
         hols = _holiday_set(p.get("region"), p.get("subdiv"), years, p.get("extra_holidays"))
@@ -932,7 +1082,7 @@ def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
             if _is_business(d, weekend, hols):
                 n += 1
             d += timedelta(days=1)
-        out["value"] = sign * n
+        out["value"] = (sign or 1) * n
         out["unit"] = "business_days"
         assumptions.append("business days counted from 'start' (inclusive) up to 'end' (exclusive)")
         if not p.get("region"):
@@ -1003,7 +1153,7 @@ def _mode_nth_weekday(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"unknown weekday {wd_raw!r}")
     n = p.get("n", 1)
     n = _ORD.get(str(n).lower(), n)
-    n = int(n)
+    n = whole(n, "n")
     if n == 0 or n > 5 or n < -5:
         raise ToolError("n must be 1..5 or -1..-5 (negative counts from the end)")
     first = date(year, month, 1)
@@ -1039,12 +1189,14 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
             details={"days": span, "limit_days": MAX_BUSINESS_DAY_SPAN, "start": lo.isoformat(), "end": hi.isoformat()},
             hint="Count one year at a time and add the results.",
         )
-    include_start = p.get("include_start", True)
-    include_end = p.get("include_end", True)
+    include_start = flag(p.get("include_start", True), "include_start")
+    include_end = flag(p.get("include_end", True), "include_end")
+    # the flags belong to the caller's start and end; when those are reversed so are the flags
+    lo_inclusive, hi_inclusive = (include_end, include_start) if reversed_range else (include_start, include_end)
     weekend = _weekend(p.get("weekend"))
     hols = _holiday_set(p.get("region"), p.get("subdiv"), set(range(lo.year, hi.year + 1)), p.get("extra_holidays"))
-    d = lo if include_start else lo + timedelta(days=1)
-    end = hi if include_end else hi - timedelta(days=1)
+    d = lo if lo_inclusive else lo + timedelta(days=1)
+    end = hi if hi_inclusive else hi - timedelta(days=1)
     n = 0
     weekend_days = 0
     skipped: list[dict[str, str]] = []
@@ -1059,7 +1211,7 @@ def _mode_business_days(p: dict[str, Any]) -> dict[str, Any]:
             if len(dates) < 200:
                 dates.append(d.isoformat())
         d += timedelta(days=1)
-    calendar_days = (end - lo).days + 1 if include_start else (end - lo).days
+    calendar_days = (end - lo).days + 1 if lo_inclusive else (end - lo).days
     out = {
         "business_days": n,
         "calendar_days": max(calendar_days, 0),
@@ -1129,10 +1281,10 @@ def _mode_overlap(p: dict[str, Any]) -> dict[str, Any]:
         relation = "a before b" if a_e < b_s else "a after b"
     out: dict[str, Any] = {"overlaps": overlaps, "relation": relation}
     if overlaps:
-        secs = (end - start).total_seconds()
+        secs = _elapsed(start, end).total_seconds()
         out["overlap"] = {"start": start.isoformat(), "end": end.isoformat(), "seconds": secs, "hours": secs / 3600, "days": secs / 86400}
     else:
-        gap = (max(a_s, b_s) - min(a_e, b_e)).total_seconds()
+        gap = _elapsed(min(a_e, b_e), max(a_s, b_s)).total_seconds()
         out["gap"] = {"seconds": gap, "hours": gap / 3600, "days": gap / 86400}
     return ok(out, assumptions=aa + ab + ["intervals are half-open: [start, end)"])
 
@@ -1141,16 +1293,20 @@ def _mode_duration_sum(p: dict[str, Any]) -> dict[str, Any]:
     ranges = p.get("ranges") or p.get("items")
     if not isinstance(ranges, list) or not ranges:
         raise ToolError("duration_sum needs 'ranges': [{start, end}, ...]")
+    if len(ranges) > MAX_RANGES:
+        raise TooLarge(f"{len(ranges):,} ranges; the most this mode adds up is {MAX_RANGES:,}", details={"ranges": len(ranges), "limit": MAX_RANGES}, hint="Sum in batches.")
     parsed = []
     assumptions: list[str] = []
     for i, r in enumerate(ranges):
         s, e, a = _range(r, p.get("tz"), p.get("locale"), f"ranges[{i}]")
+        if parsed and (s.tzinfo is None) != (parsed[0][0].tzinfo is None):
+            raise ToolError(f"ranges[{i}] {'has no timezone while ranges[0] has one' if s.tzinfo is None else 'has a timezone while ranges[0] has none'}; give every range a tz, or none")
         parsed.append((s, e, r))
         assumptions += [x for x in a if x not in assumptions]
-    total = sum((e - s).total_seconds() for s, e, _ in parsed)
+    total = sum((_elapsed(s, e) for s, e, _ in parsed), timedelta()).total_seconds()  # timedeltas add exactly; floats did not
     per = []
     for s, e, r in parsed:
-        secs = (e - s).total_seconds()
+        secs = _elapsed(s, e).total_seconds()
         per.append({"start": s.isoformat(), "end": e.isoformat(), "seconds": secs, "hours": secs / 3600, "hhmm": _hhmm(secs), **({"label": r["label"]} if isinstance(r, dict) and r.get("label") else {})})
     warnings = []
     srt = sorted(parsed, key=lambda t: t[0])
@@ -1177,7 +1333,7 @@ def _hhmm(secs: float) -> str:
 # Free slots across timezones
 # --------------------------------------------------------------------------- #
 
-_CLOCK_RE = re.compile(r"^\s*(\d{1,2}):(\d{2})\s*$")
+_CLOCK_RE = re.compile(r"^\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*$", re.I)
 _MAX_SEARCH_DAYS = 92
 _MAX_SLOTS = 500
 
@@ -1189,9 +1345,16 @@ def _clock(value: Any, name: str) -> tuple[int, int] | None:
     if not isinstance(value, str):
         return None
     m = _CLOCK_RE.match(value)
-    if not m:
+    if not m or (m.group(2) is None and m.group(3) is None):  # `9am` and `09:00` are clock times; `9` alone is not
         return None
-    hh, mm = int(m.group(1)), int(m.group(2))
+    hh, mm = int(m.group(1)), int(m.group(2) or 0)
+    ampm = (m.group(3) or "").lower()
+    if ampm and not 1 <= hh <= 12:
+        raise ToolError(f"{name}: {value.strip()!r} is not a time of day")
+    if ampm == "pm" and hh < 12:
+        hh += 12
+    if ampm == "am" and hh == 12:
+        hh = 0
     if hh > 23 or mm > 59:
         raise ToolError(f"{name}: {value.strip()!r} is not a time of day")
     return hh, mm
@@ -1437,39 +1600,51 @@ def _mode_recurrence(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError(f"could not understand recurrence {rule!r}; pass an RRULE like FREQ=WEEKLY;BYDAY=MO")
     start_raw = p.get("start") or p.get("dtstart") or "today"
     start, _, a = parse_dt(start_raw, tz=p.get("tz"), locale=p.get("locale"), field="start")
-    count = p.get("count")
+    count = whole(p["count"], "count", lo=1) if p.get("count") is not None else None
     until = p.get("until")
-    limit = int(p.get("limit", 100))
-    if limit > 1000:
-        raise ToolError("limit must be <= 1000")
+    limit = whole(p.get("limit", 100), "limit", lo=1, hi=1000)
     rr_text = rr if rr.upper().startswith("RRULE:") else "RRULE:" + rr
+    if re.search(r"INTERVAL=0(?:;|$)", rr_text, re.I):
+        raise ToolError("an interval of 0 repeats the same instant forever; use 1 or more")
+    if until and count:
+        a.append("'until' and 'count' cannot both apply; used 'until' and ignored 'count'")
     if until:
-        u, _, _ = parse_dt(until, tz=p.get("tz"), locale=p.get("locale"), field="until")
+        u, u_date_only, _ = parse_dt(until, tz=p.get("tz"), locale=p.get("locale"), field="until")
+        if u_date_only:
+            u = u.replace(hour=23, minute=59, second=59)  # "until the 30th" means through the 30th
         if (u.tzinfo is None) != (start.tzinfo is None):
             u = u.replace(tzinfo=start.tzinfo)
         rr_text += ";UNTIL=" + (u.strftime("%Y%m%dT%H%M%SZ") if u.tzinfo else u.strftime("%Y%m%dT%H%M%S"))
         if u.tzinfo:
             u_utc = u.astimezone(UTC)
             rr_text = rr_text.replace(u.strftime("%Y%m%dT%H%M%SZ"), u_utc.strftime("%Y%m%dT%H%M%SZ"))
-    elif count:
-        rr_text += f";COUNT={int(count)}"
     try:
+        # COUNT is applied here, after occurrences in a DST gap are dropped, so a count of
+        # four is four instants that happen; the rule text still carries it for the caller
         rule_obj = rrulestr(rr_text, dtstart=start)
     except (ValueError, KeyError) as e:
         raise ToolError(f"invalid RRULE {rr!r}: {e}") from None
+    if count and not until:
+        rr_text += f";COUNT={count}"
+        limit = min(limit, count)
     # `FREQ=MINUTELY` under the default `dates_only` returned N copies of the same date.
     # A sub-daily rule is about times, so it keeps them unless asked otherwise (#28 SS3.6).
     sub_daily = any(f"FREQ={f}" in rr_text.upper() for f in ("SECONDLY", "MINUTELY", "HOURLY"))
     dates_only = p.get("dates_only", not sub_daily)
     dates = []
-    for i, d in enumerate(rule_obj):
-        if i >= limit:
+    gaps: list[str] = []
+    for d in rule_obj:
+        if len(dates) >= limit:
             break
+        if not dates_only and _in_gap(d):
+            gaps.append(d.replace(tzinfo=None).isoformat(sep=" "))  # the clocks go forward over this one
+            continue
         dates.append(_info(d, False)["iso"] if not dates_only else d.date().isoformat())
     # A `count` larger than `limit` used to silence the warning entirely, so 1 000 000
     # occurrences came back as 100 with nothing said about it (#28 SS2f).
     truncated = len(dates) >= limit and not (count and int(count) <= limit) and not (until and len(dates) < limit)
     warnings = [f"truncated to {limit} occurrences; raise 'limit' (max 1000) or narrow the rule"] if truncated else []
+    warnings += [f"{t} does not exist in this zone (the clocks go forward over it) and was skipped" for t in gaps]
     return ok({"rrule": rr_text, "occurrences": dates, "count": len(dates), "truncated": truncated}, assumptions=a, warnings=warnings)
 
 
@@ -1485,13 +1660,13 @@ def _mode_cron_next(p: dict[str, Any]) -> dict[str, Any]:
     else:
         start = datetime.now(tz)
         a.append("no 'start' given; started from now")
-    n = int(p.get("n", 5))
-    if n < 1 or n > 500:
-        raise ToolError("n must be 1..500")
-    res = _cron_next(str(expr), start, n)
+    n = whole(p.get("n", 5), "n", lo=1, hi=500)
+    skipped: list[str] = []
+    res = _cron_next(str(expr), start, n, skipped)
     if not res:
         raise ToolError("no matching times within the next 5 years")
-    return ok({"expr": expr, "tz": name, "next": [_info(d) for d in res]}, assumptions=a + ["standard 5-field cron; day-of-month OR day-of-week when both are set"])
+    warnings = [f"{t} does not exist in {name} (the clocks go forward over it), so that day has no run" for t in skipped]
+    return ok({"expr": expr, "tz": name, "next": [_info(d) for d in res]}, assumptions=a + ["standard 5-field cron; day-of-month OR day-of-week when both are set"], warnings=warnings)
 
 
 def _mode_age(p: dict[str, Any]) -> dict[str, Any]:
@@ -1511,6 +1686,8 @@ def _mode_age(p: dict[str, Any]) -> dict[str, Any]:
         nb = d0.replace(year=d1.year, day=28)
         a.append("Feb-29 birthday celebrated on Feb-28 in non-leap years")
     if nb < d1:
+        if d1.year >= 9999:
+            raise ToolError("the next birthday would fall after year 9999, the end of the calendar", hint="Use an 'on' date before 9999.")
         try:
             nb = d0.replace(year=d1.year + 1)
         except ValueError:
@@ -1537,14 +1714,23 @@ def _mode_fiscal(p: dict[str, Any]) -> dict[str, Any]:
     dt, _, a = parse_dt(value, tz=p.get("tz"), locale=p.get("locale"), field="value")
     region = (p.get("region") or "").upper()
     start_month = p.get("fy_start_month")
+    if region and region not in _FY_START:
+        # `region="India"` used to fall back to the calendar year and say no region was given
+        raise ToolError(
+            f"unknown region {p['region']!r} for a fiscal year",
+            details={"region": p["region"], "known": sorted(_FY_START)},
+            hint=f"Use an ISO code ({', '.join(sorted(_FY_START))}) or pass fy_start_month.",
+        )
     if start_month is None:
-        if region in _FY_START:
+        if region:
             start_month = _FY_START[region]
             a.append(f"fiscal year for {region} starts in month {start_month}" + (" (US federal; many US companies use January)" if region == "US" else ""))
         else:
             start_month = 1
             a.append("no region/fy_start_month given; calendar year assumed")
-    start_month = int(start_month)
+    if isinstance(start_month, str) and start_month.strip().lower()[:3] in _MONTH_NAMES:
+        start_month = _MONTH_NAMES[start_month.strip().lower()[:3]]
+    start_month = whole(start_month, "fy_start_month")
     if not 1 <= start_month <= 12:
         raise ToolError("fy_start_month must be 1..12")
     d = dt.date()

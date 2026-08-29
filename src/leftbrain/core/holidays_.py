@@ -2,24 +2,26 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import date, timedelta
 from typing import Any
 
 import holidays as _hol
 
-from ..contract import TooLarge, ToolError, check_params, ok, tool
+from ..contract import TooLarge, ToolError, check_params, ok, tool, whole
 
 MODES = ("list", "check", "next", "countries", "subdivisions")
 
 #: What each mode reads. Anything else in a call is a caller's mistake, not a default
 #: to fall back on (#28 SS2a). Kept honest by tests/test_mode_params.py, which derives
-#: the same map from the code and fails when the two drift.
+#: the same map from the code and fails when the two drift. One set per mode: `n` on
+#: `check` and `date` on `list` used to pass validation and do nothing.
 MODE_PARAMS: dict[str, frozenset[str]] = {
-    "list": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
-    "check": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
-    "next": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
-    "countries": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
-    "subdivisions": frozenset({"categories", "country", "date", "locale", "month", "n", "region", "state", "subdiv", "value", "year", "years"}),
+    "list": frozenset({"categories", "country", "month", "region", "state", "subdiv", "year", "years"}),
+    "check": frozenset({"categories", "country", "date", "locale", "region", "state", "subdiv", "value"}),
+    "next": frozenset({"categories", "country", "date", "locale", "n", "region", "state", "subdiv"}),
+    "countries": frozenset(),
+    "subdivisions": frozenset({"country", "region"}),
 }
 
 #: Past this year, lunar and observed-date rules are projections rather than calendars.
@@ -28,18 +30,35 @@ _ESTIMATED_AFTER = 2075
 #: Upcoming holidays `next` will return; the search window is two calendar years.
 MAX_NEXT = 100
 
+_MONTHS = {m.lower(): i for i, m in enumerate(calendar.month_name) if m}
+_MONTHS.update({m.lower(): i for i, m in enumerate(calendar.month_abbr) if m})
 
-def _country(region: str) -> Any:
-    code = str(region).strip().upper()
+
+def _country(region: Any) -> str:
+    """The ISO 3166-1 alpha-2 code the `holidays` library files a country under.
+
+    Country names ("India", "Türkiye") and alpha-3 codes ("IND") are accepted and reduced
+    to the alpha-2 code, which is what `subdivisions` and datetime's `region` expect. The
+    old loop over `include_aliases=True` matched nothing but alpha-3, and echoed it back.
+    """
+    from .geo_offline import country_code  # lazy: avoids an import cycle
+
+    raw = str(region).strip()
+    code = raw.upper()
     if code == "UK":
         code = "GB"
-    if code not in _hol.list_supported_countries():
-        # allow country names
-        for c, _subs in _hol.list_supported_countries(include_aliases=True).items():
-            if str(c).upper() == code:
-                return c
-        raise ToolError(f"unsupported region {region!r}; use an ISO code such as 'IN', 'US', 'GB'")
-    return code
+    from holidays.registry import COUNTRIES  # (class, ISO-2, aliases...) per country
+
+    for entry in COUNTRIES.values():
+        if code in entry[2:]:  # an alpha-3 alias; the plain country list carries these too
+            return entry[1]
+    supported = _hol.list_supported_countries()
+    if code in supported:
+        return code
+    named = country_code(raw)
+    if named and named in supported:
+        return named
+    raise ToolError(f"unsupported region {region!r}; use an ISO code such as 'IN', 'US', 'GB'")
 
 
 def holiday_map(region: str, years: set[int] | list[int], subdiv: str | None = None, categories: Any = None) -> dict[date, str]:
@@ -60,59 +79,88 @@ def holiday_map(region: str, years: set[int] | list[int], subdiv: str | None = N
     return {d: str(n) for d, n in h.items()}
 
 
-@tool
-def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
-    """Public holidays. Modes: list, check, next, countries, subdivisions."""
-    if mode not in MODES:
-        raise ToolError(f"mode must be one of {', '.join(MODES)}")
-    p = {k: v for k, v in params.items() if v is not None}
-    check_params("holidays", mode, p, MODE_PARAMS)
-    if mode == "countries":
-        return ok({"countries": sorted(_hol.list_supported_countries().keys())})
+def _region(p: dict[str, Any]) -> str:
     region = p.get("region") or p.get("country")
     if not region:
         raise ToolError("'region' (ISO country code) is required")
-    code = _country(region)
-    if mode == "subdivisions":
-        return ok({"region": code, "subdivisions": _hol.list_supported_countries().get(code, [])})
-    subdiv = p.get("subdiv") or p.get("state")
+    return _country(region)
+
+
+def _no_data(code: str, years: list[int]) -> str:
+    span = f"{min(years)}" if len(years) == 1 else f"{min(years)}-{max(years)}"
+    return f"the holiday calendar has no data for {code} in {span}; this is not the same as 'no holidays'"
+
+
+def _mode_countries(p: dict[str, Any]) -> dict[str, Any]:
+    return ok({"countries": sorted(_hol.list_supported_countries().keys())})
+
+
+def _mode_subdivisions(p: dict[str, Any]) -> dict[str, Any]:
+    code = _region(p)
+    return ok({"region": code, "subdivisions": _hol.list_supported_countries().get(code, [])})
+
+
+def _mode_check(p: dict[str, Any]) -> dict[str, Any]:
     from .datetimex import parse_dt  # lazy import
 
-    if mode == "check":
-        d, _, a = parse_dt(p.get("date") or p.get("value") or "today", locale=p.get("locale"), field="date")
-        hm = holiday_map(code, {d.year}, subdiv, p.get("categories"))
-        name = hm.get(d.date())
-        return ok({"date": d.date().isoformat(), "is_holiday": name is not None, "name": name, "weekday": d.strftime("%A"), "is_weekend": d.weekday() >= 5}, assumptions=a)
-    if mode == "next":
-        d, _, a = parse_dt(p.get("date") or "today", locale=p.get("locale"), field="date")
-        n = int(p.get("n", 5))
-        if n > MAX_NEXT:
-            raise TooLarge(
-                f"n is {n:,}; the most this mode returns is {MAX_NEXT}",
-                details={"n": n, "limit": MAX_NEXT},
-                hint=f"Ask for at most {MAX_NEXT}, or use mode 'list' with a year.",
-            )
-        hm = holiday_map(code, {d.year, d.year + 1}, subdiv, p.get("categories"))
-        found = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A"), "days_away": (k - d.date()).days} for k, v in sorted(hm.items()) if k >= d.date()]
-        upcoming = found[:n]
-        # The window is this year and the next, so asking for more than it holds is not
-        # an empty answer - say the list is short because the calendar ran out (#28 SS2f).
-        short = [f"only {len(upcoming)} holidays fall in the {d.year}-{d.year + 1} window; {n} were asked for"] if len(upcoming) < n else []
-        return ok({"date": d.date().isoformat(), "next": upcoming, "count": len(upcoming)}, assumptions=a, warnings=short)
-    years = p.get("years") or [p.get("year") or date.today().year]
-    if isinstance(years, (int, str)):
-        years = [int(years)]
-    years = [int(y) for y in years]
+    code = _region(p)
+    subdiv = p.get("subdiv") or p.get("state")
+    d, _, a = parse_dt(p.get("date") or p.get("value") or "today", locale=p.get("locale"), field="date")
+    hm = holiday_map(code, {d.year}, subdiv, p.get("categories"))
+    name = hm.get(d.date())
+    # An empty calendar for the year read as "not a holiday": Independence Day 2200 came back
+    # as a working day with nothing said.
+    warnings = [_no_data(code, [d.year])] if not hm else []
+    return ok({"date": d.date().isoformat(), "is_holiday": name is not None, "name": name, "weekday": d.strftime("%A"), "is_weekend": d.weekday() >= 5}, assumptions=a, warnings=warnings)
+
+
+def _mode_next(p: dict[str, Any]) -> dict[str, Any]:
+    from .datetimex import parse_dt  # lazy import
+
+    code = _region(p)
+    subdiv = p.get("subdiv") or p.get("state")
+    d, _, a = parse_dt(p.get("date") or "today", locale=p.get("locale"), field="date")
+    n = whole(p.get("n", 5), "n", lo=1)
+    if n > MAX_NEXT:
+        raise TooLarge(
+            f"n is {n:,}; the most this mode returns is {MAX_NEXT}",
+            details={"n": n, "limit": MAX_NEXT},
+            hint=f"Ask for at most {MAX_NEXT}, or use mode 'list' with a year.",
+        )
+    hm = holiday_map(code, {d.year, d.year + 1}, subdiv, p.get("categories"))
+    found = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A"), "days_away": (k - d.date()).days} for k, v in sorted(hm.items()) if k >= d.date()]
+    upcoming = found[:n]
+    # The window is this year and the next, so asking for more than it holds is not
+    # an empty answer - say the list is short because the calendar ran out (#28 SS2f).
+    short = [f"only {len(upcoming)} holidays fall in the {d.year}-{d.year + 1} window; {n} were asked for"] if len(upcoming) < n else []
+    return ok({"date": d.date().isoformat(), "next": upcoming, "count": len(upcoming)}, assumptions=a, warnings=short)
+
+
+def _month(raw: Any) -> int:
+    if isinstance(raw, str) and raw.strip().lower() in _MONTHS:
+        return _MONTHS[raw.strip().lower()]
+    month = whole(raw, "month")
+    if not 1 <= month <= 12:
+        raise ToolError(
+            f"month {month} is not a month; months run from 1 to 12",
+            details={"month": month},
+            hint="Leave 'month' out to get the whole year.",
+        )
+    return month
+
+
+def _mode_list(p: dict[str, Any]) -> dict[str, Any]:
+    code = _region(p)
+    subdiv = p.get("subdiv") or p.get("state")
+    if p.get("years") is not None:
+        raw_years = p["years"] if isinstance(p["years"], list) else [p["years"]]
+    elif p.get("year") is not None:
+        raw_years = [p["year"]]
+    else:
+        raw_years = [date.today().year]
+    years = [whole(y, "year", lo=1, hi=9999) for y in raw_years]  # year=0 used to mean "this year"
     hm = holiday_map(code, set(years), subdiv, p.get("categories"))
-    month = p.get("month")
-    if month is not None:
-        month = int(month)
-        if not 1 <= month <= 12:
-            raise ToolError(
-                f"month {month} is not a month; months run from 1 to 12",
-                details={"month": month},
-                hint="Leave 'month' out to get the whole year.",
-            )
+    month = _month(p["month"]) if p.get("month") is not None else None
     items = [{"date": k.isoformat(), "name": v, "weekday": k.strftime("%A")} for k, v in sorted(hm.items()) if (month is None or k.month == month)]
     long_weekends = []
     # `month` used to filter `holidays` and leave `long_weekends` as the whole year, so a
@@ -126,11 +174,21 @@ def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
     # empty list because there are no holidays. Say which (#28 SS3.13).
     warnings = []
     if not hm:
-        span = f"{min(years)}" if len(years) == 1 else f"{min(years)}-{max(years)}"
-        warnings.append(f"the holiday calendar has no data for {code} in {span}; this is not the same as 'no holidays'")
+        warnings.append(_no_data(code, years))
     elif any(y > _ESTIMATED_AFTER for y in years):
         warnings.append(f"years after {_ESTIMATED_AFTER} are estimated: lunar and observed-date rules are not fixed that far ahead")
     return ok(out, assumptions=[x for x in assumptions if x], warnings=warnings)
+
+
+@tool
+def holidays(mode: str = "list", **params: Any) -> dict[str, Any]:
+    """Public holidays. Modes: list, check, next, countries, subdivisions."""
+    if mode not in MODES:
+        raise ToolError(f"mode must be one of {', '.join(MODES)}")
+    p = {k: v for k, v in params.items() if v is not None}
+    check_params("holidays", mode, p, MODE_PARAMS)
+    return {"list": _mode_list, "check": _mode_check, "next": _mode_next, "countries": _mode_countries, "subdivisions": _mode_subdivisions}[mode](p)
+
 
 #: Worked examples for the reference page, one list per mode. Every one of them is
 #: executed when /docs/tools/holidays is built and sorted by the result into
