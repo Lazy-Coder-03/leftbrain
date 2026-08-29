@@ -32,7 +32,7 @@
       <tr>
         <td class="mono">{{ k.prefix }}…</td>
         <td>{{ k.note or "—" }}</td>
-        <td><span class="tools" title="{{ k.scope.listing() if k.scope else 'every tool and mode' }}">{{ k.scope_summary }}</span></td>
+        <td><span class="tools" title="{{ k.scope.listing() if k.scope else 'every tool and mode' }}">{{ k.scope_summary }}</span>{% if k.allows_nothing %}<br><span class="hint bad">can call nothing — this server has no {{ k.scope.listing() }}; re-scope it</span>{% endif %}</td>
         <td class="num">{{ k.created_at[:10] }}</td>
         <td class="num">{% if k.disabled %}—{% elif k.expires_at is none %}never expires{% elif k.expired %}expired {{ k.expires_at[:10] }}{% elif k.days_left <= 1 %}expires today{% else %}expires in {{ k.days_left }} days{% endif %}</td>
         <td class="num">{{ "{:,}".format(k.used_today) }} / {{ "{:,}".format(k.daily_quota) }}</td>

@@ -44,7 +44,7 @@ from dataclasses import KW_ONLY, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from .scopes import Scope, parse_scope, summarize
+from .scopes import CATALOGUE, Scope, parse_scope, summarize
 
 DEFAULT_DB = "leftbrain-keys.sqlite3"
 DEFAULT_DAILY = int(os.environ.get("LEFTBRAIN_DEFAULT_DAILY_QUOTA", "1000"))
@@ -255,9 +255,19 @@ class KeyInfo:
         """Counts towards the owner's active-key cap: usable, and not a legacy key nobody can show again."""
         return self.usable and not self.legacy
 
+    @property
+    def allows_nothing(self) -> bool:
+        """A scope that loaded but names no tool this build has: the key can call nothing.
+
+        Reachable without anyone doing anything wrong — a key scoped to `files` on a server
+        started without the files extra. It is worth saying out loud, because the symptom is
+        an empty tool list and silence.
+        """
+        return self.scope is not None and not any(t in CATALOGUE for t in self.scope.tools)
+
     def to_dict(self) -> dict[str, Any]:
         fields = {k: v for k, v in self.__dict__.items() if k not in ("revealable", "legacy", "scope")}
-        return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today), "tools": self.scope.to_dict() if self.scope else None}
+        return {**fields, "expired": self.expired, "remaining_today": max(0, self.daily_quota - self.used_today), "tools": self.scope.to_dict() if self.scope else None, "allows_nothing": self.allows_nothing}
 
 
 @dataclass

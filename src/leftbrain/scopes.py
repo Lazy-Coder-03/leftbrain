@@ -212,6 +212,15 @@ current_tool_recorder: contextvars.ContextVar[Any] = contextvars.ContextVar("lef
 def denial(scope: Scope, tool: str, mode: str | None) -> dict[str, Any] | None:
     """The contract error a call outside ``scope`` gets, or ``None`` when it is allowed."""
     if tool not in scope.tools:
+        if not any(t in CATALOGUE for t in scope.tools):
+            # The scope survived `strict=False` loading but names nothing this build has —
+            # a key scoped to `files` on a server started without it. Offering
+            # `allowed: files` would point the caller at a tool nobody here can call.
+            return fail(
+                "forbidden",
+                f"this key is scoped to tools this server does not provide "
+                f"({', '.join(scope.tools)}); ask its owner to re-scope it at /dashboard",
+            )
         return fail("forbidden", f"this key may not call {tool}; allowed: {scope.listing()}")
     modes = scope.tools[tool]
     if modes is None or mode in modes:
