@@ -50,6 +50,72 @@ Two audiences are equally primary:
 3. **Consent is not optional.** leftbrain meets the MCP spec's confused-deputy preconditions
    exactly (see Security), so its own consent screen is load-bearing, not decoration.
 
+## Clients: what each one actually needs
+
+Researched 2026-08-29 against Anthropic's
+[connector authentication docs](https://claude.com/docs/connectors/building/authentication),
+OpenAI's plugin docs and client issue trackers. Several of these are requirements the
+implementation would otherwise miss.
+
+| Client | Static `lblz_` key | OAuth identity | Redirect URI |
+|---|---|---|---|
+| Claude Code | Configurable, but see the header bug below | **CIMD** | `http://localhost:PORT/callback`, **ephemeral port** |
+| Claude web / Desktop / mobile | `static_headers`, **beta**, entered by an org admin | CIMD, else DCR | `https://claude.ai/api/mcp/auth_callback` |
+| ChatGPT plugins | **No** — no key field, no header editor | CIMD, else DCR | `https://chatgpt.com/connector_platform_oauth_redirect` |
+| Codex | Yes | CIMD when advertised, else DCR | loopback |
+| Cursor, VS Code, Windsurf, Cline | Yes | DCR (CIMD is an open request on Cursor) | loopback, ephemeral port |
+
+Three corrections to earlier assumptions, each of which would have produced a working-looking
+server that real clients reject:
+
+1. **Exact-string `redirect_uri` matching breaks Claude Code.** It registers
+   `http://localhost/callback` and `http://127.0.0.1/callback` in its Client ID Metadata
+   Document, then redirects to an ephemeral port such as `http://localhost:3118/callback`.
+   Anthropic's docs state the authorization server must accept both **with the port component
+   ignored**; [RFC 8252 §7.3](https://datatracker.ietf.org/doc/html/rfc8252#section-7.3) requires
+   it for `127.0.0.1` and the same treatment is needed for `localhost`. The rule is therefore
+   exact string matching **except** for loopback hosts, where the port is ignored and `http` is
+   permitted. That is a documented, bounded exception — not a wildcard.
+2. **Claude selects CIMD only when the metadata advertises both
+   `"client_id_metadata_document_supported": true` and `"none"` in
+   `token_endpoint_auth_methods_supported`.** The SDK's `build_metadata()` emits neither: its
+   auth methods are `["client_secret_post", "client_secret_basic"]`. Miss the `"none"` and every
+   Claude client silently falls back to DCR — which the same docs warn "causes Claude to
+   register a new client on every fresh connection".
+3. **ChatGPT is the only client that refuses a static key outright.** Claude web gained
+   `static_headers` in beta (an org admin enters the credential once). The claim in #34 that
+   both clients refuse keys is now half true, and the docs must not repeat it.
+
+Further requirements taken from the same source, all cheap and all load-bearing:
+
+- The protected-resource document's `resource` **must exactly match the MCP URL as the user
+  types it**, path included — `https://leftbrain.idlesync.in/mcp`.
+- `authorization_servers` — only the **first** entry is used; there is no fallback to later ones.
+- **10 s** budget for discovery, registration and token; **30 s** for refresh. A CIMD fetch
+  inside the token path must therefore be cached, not repeated.
+- Refresh tokens **must rotate** for public clients, and a dead one must return `invalid_grant`,
+  not a custom code.
+- `offline_access` must appear in `scopes_supported` or Claude never asks for a refresh token.
+- `/token` must accept `application/x-www-form-urlencoded`; `/register` takes `application/json`.
+  Different parsers, same server.
+- DCR clients accumulate. Unused registrations with no consent row are pruned after 30 days.
+
+**Claude Code's header bug, to verify not assume.**
+[claude-code#28293](https://github.com/anthropics/claude-code/issues/28293) reports that custom
+headers from `.mcp.json` reach the initial connection but not tool-call POSTs, on both `sse` and
+`streamable-http`, and is closed as not planned. If that reproduces against leftbrain it means
+static keys are already broken there and OAuth is the only working path for Claude Code — which
+would raise this work from convenience to the sole remedy. It is one command to check
+(`claude mcp add --transport http … --header "Authorization: Bearer lblz_…"`, then call a tool)
+and the result is recorded here before the build starts, because it changes what the docs should
+tell a Claude Code user to do.
+
+**Device flow is forward-looking, and the spec says so plainly.** No major MCP client implements
+RFC 8628 for MCP today; Claude Code's request for it was closed as a duplicate. The device grant
+here serves an agent driving HTTP directly from the documentation — which is the stated goal —
+and future clients when they add it. **It will not make Claude Code connect today.** Nothing in
+the docs or the release notes may imply otherwise.
+
 ## Security: why the consent screen shapes the design
 
 The [MCP security best practices](https://modelcontextprotocol.io/docs/2026-07-28/tutorials/security/security_best_practices)
@@ -71,8 +137,11 @@ The controls below are therefore requirements, not hardening.
 1. **Per-client consent, stored server-side**, checked *before* anything is forwarded to GitHub.
 2. **The signed `state` cookie is set only after the user clicks approve.** Setting it earlier
    makes the consent screen bypassable, which is the whole attack.
-3. **Exact-string `redirect_uri` matching.** No wildcards, no prefix matching. A changed
-   `redirect_uri` requires re-registration.
+3. **Exact-string `redirect_uri` matching, with one bounded exception.** No wildcards, no prefix
+   matching; a changed `redirect_uri` requires re-registration. The exception is loopback
+   (`localhost`, `127.0.0.1`, `[::1]`), where the **port is ignored** and `http` is permitted, per
+   RFC 8252 §7.3 — without it Claude Code, Cursor and VS Code cannot complete a flow at all. Host
+   and path are still matched exactly, so the exception widens only the port.
 4. **PKCE with `S256` required** on every authorization code exchange.
 5. **SSRF guard on CIMD fetches.** Accepting Client ID Metadata Documents means leftbrain
    fetches a URL supplied by a stranger. HTTPS only; loopback, private (`10/8`, `172.16/12`,
@@ -106,11 +175,17 @@ The SDK (`mcp` 2.1.1, already pinned) ships the protocol surface: `create_auth_r
 `create_protected_resource_routes()` gives the RFC 9728 document. What we write is the provider,
 its persistence, the consent screen, and the device grant the SDK does not cover.
 
-**One deviation from the SDK's defaults.** `build_metadata()` does not set
-`client_id_metadata_document_supported`, and does not know about the device endpoint. We build
-the metadata ourselves from `build_metadata()`, set both fields, and substitute our own metadata
-route into the list `create_auth_routes()` returns. Everything else is the SDK's, CORS and
-body-size handling included.
+**Four deviations from the SDK's defaults**, each forced by a real client. `build_metadata()` is
+called, then the result is amended and substituted for the SDK's own metadata route in the list
+`create_auth_routes()` returns. Everything else is the SDK's, CORS and body-size handling
+included.
+
+| Field | SDK default | What we set, and why |
+|---|---|---|
+| `client_id_metadata_document_supported` | absent | `true` — CIMD is how Claude Code identifies itself |
+| `token_endpoint_auth_methods_supported` | `["client_secret_post", "client_secret_basic"]` | append `"none"` — without it Claude never selects CIMD and falls back to DCR |
+| `scopes_supported` | from registration options | include `offline_access` — without it Claude never requests a refresh token |
+| `device_authorization_endpoint` / `grant_types_supported` | absent / no device grant | added, so a client can detect RFC 8628 support |
 
 ### Storage
 
@@ -157,6 +232,43 @@ both are corrected in the same change.
   `(owner, client_id)` and its key is still usable, the flow issues a fresh token against that
   key instead of minting a second one. Without this, reconnecting a connector twice would
   silently consume two slots.
+
+## How a connector key appears to its owner
+
+A key minted by consent is an ordinary key with a name leftbrain filled in. Nothing about it is
+hidden or special-cased: **Show** reveals the raw `lblz_…` for its owner exactly as it does for a
+hand-made key (the `secret_enc` column is written by `create`, so this needs no new code), usage
+counts, the scope editor, expiry and revoke all behave identically, and it occupies one of the
+owner's slots. Revoking it cuts the connector off on its next call.
+
+It is named the way WhatsApp names a linked device — **what the app is, and where it runs**:
+
+```
+Claude Code · Windows        41 today    last used 2 min ago
+Cursor · macOS                8 today    last used yesterday
+ChatGPT · web                 5 today    last used 1 hour ago
+my deploy script              3 today    last used 4 days ago   <- created by hand
+```
+
+- **The app** comes from `client_name` in the client's registration or CIMD document, truncated
+  and stripped of control characters. It is attacker-supplied for a DCR client, so it is escaped
+  wherever it is rendered and never trusted as markup.
+- **Where it runs** comes from the `User-Agent` of the browser that completed consent, reduced to
+  an OS word (`Windows`, `macOS`, `Linux`, `iOS`, `Android`).
+- **A cloud client gets `· web`, not an OS.** ChatGPT and Claude web run on their vendor's
+  servers; the browser that approved says nothing about where the client runs. Stamping the
+  approver's OS on such a row would be actively misleading — someone would revoke
+  `ChatGPT · Windows` believing it was tied to their PC. A client is treated as cloud when its
+  registered redirect URI is not a loopback address, which is exactly the distinction that
+  matters.
+- The whole string fits the existing 40-character `note` column, which is what the dashboard
+  already renders as a key's name. No schema change.
+
+Two identical machines produce two identical names — `Claude Code · Windows` twice. That is the
+same limitation WhatsApp has, and the same answer applies: the row already shows last-used, which
+is how a person tells them apart. A disambiguating suffix is deliberately **not** added up front;
+it would put noise on every row to solve a problem most owners never have. If it proves necessary,
+it is added only on collision.
 
 ## Flows
 
@@ -243,7 +355,30 @@ one implementation. Quota headers, rpm windows, daily counters, `current_scope` 
 `tools/list` trimming are therefore literally the same code — a scoped connector sees only its
 tools, and a call outside its scope returns the `forbidden` contract error, not a transport error.
 
-## Agent documentation
+## Documentation
+
+### Two doors, presented as equals
+
+Every page that explains connecting now shows **both** ways, neither buried under the other:
+
+> **Paste a key.** Create one at `/dashboard`, copy it, put it in your client's config. Works
+> everywhere, and it is the only way for clients with no OAuth support.
+>
+> **Or connect with OAuth.** Click connect in your app, approve leftbrain's page, done — you
+> never see or handle a key. leftbrain creates one for you, names it after the app, and shows it
+> on your dashboard where you can read it, re-scope it or revoke it like any other.
+
+That second paragraph must say the key is created and visible, not just "you're connected".
+A credential appearing on someone's dashboard that they did not knowingly create is a surprise;
+saying so up front turns it into a feature.
+
+Covered in `README.md`, `web/docs/quickstart.md` and `web/docs/clients.md`. `clients.md` gains a
+**Connect ChatGPT** section replacing the header-injecting-proxy workaround shipped in #49, a
+**Connect Claude Code** section, and a **Connect from a terminal** section for the device flow —
+the last carrying the plain warning that no shipping client drives it yet, so it is for agents
+calling the endpoints directly.
+
+### The agent document
 
 `docs/agents/auth.md`, served at `/docs/agents/auth`, written for a model rather than a person:
 every path in order, with the exact requests, the exact fields, and what to say to a human at
@@ -296,20 +431,38 @@ handlers are exercised rather than mocked.
 - Regression for the observed failure: `POST /register` and both well-known paths return real
   documents rather than the catch-all 404, so a Claude Code session no longer reports
   `Dynamic client registration rejected: unsupported`.
+- Client compatibility, asserted against the metadata document rather than trusted: `"none"` is
+  in `token_endpoint_auth_methods_supported`, `client_id_metadata_document_supported` is `true`,
+  `offline_access` is in `scopes_supported`, and `resource` in the protected-resource document
+  equals the MCP URL exactly.
+- Loopback redirect matching: `http://localhost:3118/callback` is accepted against a registered
+  `http://localhost/callback`, and so is the `127.0.0.1` form; a **non**-loopback host with a
+  differing port is still refused, and so is a loopback URI with a different path.
+- Connector key naming: a loopback client is named `<app> · <OS>` from the consent request's
+  `User-Agent`; a non-loopback (cloud) client is named `<app> · web` and never carries the
+  approver's OS; a `client_name` containing markup is escaped where rendered.
+- The minted key is revealable by its owner and refused to anyone else, exercising the existing
+  `reveal` path rather than a new one.
 
 `pytest -q` and `ruff check src tests` green. Skips are checked with `-rs` before the run is
 called green — the only legitimate skip is the opt-in Postgres one.
 
 ## Build order
 
+0. Reproduce or refute claude-code#28293 against leftbrain with a static key, and record the
+   answer here. It costs one command and decides whether the docs tell a Claude Code user to
+   paste a key or to use OAuth.
 1. Tables in `_SCHEMA` + `OAuthStore` round-trips (SQLite and Postgres).
 2. `verify_oauth_token_and_count` + the `_meter` refactor, with the `lblz_` guard green.
 3. Provider's ten methods against the store.
-4. Mount SDK routes; discovery documents correct; MCP Inspector reaches the consent step.
-5. Consent screen, key cap (including the 3 → 5 default), per-client consent registry.
+4. Mount SDK routes; amend the metadata (`none`, CIMD, `offline_access`, device endpoint);
+   discovery documents correct; MCP Inspector reaches the consent step.
+5. Consent screen, key cap (including the 3 → 5 default), per-client consent registry,
+   loopback-aware redirect matching, and the `<app> · <where>` naming.
 6. Device grant.
-7. CIMD + SSRF guard.
-8. Agent documentation, ChatGPT and terminal client docs, README, CHANGELOG.
+7. CIMD + SSRF guard, and pruning of unused DCR registrations.
+8. Both-doors documentation, agent document, ChatGPT / Claude Code / terminal client sections,
+   README, CHANGELOG.
 
 MCP Inspector against a local `leftbrain-serve` is the development loop, not ChatGPT. A Claude
 Code session pointed at the same local server is the second loop and the cheaper one, since it
