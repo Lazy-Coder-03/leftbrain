@@ -318,6 +318,43 @@ def test_rubbish_is_refused_rather_than_raising():
     assert not redirect_uri_matches("http://localhost/callback", "")
 
 
+def a_loopback_client(*uris):
+    from leftbrain.oauth.redirects import LoopbackTolerantClient
+
+    return LoopbackTolerantClient(
+        client_id="c1", client_secret=None, token_endpoint_auth_method="none",
+        redirect_uris=[AnyUrl(u) for u in (uris or ("http://localhost/callback",))],
+    )
+
+
+def test_the_client_object_itself_tolerates_a_loopback_port():
+    """The SDK's /authorize handler asks the client, not the provider, so the rule lives here."""
+    import pytest
+    from mcp.shared.auth import InvalidRedirectUriError
+
+    client = a_loopback_client("http://localhost/callback", "http://127.0.0.1/callback")
+    for presented in ("http://localhost:3118/callback", "http://127.0.0.1:51234/callback"):
+        assert str(client.validate_redirect_uri(AnyUrl(presented))) == presented
+    for refused in ("https://evil.example/callback", "http://localhost:3118/other"):
+        with pytest.raises(InvalidRedirectUriError):
+            client.validate_redirect_uri(AnyUrl(refused))
+
+
+def test_a_remote_client_object_still_matches_exactly():
+    import pytest
+    from mcp.shared.auth import InvalidRedirectUriError
+
+    client = a_loopback_client("https://chatgpt.com/cb")
+    assert str(client.validate_redirect_uri(AnyUrl("https://chatgpt.com/cb"))) == "https://chatgpt.com/cb"
+    with pytest.raises(InvalidRedirectUriError):
+        client.validate_redirect_uri(AnyUrl("https://chatgpt.com:8443/cb"))
+
+
+def test_a_sole_registered_uri_is_still_the_default_when_none_is_presented():
+    client = a_loopback_client("http://localhost/callback")
+    assert str(client.validate_redirect_uri(None)) == "http://localhost/callback"
+
+
 # -- what a connector key is called -----------------------------------------
 
 WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130 Safari/537.36"

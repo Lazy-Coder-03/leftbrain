@@ -13,6 +13,7 @@ from typing import Any
 from mcp.shared.auth import OAuthClientInformationFull
 
 from ..keys import _hash, _now
+from .redirects import LoopbackTolerantClient
 
 
 class OAuthStore:
@@ -42,10 +43,15 @@ class OAuthStore:
             )
 
     def load_client(self, client_id: str) -> OAuthClientInformationFull | None:
+        """The registration, as a client that tolerates a loopback port change.
+
+        The SDK's `/authorize` handler asks the client object to validate the presented
+        redirect URI, so the RFC 8252 exception has to live on the object it asks.
+        """
         row = self.db.one("SELECT metadata FROM oauth_clients WHERE client_id = ?", (client_id,))
         if not row:
             return None
-        return OAuthClientInformationFull.model_validate_json(row["metadata"])
+        return LoopbackTolerantClient.model_validate_json(row["metadata"])
 
     # -- consent -------------------------------------------------------------
 

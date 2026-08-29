@@ -210,3 +210,145 @@ def test_the_existing_key_path_is_untouched(tmp_path):
         assert r.status_code == 200
         assert r.headers["x-ratelimit-remaining-today"]
         assert c.get("/keys/me", headers={"Authorization": f"Bearer {raw}"}).status_code == 200
+
+
+# -- the whole flow, driven the way a client drives it -----------------------
+
+
+def pkce():
+    import base64
+    import hashlib
+    import secrets
+
+    verifier = secrets.token_urlsafe(48)
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    return verifier, challenge
+
+
+def register_client(c, name="Claude Code", redirect="http://localhost/callback"):
+    return c.post("/register", json={
+        "redirect_uris": [redirect], "client_name": name, "token_endpoint_auth_method": "none",
+    }).json()["client_id"]
+
+
+def sign_in(c):
+    from leftbrain.web import auth
+
+    user = auth.User(login="octo", email="octo@example.com", avatar_url=None)
+    c.cookies.set(auth.SESSION_COOKIE, auth.sign_session(SECRET, user))
+    return auth.csrf_token(SECRET, user)
+
+
+def approve(c, client_id, challenge, tools=("math",), redirect="http://localhost:3118/callback"):
+    from urllib.parse import parse_qs, urlparse
+
+    csrf = sign_in(c)
+    r = c.post("/oauth/consent", follow_redirects=False, headers={"user-agent": WINDOWS}, data={
+        "csrf": csrf, "client_id": client_id, "redirect_uri": redirect, "explicit": "1",
+        "code_challenge": challenge, "scopes": "mcp", "state": "xyz", "resource": "",
+        "approve": "1", "scope_form": "1", "scope": list(tools),
+    })
+    assert r.status_code in (302, 303), r.text
+    return parse_qs(urlparse(r.headers["location"]).query)["code"][0]
+
+
+WINDOWS = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130"
+
+
+def test_authorize_hands_the_browser_to_the_consent_screen(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        client_id = register_client(c)
+        _, challenge = pkce()
+        r = c.get("/authorize", follow_redirects=False, params={
+            "client_id": client_id, "redirect_uri": "http://localhost:3118/callback",
+            "response_type": "code", "code_challenge": challenge,
+            "code_challenge_method": "S256", "state": "xyz", "scope": "mcp",
+        })
+        assert r.status_code in (302, 303)
+        assert r.headers["location"].startswith("/oauth/consent?")
+
+
+def test_register_consent_token_then_call_a_tool(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        client_id = register_client(c)
+        verifier, challenge = pkce()
+        code = approve(c, client_id, challenge, tools=("math",))
+
+        token = c.post("/token", data={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": "http://localhost:3118/callback", "code_verifier": verifier,
+        })
+        assert token.status_code == 200, token.text
+        granted = token.json()
+        assert granted["token_type"] == "Bearer" and granted["expires_in"] == 3600
+        access = granted["access_token"]
+
+        listed = call(c, access)
+        assert listed.status_code == 200
+        assert tool_names(listed) == ["math"]  # the scope chosen at consent, enforced on the wire
+
+
+def test_a_refresh_token_buys_a_new_access_token(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        client_id = register_client(c)
+        verifier, challenge = pkce()
+        code = approve(c, client_id, challenge)
+        first = c.post("/token", data={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": "http://localhost:3118/callback", "code_verifier": verifier,
+        }).json()
+
+        again = c.post("/token", data={
+            "grant_type": "refresh_token", "refresh_token": first["refresh_token"],
+            "client_id": client_id,
+        })
+        assert again.status_code == 200, again.text
+        assert again.json()["access_token"] != first["access_token"]
+        assert call(c, again.json()["access_token"]).status_code == 200
+
+
+def test_the_wrong_pkce_verifier_is_refused(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        client_id = register_client(c)
+        _, challenge = pkce()
+        code = approve(c, client_id, challenge)
+        bad = c.post("/token", data={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": "http://localhost:3118/callback", "code_verifier": "x" * 60,
+        })
+        assert bad.status_code == 400
+        assert bad.json()["error"] in ("invalid_grant", "invalid_request")
+
+
+def test_a_code_cannot_be_spent_twice(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        client_id = register_client(c)
+        verifier, challenge = pkce()
+        code = approve(c, client_id, challenge)
+        body = {
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": "http://localhost:3118/callback", "code_verifier": verifier,
+        }
+        assert c.post("/token", data=body).status_code == 200
+        assert c.post("/token", data=body).status_code == 400
+
+
+def test_revoking_the_key_on_the_dashboard_kills_the_connector(tmp_path):
+    """Acceptance criterion 4: revoke stops it working immediately, with no OAuth step."""
+    with TestClient(make_app(tmp_path)) as c:
+        client_id = register_client(c)
+        verifier, challenge = pkce()
+        code = approve(c, client_id, challenge)
+        access = c.post("/token", data={
+            "grant_type": "authorization_code", "code": code, "client_id": client_id,
+            "redirect_uri": "http://localhost:3118/callback", "code_verifier": verifier,
+        }).json()["access_token"]
+        assert call(c, access).status_code == 200
+
+        keys = KeyStore(str(tmp_path / "k.sqlite3"), secret=SECRET)
+        minted = keys.list("octo@example.com")[0]
+        assert minted.note == "Claude Code · Windows"
+        keys.revoke(minted.prefix)
+
+        assert call(c, access).status_code == 401
+
