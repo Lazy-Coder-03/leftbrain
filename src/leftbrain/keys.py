@@ -504,7 +504,7 @@ class KeyStore:
 
     # -- verify + meter ------------------------------------------------------
 
-    def verify_and_count(self, raw_key: str) -> Verdict:
+    def verify(self, raw_key: str) -> Verdict:
         if not raw_key or not raw_key.startswith(KEY_PREFIX):
             return Verdict(False, "invalid key", 401)
         row = self.db.one("SELECT * FROM keys WHERE key_hash = ?", (_hash(raw_key),))
@@ -512,7 +512,7 @@ class KeyStore:
             return Verdict(False, "unknown key", 401)
         return self._meter(row)
 
-    def verify_oauth_token_and_count(self, token: str) -> Verdict:
+    def verify_oauth_token(self, token: str) -> Verdict:
         """An OAuth access token, resolved to the key it was issued against and metered as one.
 
         The join is the revocation mechanism: a disabled key fails the same check a key does,
@@ -531,10 +531,16 @@ class KeyStore:
         return self._meter(row)
 
     def _meter(self, row: dict[str, Any]) -> Verdict:
-        """Quota, rate limit and usage counting for one key row, whichever credential named it.
+        """Rate limit and quota *check* for one key row, whichever credential named it.
 
         Both credential kinds run this, so the headers a caller sees, the daily counter and
         the rpm window cannot drift apart: there is only one copy of them.
+
+        It deliberately does not spend a unit. This runs once per HTTP request, and a request
+        is not what the product sells - a hosted connector that re-`initialize`s before every
+        call made each one cost two, and a whole handshake cost four before any work (#62).
+        `charge` spends the unit, once, when a tool call has actually done something. The rpm
+        window stays here: it is abuse protection, and a handshake is still traffic.
         """
         h = row["key_hash"]
         if row["disabled"]:
@@ -554,10 +560,24 @@ class KeyStore:
                 return Verdict(False, f"daily quota of {info.daily_quota} exhausted; resets at 00:00 UTC", 429, key=info, remaining=0, retry_after=self._seconds_to_midnight())
             window.append(now)
             self._rpm_window[h] = window
-            self.db.run("INSERT INTO usage(key_hash, day, count) VALUES (?,?,1) ON CONFLICT(key_hash, day) DO UPDATE SET count = usage.count + 1", (h, _today()))
             self.db.run("UPDATE keys SET last_used=? WHERE key_hash=?", (_now(), h))
-        info.used_today += 1
+        # What is left *before* this call. The caller is told the post-charge number, which
+        # is read after the tool has run and so cannot be off by one either way.
         return Verdict(True, key=info, remaining=info.daily_quota - info.used_today)
+
+    def charge(self, prefix: str) -> None:
+        """Spend one unit of the key's daily quota: one tool call that did work (#62).
+
+        Keyed by prefix rather than hash so it reads like `record_tool_call` beside it, and
+        so nothing that survives a request has to carry the hash around. The lookup buys the
+        insert being character-for-character the statement `_meter` used to run, which is
+        the one already proven against both SQLite and Postgres; `keys(prefix)` is indexed.
+        """
+        with self._lock:
+            row = self.db.one("SELECT key_hash FROM keys WHERE prefix=?", (prefix,))
+            if row is None:  # revoked between the check and the call
+                return
+            self.db.run("INSERT INTO usage(key_hash, day, count) VALUES (?,?,1) ON CONFLICT(key_hash, day) DO UPDATE SET count = usage.count + 1", (row["key_hash"], _today()))
 
     @staticmethod
     def _seconds_to_midnight() -> int:

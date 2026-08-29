@@ -12,13 +12,17 @@ def test_keystore_lifecycle(tmp_path):
     raw, info = store.create("a@b.co", daily_quota=3, rpm=100)
     assert raw.startswith("lblz_") and info.prefix == raw[:13]
     for i in range(3):
-        v = store.verify_and_count(raw)
-        assert v.ok and v.remaining == 2 - i
-    v = store.verify_and_count(raw)
+        # `verify` checks the budget; `charge` spends it, once per tool call that did work.
+        # They were one step, so every HTTP request cost a unit whether or not it was a
+        # call - and a client that re-handshakes paid twice for each one (#62).
+        v = store.verify(raw)
+        assert v.ok and v.remaining == 3 - i
+        store.charge(info.prefix)
+    v = store.verify(raw)
     assert not v.ok and v.status == 429 and "quota" in v.reason
     assert store.set_disabled(info.prefix, True)
-    assert store.verify_and_count(raw).status == 403
-    assert store.verify_and_count("lblz_nope").status == 401
+    assert store.verify(raw).status == 403
+    assert store.verify("lblz_nope").status == 401
     assert store.set_limits(info.prefix, daily_quota=10) and store.get_by_prefix(info.prefix).daily_quota == 10
     assert store.stats()["keys"] == 1
     assert store.revoke(info.prefix) and store.get_by_prefix(info.prefix) is None
@@ -27,8 +31,8 @@ def test_keystore_lifecycle(tmp_path):
 def test_keystore_rpm(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
     raw, _ = store.create("a@b.co", daily_quota=100, rpm=2)
-    assert store.verify_and_count(raw).ok and store.verify_and_count(raw).ok
-    v = store.verify_and_count(raw)
+    assert store.verify(raw).ok and store.verify(raw).ok
+    v = store.verify(raw)
     assert not v.ok and v.status == 429 and v.retry_after
 
 
@@ -60,13 +64,14 @@ def test_a_throttled_key_gets_429_over_http_not_500(tmp_path):
     """The Verdict carrying the key positionally landed it in `message`, which is not
     serialisable, so every rate limit and every exhausted quota answered 500."""
     store = KeyStore(str(tmp_path / "k.sqlite3"))
-    quota_key, _ = store.create("a@b.co", daily_quota=1, rpm=100)
+    quota_key, quota_info = store.create("a@b.co", daily_quota=1, rpm=100)
     rpm_key, _ = store.create("a@b.co", daily_quota=100, rpm=1)
     app = build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"),
                     web_config=WebConfig(client_id=None, client_secret=None, secret=None,
                                          base_url=None, open_signup=False))
     with TestClient(app) as c:
         assert c.get("/keys/me", headers={"Authorization": f"Bearer {quota_key}"}).status_code == 200
+        store.charge(quota_info.prefix)  # /keys/me is not a tool call and no longer spends one itself (#62)
         spent = c.get("/keys/me", headers={"Authorization": f"Bearer {quota_key}"})
         assert spent.status_code == 429
         assert "quota" in spent.json()["error"] and spent.headers["retry-after"]
@@ -155,8 +160,13 @@ def test_keystore_postgres_if_configured():
     assert store.backend == "postgres"
     raw, info = store.create("pg@b.co", daily_quota=2, rpm=100)
     try:
-        assert store.verify_and_count(raw).ok and store.verify_and_count(raw).ok
-        assert store.verify_and_count(raw).status == 429
+        # `charge` is the only statement in the store that Postgres and SQLite could spell
+        # differently (INSERT ... SELECT ... ON CONFLICT), so this is where it is checked.
+        assert store.verify(raw).ok
+        store.charge(info.prefix)
+        assert store.verify(raw).ok
+        store.charge(info.prefix)
+        assert store.verify(raw).status == 429
         assert store.get_by_prefix(info.prefix).used_today == 2
     finally:
         store.revoke(info.prefix)
@@ -210,7 +220,7 @@ def test_reveal_needs_a_secret_and_does_not_survive_rotation(tmp_path):
 
     rotated = KeyStore(db, secret="a-completely-different-secret")
     assert rotated.reveal("a@b.co", info2.prefix) is None  # unrevealable...
-    assert rotated.verify_and_count(raw2).ok  # ...but still valid for authentication
+    assert rotated.verify(raw2).ok  # ...but still valid for authentication
 
 
 def test_migration_adds_secret_enc_to_an_existing_database(tmp_path):
@@ -256,9 +266,9 @@ def test_create_with_a_lifetime_sets_expires_at(tmp_path):
 def test_expired_key_is_rejected_with_403_and_a_dated_message(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
     raw, info = store.create("a@b.co", lifetime_days=1)
-    assert store.verify_and_count(raw).ok
+    assert store.verify(raw).ok
     _expire(store, info.prefix, "2026-01-02T03:04:05.000000+00:00")
-    v = store.verify_and_count(raw)
+    v = store.verify(raw)
     assert not v.ok and v.status == 403 and v.reason == "expired"
     assert "expired on 2026-01-02" in v.message and "/dashboard" in v.message
     assert store.get_by_prefix(info.prefix).expired
@@ -286,9 +296,9 @@ def test_set_expiry_extends_or_removes(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
     raw, info = store.create("a@b.co", lifetime_days=1)
     _expire(store, info.prefix, "2026-01-01T00:00:00.000000+00:00")
-    assert store.verify_and_count(raw).status == 403
+    assert store.verify(raw).status == 403
     assert store.set_expiry(info.prefix, 90)
-    assert store.verify_and_count(raw).ok and store.get_by_prefix(info.prefix).days_left == 90
+    assert store.verify(raw).ok and store.get_by_prefix(info.prefix).days_left == 90
     assert store.set_expiry(info.prefix, None)
     assert store.get_by_prefix(info.prefix).expires_at is None
     assert not store.set_expiry("lblz_nosuch1", 30)

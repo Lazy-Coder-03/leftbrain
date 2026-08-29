@@ -144,3 +144,59 @@ def test_extract_boundaries():
     assert text("extract", text="pi is 3.14.", what="numbers")["result"]["numbers"] == ["3.14"]
     assert text("extract", text="see www.z.net/q, and https://a.b/c.", what="urls")["result"]["urls"] == ["www.z.net/q", "https://a.b/c"]
     assert text("extract", text="at 10:30 we", what="times")["result"]["times"] == ["10:30"]
+
+
+# --- #65: `count` took a needle it was given and answered a different question ---------
+#
+# "how many r in blueberry" reached the tool as `count(text=..., substring="r")`. `substring`
+# is in the mode's own accepted-parameter list, was supplied, and was dropped without a word
+# — the reply was the dozen summary counts (`words: 1`, `lines: 1`, …), and whichever the
+# model then picked was the wrong answer it reported.
+
+
+@pytest.mark.parametrize("key", ["substring", "needle"])
+@pytest.mark.parametrize(("word", "letter", "expected"), [("blueberry", "r", 2), ("mississippi", "s", 4), ("strawberry", "r", 3)])
+def test_a_needle_alone_counts_that_needle(key, word, letter, expected):
+    r = text("count", text=word, **{key: letter})
+    assert r["ok"] and r["result"]["count"] == expected, r["result"]
+
+
+@pytest.mark.parametrize("key", ["substring", "needle"])
+def test_counting_a_needle_says_which_question_it_answered(key):
+    r = text("count", text="blueberry", **{key: "r"})
+    said = " ".join(r["assumptions"])
+    assert "occurrences" in said and "'r'" in said, r["assumptions"]
+    assert "what=" in said, "the summary counts must still be reachable from the assumption"
+
+
+def test_the_summary_counts_are_unchanged():
+    r = text("count", text="blueberry", what="all")
+    assert r["ok"] and r["result"]["chars"] == 9 and r["result"]["words"] == 1
+
+
+def test_an_explicit_what_still_wins_over_a_needle():
+    """A caller who named `what` gets `what`; the ignored needle is reported, not dropped."""
+    r = text("count", text="blueberry", what="words", substring="r")
+    assert r["ok"] and r["result"] == {"words": 1}
+    assert any("substring" in a or "'r'" in a for a in r["assumptions"]), r["assumptions"]
+
+
+def test_the_what_error_lists_every_value_that_works():
+    """The old message omitted `substring` and `occurrences`' aliases — the working values."""
+    r = text("count", text="abc", what="nonsense")
+    assert not r["ok"]
+    for value in ("substring", "occurrences", "chars", "graphemes"):
+        assert value in r["message"], (value, r["message"])
+
+
+def test_every_value_the_error_names_is_a_value_the_code_branches_on():
+    """Read the accepted set out of the refusal and call every one of them (#65 acceptance 5)."""
+    named = text("count", text="abc", what="nonsense")["message"].split("one of ", 1)[1].split(", ")
+    assert len(named) > 15, named
+    for what in named:
+        assert text("count", text="abc", what=what, substring="a")["ok"], what
+
+
+def test_counting_occurrences_without_a_needle_still_refuses():
+    r = text("count", text="abc", what="occurrences")
+    assert not r["ok"] and r["error"] == "invalid_input"

@@ -184,16 +184,21 @@ def test_a_token_is_accepted_where_a_key_is(tmp_path):
     with TestClient(make_app(tmp_path)) as c:
         r = call(c, "tok-1")
         assert r.status_code == 200
-        assert r.headers["x-ratelimit-remaining-today"] == "999"
+        # a `tools/list` is protocol traffic, not work, and no longer costs a unit (#62)
+        assert r.headers["x-ratelimit-remaining-today"] == "1000"
         assert r.headers["x-ratelimit-limit-day"] == "1000"
 
 
 def test_a_key_and_a_token_share_one_quota(tmp_path):
     _, raw, _ = a_key_and_token(tmp_path, daily_quota=2)
+    work = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "math", "arguments": {"mode": "eval", "expr": "1+1"}}}
     with TestClient(make_app(tmp_path)) as c:
-        assert call(c, "tok-1").headers["x-ratelimit-remaining-today"] == "1"
-        assert call(c, raw).headers["x-ratelimit-remaining-today"] == "0"
-        assert call(c, "tok-1").status_code == 429
+        # the header is the budget as the call arrived, so two calls spend it and the third
+        # is refused - whichever credential made them (#62)
+        assert call(c, "tok-1", work).headers["x-ratelimit-remaining-today"] == "2"
+        assert call(c, raw, work).headers["x-ratelimit-remaining-today"] == "1"
+        assert call(c, "tok-1", work).status_code == 429
 
 
 def test_a_scoped_token_sees_only_its_tools(tmp_path):

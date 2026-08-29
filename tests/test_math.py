@@ -1,3 +1,5 @@
+import pytest
+
 from leftbrain import math_tool
 
 
@@ -129,3 +131,98 @@ def test_round_defers_until_vars_are_substituted():
     assert r["ok"] and r["result"]["value"] == "round(y, 1) + 1"
     # floor and ceil already deferred; pinned so they stay that way
     assert math_tool("eval", expr="floor(a / 2) + ceil(a / 2)", vars={"a": 7})["result"]["exact"] == "7"
+
+
+# --- #66 / #69: parse-time folding erased the trig call before `angle` was applied ------
+#
+# `parse_expr(evaluate=True)` simplifies `sin(pi)` to `0` while parsing, because `pi` is a
+# known constant. Degree conversion and the mandatory-`angle` guard both ran *after* that,
+# inspecting a tree with no `sin` left in it: the conversion found nothing to convert and
+# the guard found no trigonometry to insist on. A plain numeric argument survives parsing,
+# which is why `sin(30)` was right the whole time.
+
+#: (expression, value in degree mode) for the arguments SymPy folds eagerly.
+FOLDED_TRIG = [
+    ("sin(pi)", 0.0548036651488),
+    ("cos(pi)", 0.998497149864),
+    ("sin(pi/2)", 0.0274121335920),
+    ("tan(pi/4)", 0.0137086425344),
+    ("cos(2*pi)", 0.993993116572),
+]
+
+
+@pytest.mark.parametrize(("expr", "expected"), FOLDED_TRIG)
+def test_degrees_are_applied_even_when_the_argument_folds(expr, expected):
+    """`sin(pi)` in degree mode is sin(π°) ≈ 0.0548, not the radian answer 0 (#66)."""
+    r = math_tool("eval", expr=expr, angle="deg")
+    assert r["ok"], r
+    assert float(r["result"]["decimal"]) == pytest.approx(expected, rel=1e-9), r["result"]
+
+
+@pytest.mark.parametrize(("expr", "expected"), FOLDED_TRIG)
+def test_degree_and_radian_modes_disagree_where_they_should(expr, expected):
+    """The regression alarm: if a future eager simplification re-collapses these, they match again."""
+    deg = math_tool("eval", expr=expr, angle="deg")
+    rad = math_tool("eval", expr=expr, angle="rad")
+    assert deg["ok"] and rad["ok"]
+    assert float(deg["result"]["decimal"]) != float(rad["result"]["decimal"]), expr
+
+
+@pytest.mark.parametrize(("expr", "_expected"), FOLDED_TRIG)
+def test_a_folded_trig_call_still_demands_an_angle(expr, _expected):
+    """The mandatory-`angle` refusal was skipped for exactly these inputs (#69)."""
+    r = math_tool("eval", expr=expr)
+    assert not r["ok"] and r["error"] == "ambiguous", r
+    assert r["needs"]["field"] == "angle" and r["needs"]["options"] == ["rad", "deg"]
+
+
+def test_degrees_say_so_when_the_argument_folds():
+    """#66 acceptance 5: `angle` is never applied in silence."""
+    r = math_tool("eval", expr="sin(pi)", angle="deg")
+    assert any("degree" in a for a in r["assumptions"]), r["assumptions"]
+
+
+@pytest.mark.parametrize(("expr", "exact"), [("sin(30)", "1/2"), ("sin(180)", "0"), ("cos(60)", "1/2"), ("tan(45)", "1")])
+def test_a_numeric_argument_in_degrees_is_unchanged(expr, exact):
+    r = math_tool("eval", expr=expr, angle="deg")
+    assert r["ok"] and r["result"]["exact"] == exact, r["result"]
+
+
+@pytest.mark.parametrize(("expr", "exact"), [("sin(pi)", "0"), ("cos(pi)", "-1"), ("sin(pi/2)", "1"), ("tan(pi/4)", "1"), ("cos(2*pi)", "1")])
+def test_radian_mode_is_unchanged(expr, exact):
+    r = math_tool("eval", expr=expr, angle="rad")
+    assert r["ok"] and r["result"]["exact"] == exact, r["result"]
+
+
+def test_inverse_trig_in_degrees_still_returns_degrees():
+    r = math_tool("eval", expr="asin(1)", angle="deg")
+    assert r["ok"] and float(r["result"]["decimal"]) == pytest.approx(90.0), r["result"]
+
+
+def test_expressions_without_trigonometry_never_ask_for_an_angle():
+    assert math_tool("eval", expr="2+2")["ok"]
+    assert math_tool("eval", expr="log(e)")["ok"]
+
+
+def test_the_degree_symbol_still_answers_the_angle_question():
+    """`°` is its own answer; it must not start demanding `angle` too (#69 acceptance 5)."""
+    assert math_tool("eval", expr="sin(180°)")["ok"]
+
+
+# --- #67: convert_form refused `value`, which the tool's signature advertises -----------
+
+
+def test_convert_form_accepts_value_as_well_as_expr():
+    for key in ("expr", "value"):
+        r = math_tool("convert_form", **{key: "0.125"}, form="fraction")
+        assert r["ok"] and r["result"]["fraction"] == "1/8", (key, r)
+
+
+def test_convert_form_refuses_two_different_inputs():
+    r = math_tool("convert_form", expr="0.125", value="0.5", form="fraction")
+    assert not r["ok"] and r["error"] == "invalid_input", r
+
+
+def test_stats_still_reads_value_as_its_own_parameter():
+    r = math_tool("stats", op="zscore", data=[1, 2, 3, 4], value=4)
+    assert r["ok"], r

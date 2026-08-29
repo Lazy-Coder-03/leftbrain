@@ -46,7 +46,9 @@ def test_an_astronomical_factorial_or_exponential_is_refused_too(expr):
 
 @pytest.mark.parametrize("expr", ["2^100", "factorial(100)", "2^10000", "x^y", "sin(pi/4)"])
 def test_expressions_that_fit_are_untouched(expr):
-    assert math_tool("eval", expr=expr)["ok"], expr
+    # `angle` is ignored by everything here without trigonometry in it, and `sin(pi/4)` is
+    # refused without one since #69 - which is this test's subject only by accident.
+    assert math_tool("eval", expr=expr, angle="rad")["ok"], expr
 
 
 def test_the_refusal_is_too_large_and_not_retryable():

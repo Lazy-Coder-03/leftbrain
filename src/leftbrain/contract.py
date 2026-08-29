@@ -57,6 +57,7 @@ __all__ = [
     "Ambiguous",
     "Busy",
     "CODES",
+    "UNBILLED_FAILURES",
     "ResourceExhausted",
     "Timeout",
     "TooLarge",
@@ -66,6 +67,7 @@ __all__ = [
     "fail",
     "check_params",
     "exclusive",
+    "billable",
     "ok",
     "schema_rejection",
     "tool",
@@ -90,6 +92,32 @@ CODES: dict[str, bool] = {
     # `retryable=True` at the raise. A wrong `false` costs one retry; a wrong `true` is a storm.
     "internal": False,
 }
+
+#: Failures that must not spend a unit of the caller's daily quota. The quota sells work
+#: done: a call the server declined never ran, and a call that died of our own bug is not
+#: the caller's to pay for. `timeout` and `resource_exhausted` are deliberately absent -
+#: the deadline or the memory was really spent, whatever came back (#62).
+UNBILLED_FAILURES: frozenset[str] = frozenset({
+    "invalid_input",  # the input was refused; nothing was computed
+    "ambiguous",  # the server declined to guess between two readings
+    "unsupported",  # the mode cannot do this at all
+    "too_large",  # a pre-check refused it before any work started
+    "forbidden",  # outside the key's scope; the tool never ran
+    "busy",  # the server was saturated - its fault, not the caller's
+    "internal",  # an exception nobody anticipated - also not the caller's to pay for
+})
+
+
+def billable(envelope: Any) -> bool:
+    """Whether one tool call's result should spend a unit of the daily quota (#62).
+
+    A non-envelope is billed: something ran and returned, and refusing to charge for
+    anything unrecognised is the wrong way round for a counter that protects the server.
+    """
+    if not isinstance(envelope, dict) or envelope.get("ok") is not False:
+        return True
+    return str(envelope.get("error") or "") not in UNBILLED_FAILURES
+
 
 _OFF = {"", "0", "false", "no", "off"}
 

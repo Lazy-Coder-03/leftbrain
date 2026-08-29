@@ -119,13 +119,13 @@ def test_division_by_zero_is_input_not_complex_infinity():
 
 
 def test_a_trig_pole_is_refused_rather_than_returned_as_nan():
-    r = math_tool("eval", expr="tan(pi/2)")
+    r = math_tool("eval", expr="tan(pi/2)", angle="rad")
     assert r["ok"] is False and r["error"] == "invalid_input"
 
 
 def test_ordinary_trig_and_division_are_unaffected():
     assert math_tool("eval", expr="1/3")["result"]["value"] == "1/3"
-    assert math_tool("eval", expr="tan(pi/4)")["ok"]
+    assert math_tool("eval", expr="tan(pi/4)", angle="rad")["ok"]
 
 
 def test_a_polynomial_with_no_closed_form_gets_numeric_roots():

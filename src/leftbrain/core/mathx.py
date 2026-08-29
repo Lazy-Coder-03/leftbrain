@@ -85,7 +85,7 @@ MODE_PARAMS: dict[str, frozenset[str]] = {
     "ode": frozenset({"equation", "expr", "expression", "func", "ics", "precision"}),
     "matrix": frozenset({"A", "B", "b", "expr", "expression", "n", "op", "precision"}),
     "stats": frozenset({"data", "data2", "expr", "expression", "op", "p", "percentile", "precision", "predict", "value", "weights", "y"}),
-    "convert_form": frozenset({"angle", "expr", "expression", "form", "precision", "significant", "tolerance"}),
+    "convert_form": frozenset({"angle", "expr", "expression", "form", "precision", "significant", "tolerance", "value"}),
     "plot_points": frozenset({"angle", "expr", "expression", "n", "precision", "range", "var"}),
 }
 
@@ -132,6 +132,36 @@ def _nroot(x: Any, n: Any) -> Any:
 
 _TRIG = ("sin", "cos", "tan", "cot", "sec", "csc")
 _INV_TRIG = ("asin", "acos", "atan", "acot", "asec", "acsc")
+
+#: A trig name used as a token, found in the *source* rather than in the parsed tree.
+#: SymPy folds `sin(pi)` to `0` while parsing, so a tree walk cannot see the call at all
+#: (#66, #69); the text still can. The lookarounds keep `sin` out of `asin` and `sinh`.
+_TRIG_TOKEN = re.compile(r"(?<![\w.])(" + "|".join(_TRIG + _INV_TRIG) + r")(?![\w])")
+
+
+def _trig_in_source(s: str) -> bool:
+    return _TRIG_TOKEN.search(s) is not None
+
+
+def _degree_namespace() -> dict[str, Any]:
+    """Trig bound so degrees are applied *as the expression is built*, not after.
+
+    Converting afterwards worked only for arguments that survived parsing: `sin(30)` was
+    right and `sin(pi)` came back as the radian answer, because by then the call had already
+    collapsed to a literal. Wrapping the name means the fold happens on `sin(pi*pi/180)`,
+    which is the honest reading of "sine of pi degrees" - and `sin(30)` still folds to 1/2.
+    """
+    names: dict[str, Any] = {}
+    # `**kw` is not decoration: the unevaluated parse the numeric fallback uses builds every
+    # call with `evaluate=False`, and a wrapper that would not take it turned a working
+    # expression into "could not parse".
+    for n in _TRIG:
+        f = getattr(sp, n)
+        names[n] = lambda a, *, f=f, **kw: f(a * _DEG, **kw)
+    for n in _INV_TRIG:
+        f = getattr(sp, n)
+        names[n] = lambda a, *, f=f, **kw: f(a, **kw) / _DEG
+    return names
 
 _SAFE_NAMES: dict[str, Any] = {
     # constants
@@ -696,11 +726,17 @@ def _parse(
     unknown = sorted({m.group(1) for m in re.finditer(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", s) if m.group(1) not in _SAFE_NAMES and m.group(1) not in (local or {})})
     if unknown:
         raise ToolError(f"unknown function(s): {', '.join(unknown)}")
+    # Read off the source, because the parse is where the evidence is destroyed. The
+    # *decision* is reported after a successful parse, so `sin(` still answers "could not
+    # parse" rather than "specify angle".
+    trig = _trig_in_source(s)
+    explicit_deg = trig and "deg" in s  # `°` became `*deg` in _preprocess
+    degrees = trig and not explicit_deg and angle == "deg"
     try:
         expr = parse_expr(
             s,
             local_dict=dict(local or {}),
-            global_dict={**_SAFE_NAMES, **(_UNEVALUATED_NAMES if numeric else {})},
+            global_dict={**_SAFE_NAMES, **(_degree_namespace() if degrees else {}), **(_UNEVALUATED_NAMES if numeric else {})},
             transformations=_TRANSFORMS,
             evaluate=not numeric,
         )
@@ -724,44 +760,31 @@ def _parse(
         if undef and not (local and any(str(f.func) in local for f in undef)):
             names = sorted({str(f.func) for f in undef})
             raise ToolError(f"unknown function(s): {', '.join(names)}")
-        expr, a2 = _apply_angle(expr, angle, s)
-        assumptions += a2
+        assumptions += _angle_notes(trig, explicit_deg=explicit_deg, degrees=degrees, angle=angle)
     return expr, assumptions
 
 
-def _uses_trig(expr: Any) -> bool:
-    if not isinstance(expr, sp.Basic):
-        return False
-    funcs = {type(f) for f in expr.atoms(sp.Function)}
-    trig = {getattr(sp, n) for n in _TRIG + _INV_TRIG}
-    return bool(funcs & trig)
+def _angle_notes(trig: bool, *, explicit_deg: bool, degrees: bool, angle: str | None) -> list[str]:
+    """Insist on an `angle` where one is needed, and say which way it was read.
 
-
-def _apply_angle(expr: Any, angle: str | None, src: str) -> tuple[Any, list[str]]:
-    """Convert trig arguments/results when the caller works in degrees."""
-    if not _uses_trig(expr):
-        return expr, []
-    if "deg" in src:  # explicit ° already handled
-        if angle == "deg":
-            return expr, ["° present in expression; angle='deg' ignored for those terms"]
-        return expr, []
+    The conversion itself happened at parse time; this is the half that has to be reported.
+    Degrees and radians differ by a factor of 57, so a missing `angle` is refused rather
+    than guessed - and that refusal used to be skipped for exactly the arguments SymPy
+    folds, which are the ones that come back looking exact (#69).
+    """
+    if not trig:
+        return []
+    if explicit_deg:  # ° in the expression is its own answer to the question
+        return ["° present in expression; angle='deg' ignored for those terms"] if angle == "deg" else []
     if angle is None:
         raise Ambiguous(
             "expression uses trigonometry; specify angle='rad' or angle='deg'",
             field="angle",
             options=["rad", "deg"],
         )
-    if angle == "rad":
-        return expr, []
-    if angle != "deg":
+    if angle not in ("rad", "deg"):
         raise ToolError("angle must be 'rad' or 'deg'")
-    for n in _TRIG:
-        f = getattr(sp, n)
-        expr = expr.replace(f, lambda a, f=f: f(a * _DEG))
-    for n in _INV_TRIG:
-        f = getattr(sp, n)
-        expr = expr.replace(f, lambda a, f=f: f(a) / _DEG)
-    return expr, ["trig evaluated in degrees"]
+    return ["trig evaluated in degrees"] if degrees else []
 
 
 # --------------------------------------------------------------------------- #
@@ -1898,6 +1921,18 @@ def _rational_approximation(expr: Any, tolerance: Any) -> tuple[Any, Any] | None
 
 
 def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
+    # This mode re-renders a quantity rather than computing with one, so `value` is the word
+    # a caller reaches for - and the flat tool signature advertises it, because `stats` takes
+    # one. It was refused outright, naming the accepted set but not the substitute (#67).
+    if p.get("value") is not None:
+        if p.get("expr") is not None and str(p["value"]) != str(p["expr"]):
+            raise ToolError(
+                "convert_form takes one input, but 'expr' and 'value' were both given and differ",
+                hint="Drop one; in this mode 'value' is another name for 'expr'.",
+            )
+        p = {**p, "expr": p["value"]}
+    if not p.get("expr"):
+        raise ToolError("mode 'convert_form' needs 'expr' (or 'value', which means the same here)")
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     form = (p.get("form") or "decimal").lower()
     precision = p.get("precision", 15)
@@ -2066,7 +2101,7 @@ def math(mode: str = "eval", **params: Any) -> dict[str, Any]:
     check_params("math", mode, p, MODE_PARAMS, RENAMED_PARAMS)
     if "expression" in p and "expr" not in p:
         p["expr"] = p.pop("expression")
-    needs_expr = mode not in ("solve", "ode", "matrix", "stats")
+    needs_expr = mode not in ("solve", "ode", "matrix", "stats", "convert_form")  # convert_form also takes 'value'; it checks its own
     if needs_expr and not p.get("expr"):
         raise ToolError(f"mode '{mode}' needs 'expr'")
     if "precision" in p:

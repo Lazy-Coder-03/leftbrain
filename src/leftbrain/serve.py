@@ -203,27 +203,43 @@ class AuthMiddleware:
             # to a key row and meter through the same code, so quota, rpm and tool scope are
             # enforced in one place whichever door the caller came through (#34).
             verdict = (
-                self.store.verify_and_count(supplied)
+                self.store.verify(supplied)
                 if supplied.startswith(self.key_prefix)
-                else self.store.verify_oauth_token_and_count(supplied)
+                else self.store.verify_oauth_token(supplied)
             )
             if verdict.ok:
                 scope.setdefault("state", {})["auth"] = {"kind": "key", "key": verdict.key, "remaining": verdict.remaining}
-                extra = {"x-ratelimit-remaining-today": str(verdict.remaining), "x-ratelimit-limit-day": str(verdict.key.daily_quota), "x-ratelimit-limit-minute": str(verdict.key.rpm)}
                 key_scope = verdict.key.scope
                 # The same numbers the headers carry, so `meta.quota` can show them and an
                 # agent can back off before it hits a 429 (#28 SS6).
-                quota_token = observe.current_quota.set({"remaining_today": verdict.remaining, "daily_quota": verdict.key.daily_quota, "rpm": verdict.key.rpm})
+                #
+                # `remaining_today` is what was left when this call was authorised, and the
+                # header and `meta.quota` are deliberately the same number. A streamed
+                # response has already sent its headers by the time the tool runs, so a
+                # post-charge header is not reachable there - and one response quoting two
+                # different figures for the same budget is worse than a snapshot that says
+                # what it is. Billing is still exactly one per tool call (#62); an agent
+                # watching this across calls sees it fall by one each time it did work, and
+                # not at all when the call was refused.
+                quota = {"remaining_today": verdict.remaining, "daily_quota": verdict.key.daily_quota, "rpm": verdict.key.rpm}
+                quota_token = observe.current_quota.set(quota)
                 token = current_scope.set(key_scope)  # what enforce() reads inside every tool
                 # enforce() also counts each call against this key, so the scope editor can
-                # show its owner which tools it has actually reached for (#34)
+                # show its owner which tools it has actually reached for (#34) - and spends
+                # the daily unit, which is a tool call rather than an HTTP request (#62).
                 prefix = verdict.key.prefix
-                recorder = current_tool_recorder.set(lambda tool: self.store.record_tool_call(prefix, tool))
+
+                def record(tool: str, spends: bool, prefix: str = prefix) -> None:
+                    self.store.record_tool_call(prefix, tool)
+                    if spends:
+                        self.store.charge(prefix)
+
+                recorder = current_tool_recorder.set(record)
                 try:
                     if key_scope is not None and scope.get("method") == "POST" and _under(scope.get("path", ""), MCP_PREFIXES):
-                        await self._scoped(scope, receive, send, extra, key_scope)
+                        await self._scoped(scope, receive, send, quota, key_scope)
                     else:
-                        await self._with_headers(scope, receive, send, extra)
+                        await self._with_headers(scope, receive, send, quota)
                 finally:
                     current_tool_recorder.reset(recorder)
                     current_scope.reset(token)
@@ -234,17 +250,25 @@ class AuthMiddleware:
             return
         await self._reject(scope, receive, send, 401, "invalid key", "key not recognised")
 
-    async def _with_headers(self, scope: Any, receive: Any, send: Any, extra: dict[str, str]) -> None:
+    @staticmethod
+    def _quota_headers(quota: dict[str, int]) -> dict[str, str]:
+        return {
+            "x-ratelimit-remaining-today": str(quota["remaining_today"]),
+            "x-ratelimit-limit-day": str(quota["daily_quota"]),
+            "x-ratelimit-limit-minute": str(quota["rpm"]),
+        }
+
+    async def _with_headers(self, scope: Any, receive: Any, send: Any, quota: dict[str, int]) -> None:
         async def send_wrapper(message: Any) -> None:
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
-                headers.extend((k.encode(), v.encode()) for k, v in extra.items())
+                headers.extend((k.encode(), v.encode()) for k, v in self._quota_headers(quota).items())
                 message = {**message, "headers": headers}
             await send(message)
 
         await self.app(scope, receive, send_wrapper)
 
-    async def _scoped(self, scope: Any, receive: Any, send: Any, extra: dict[str, str], key_scope: Scope) -> None:
+    async def _scoped(self, scope: Any, receive: Any, send: Any, quota: dict[str, int], key_scope: Scope) -> None:
         """A scoped key's MCP POST: read the body once, and if it is ``tools/list`` trim the reply to the key's tools.
 
         The body is replayed to the app unchanged either way; only a ``tools/list`` reply is
@@ -268,7 +292,7 @@ class AuthMiddleware:
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 
         if not _is_tools_list(bytes(body)):
-            await self._with_headers(scope, replay, send, extra)
+            await self._with_headers(scope, replay, send, quota)
             return
 
         start: Any = None
@@ -289,7 +313,7 @@ class AuthMiddleware:
                 return
             await send(message)
 
-        await self._with_headers(scope, replay, buffered, extra)
+        await self._with_headers(scope, replay, buffered, quota)
 
     def _challenge(self) -> str:
         """RFC 9728: point the client at the document that names our authorization server.
