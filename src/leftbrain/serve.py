@@ -180,6 +180,11 @@ class AuthMiddleware:
         #: set only when this server is an OAuth authorization server, so a 401 can point
         #: at the discovery document and tell an agent what to do next (#34)
         self.base_url = base_url
+        # resolved once here rather than imported at module level, which is how the rest of
+        # this file keeps `keys` (and its optional drivers) off the import path
+        from .keys import KEY_PREFIX
+
+        self.key_prefix = KEY_PREFIX
 
     async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
         if scope["type"] != "http" or not _protected(scope.get("path", "")):
@@ -194,7 +199,14 @@ class AuthMiddleware:
             await self.app(scope, receive, send)
             return
         if self.store is not None:
-            verdict = self.store.verify_and_count(supplied)
+            # A credential that is not a leftbrain key is an OAuth access token. Both resolve
+            # to a key row and meter through the same code, so quota, rpm and tool scope are
+            # enforced in one place whichever door the caller came through (#34).
+            verdict = (
+                self.store.verify_and_count(supplied)
+                if supplied.startswith(self.key_prefix)
+                else self.store.verify_oauth_token_and_count(supplied)
+            )
             if verdict.ok:
                 scope.setdefault("state", {})["auth"] = {"kind": "key", "key": verdict.key, "remaining": verdict.remaining}
                 extra = {"x-ratelimit-remaining-today": str(verdict.remaining), "x-ratelimit-limit-day": str(verdict.key.daily_quota), "x-ratelimit-limit-minute": str(verdict.key.rpm)}

@@ -2,11 +2,16 @@
 
 from starlette.testclient import TestClient
 
+from leftbrain.keys import KeyStore
+from leftbrain.oauth.store import OAuthStore
+from leftbrain.scopes import parse_scope
 from leftbrain.serve import build_app
 from leftbrain.web.config import WebConfig
 
 BASE = "https://leftbrain.test"
 SECRET = "test-secret-0123456789"
+MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
+LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
 
 
 def make_app(tmp_path, **over):
@@ -112,9 +117,90 @@ def test_oauth_is_absent_without_a_base_url(tmp_path):
         assert "how_to_authorize" not in r.json()
 
 
-def test_the_existing_key_path_is_untouched(tmp_path):
-    from leftbrain.keys import KeyStore
+def a_key_and_token(tmp_path, token="tok-1", **create):
+    keys = KeyStore(str(tmp_path / "k.sqlite3"), secret=SECRET)
+    raw, info = keys.create("a@b.co", **create)
+    row = keys.db.one("SELECT key_hash FROM keys WHERE prefix=?", (info.prefix,))
+    OAuthStore(keys).save_token(token, kind="access", client_id="c1",
+                                key_hash=row["key_hash"], scopes=["mcp"], resource=None, ttl=3600)
+    return keys, raw, info
 
+
+def call(client, credential, body=None):
+    return client.post("/mcp", headers={**MCP_HEADERS, "Authorization": f"Bearer {credential}"},
+                       json=body or LIST)
+
+
+def tool_names(response):
+    """The tool names in a `tools/list` reply, in either wire form.
+
+    Substring matching on the body does not work: `math`'s own description mentions
+    `convert_form`, so "convert" is present even when the tool is not.
+    """
+    import json
+
+    chunks = [line[5:].strip() for line in response.text.splitlines() if line.startswith("data:")]
+    for chunk in chunks or [response.text]:
+        try:
+            result = (json.loads(chunk).get("result") or {}).get("tools")
+        except ValueError:
+            continue
+        if isinstance(result, list):
+            return [t.get("name") for t in result]
+    return []
+
+
+def test_a_token_is_accepted_where_a_key_is(tmp_path):
+    a_key_and_token(tmp_path, daily_quota=1000)
+    with TestClient(make_app(tmp_path)) as c:
+        r = call(c, "tok-1")
+        assert r.status_code == 200
+        assert r.headers["x-ratelimit-remaining-today"] == "999"
+        assert r.headers["x-ratelimit-limit-day"] == "1000"
+
+
+def test_a_key_and_a_token_share_one_quota(tmp_path):
+    _, raw, _ = a_key_and_token(tmp_path, daily_quota=2)
+    with TestClient(make_app(tmp_path)) as c:
+        assert call(c, "tok-1").headers["x-ratelimit-remaining-today"] == "1"
+        assert call(c, raw).headers["x-ratelimit-remaining-today"] == "0"
+        assert call(c, "tok-1").status_code == 429
+
+
+def test_a_scoped_token_sees_only_its_tools(tmp_path):
+    a_key_and_token(tmp_path, scope=parse_scope(["math"]))
+    with TestClient(make_app(tmp_path)) as c:
+        assert tool_names(call(c, "tok-1")) == ["math"]
+
+
+def test_a_scoped_token_is_refused_outside_its_scope_by_contract(tmp_path):
+    """Not a transport error: the caller gets the same `forbidden` envelope a key gets."""
+    a_key_and_token(tmp_path, scope=parse_scope(["math"]))
+    with TestClient(make_app(tmp_path)) as c:
+        r = call(c, "tok-1", {
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "convert", "arguments": {"mode": "units", "value": 1, "from_unit": "m", "to_unit": "cm"}},
+        })
+        assert r.status_code == 200
+        assert "forbidden" in r.text
+
+
+def test_an_unknown_token_is_still_401(tmp_path):
+    a_key_and_token(tmp_path)
+    with TestClient(make_app(tmp_path)) as c:
+        assert call(c, "nope").status_code == 401
+        assert call(c, "").status_code == 401
+
+
+def test_a_token_reaches_keys_me_as_its_key(tmp_path):
+    _, _, info = a_key_and_token(tmp_path)
+    with TestClient(make_app(tmp_path)) as c:
+        r = c.get("/keys/me", headers={"Authorization": "Bearer tok-1"})
+        assert r.status_code == 200
+        assert r.json()["result"]["prefix"] == info.prefix
+
+
+def test_the_existing_key_path_is_untouched(tmp_path):
     raw, _ = KeyStore(str(tmp_path / "k.sqlite3"), secret=SECRET).create("a@b.co")
     with TestClient(make_app(tmp_path)) as c:
         r = c.post("/mcp", headers={
