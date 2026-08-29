@@ -110,11 +110,20 @@ would raise this work from convenience to the sole remedy. It is one command to 
 and the result is recorded here before the build starts, because it changes what the docs should
 tell a Claude Code user to do.
 
-**Device flow is forward-looking, and the spec says so plainly.** No major MCP client implements
-RFC 8628 for MCP today; Claude Code's request for it was closed as a duplicate. The device grant
-here serves an agent driving HTTP directly from the documentation — which is the stated goal —
-and future clients when they add it. **It will not make Claude Code connect today.** Nothing in
-the docs or the release notes may imply otherwise.
+**Why the device grant is in, and what it is not.** No shipping MCP client drives RFC 8628 for
+MCP today — Claude Code's request for it was closed as a duplicate — so **it will not make Claude
+Code connect**, and neither the docs nor the release notes may imply otherwise.
+
+It earns its place on a different argument. Without it, the only route for an agent on a headless
+box is a person creating a key on the dashboard and pasting `lblz_…` into the agent — which puts
+a live credential into the conversation, the terminal scrollback, and whatever logs sit behind
+the model. The device grant moves nothing secret across that boundary: a six-character code,
+useless on its own, expiring in ten minutes, granting nothing until a signed-in human approves it
+in a browser. This is the same flow `gh auth login`, `docker login`, `aws sso login` and `az
+login` use, and it *strengthens* the "a person must be present" property rather than weakening
+it — the person is still required, they simply need not be at the same machine.
+
+The forward-looking part is a bonus, not the case for building it.
 
 ## Security: why the consent screen shapes the design
 
@@ -240,6 +249,18 @@ hidden or special-cased: **Show** reveals the raw `lblz_…` for its owner exact
 hand-made key (the `secret_enc` column is written by `create`, so this needs no new code), usage
 counts, the scope editor, expiry and revoke all behave identically, and it occupies one of the
 owner's slots. Revoking it cuts the connector off on its next call.
+
+**Narrowing it afterwards is the point, not an afterthought.** The consent screen ticks every
+tool by default, because a person connecting an assistant does not yet know which tools it will
+reach for and an empty grid produces a connector that silently fails. The answer to that is the
+existing **Edit scope** control on the key's dashboard row: `set_scope` writes the new scope and
+the server is stateless, so **the next call is already narrower** — no reconnecting, no second
+consent, and the connector observes only that the tools it should not have are gone from
+`tools/list`. The documentation must actively recommend this rather than leaving it to be
+discovered; a scope editor nobody finds is the same as no scope editor. Widening later is
+equally possible and equally the owner's business: it is their key, on their dashboard, behind
+their session and CSRF token. What a client may never do is widen its own grant, and it cannot —
+scope lives on the key, and the key is only editable by the person who owns it.
 
 It is named the way WhatsApp names a linked device — **what the app is, and where it runs**:
 
@@ -371,6 +392,18 @@ Every page that explains connecting now shows **both** ways, neither buried unde
 That second paragraph must say the key is created and visible, not just "you're connected".
 A credential appearing on someone's dashboard that they did not knowingly create is a surprise;
 saying so up front turns it into a feature.
+
+Every place that describes connecting then carries the **tighten it afterwards** advice, in the
+imperative rather than as a capability note:
+
+> **Then narrow it.** Connect first with everything allowed, use it for a day, and look at what
+> it actually called. Then open the key on your dashboard, choose **Edit scope**, and untick the
+> rest. It applies to the connector's very next call — nothing to reconnect and nothing to
+> re-approve.
+
+Told in that order — connect, observe, narrow — because it is advice someone will follow. "Pick
+your tools now" at consent time asks a question the person cannot yet answer, so they tick
+everything and never revisit it, which is how a broad grant becomes permanent.
 
 Covered in `README.md`, `web/docs/quickstart.md` and `web/docs/clients.md`. `clients.md` gains a
 **Connect ChatGPT** section replacing the header-injecting-proxy workaround shipped in #49, a
