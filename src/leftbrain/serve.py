@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import hmac
 import json
+import logging
 import os
 import time
 from collections.abc import AsyncIterator
@@ -33,6 +34,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any
 
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -41,8 +43,10 @@ from starlette.routing import Mount, Route
 from . import __version__, observe
 from .scopes import Scope, allowed_tools, current_scope, current_tool_recorder
 
+log = logging.getLogger("leftbrain")
+
 MCP_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp")
-PROTECTED_PREFIXES = (*MCP_PREFIXES, "/keys/me")
+PROTECTED_PREFIXES = (*MCP_PREFIXES, "/keys/me", "/feedback")
 
 
 def _under(path: str, prefixes: tuple[str, ...]) -> bool:
@@ -496,6 +500,37 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
         info = store.get_by_prefix(key[:PREFIX_LEN])
         return JSONResponse({"ok": True, "key": key, "prefix": key[:PREFIX_LEN], "daily_quota": info.daily_quota if info else None, "rpm": info.rpm if info else None, "usage": "Authorization: Bearer <key> on /mcp and /external/mcp", "note": "store this key now" + ("" if store.can_reveal else "; it cannot be shown again")}, status_code=201)
 
+    async def feedback(request: Request) -> JSONResponse:
+        """File a report against the repository, for a caller who cannot see it (#53)."""
+        from .feedback import MAX_PER_KEY, compose, feedback_config, submit
+
+        fb = feedback_config()
+        if not fb.enabled:
+            return JSONResponse({"ok": False, "error": "unsupported", "message": "feedback is not configured on this server"}, status_code=404)
+        auth = request.scope.get("state", {}).get("auth") or {}
+        key = auth.get("key")
+        try:
+            body = await request.json()
+        except Exception:
+            body = dict(await request.form())
+        prefix = getattr(key, "prefix", None)
+        if prefix and store is not None:
+            # A lifetime cap rather than a daily one: feedback is rare and spam is cheap.
+            if store.tool_counts(prefix).get("__feedback__", 0) >= MAX_PER_KEY:
+                return JSONResponse({"ok": False, "error": "rejected", "message": f"this key has filed {MAX_PER_KEY} reports, which is the limit"}, status_code=429)
+        try:
+            report = compose(body, f"key {prefix}" if prefix else "a static-key caller")
+        except ValueError as e:
+            return JSONResponse({"ok": False, "error": "invalid_input", "message": str(e)}, status_code=400)
+        try:
+            created = await run_in_threadpool(submit, report, fb, __version__)
+        except Exception:
+            log.exception("filing feedback failed")
+            return JSONResponse({"ok": False, "error": "internal", "message": "the report could not be filed; nothing was lost on your side", "retryable": True}, status_code=502)
+        if prefix and store is not None:
+            store.record_tool_call(prefix, "__feedback__")
+        return JSONResponse({"ok": True, "result": {**created, "kind": report.kind}, "message": "thank you - the report is on the tracker"}, status_code=201)
+
     async def me(request: Request) -> JSONResponse:
         auth = request.scope.get("state", {}).get("auth") or {}
         if auth.get("kind") == "key" and auth.get("key"):
@@ -573,7 +608,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     # documents and /register must answer for their own sake (#34)
     oauth_routes = build_oauth_routes(store, cfg)
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), Route("/feedback", feedback, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None)

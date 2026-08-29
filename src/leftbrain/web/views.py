@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from starlette.concurrency import run_in_threadpool
@@ -14,6 +15,8 @@ from ..scopes import CATALOGUE, Scope, narrows, parse_scope
 from . import auth, templates
 from .config import WebConfig
 from .tools_list import TOOLS
+
+log = logging.getLogger("leftbrain")
 
 
 def wants_html(request: Request) -> bool:
@@ -465,7 +468,54 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         store.close_scope_request(record["request_id"])
         return no_store(RedirectResponse("/dashboard", status_code=303))
 
+    async def report_page(request: Request, notice: str = "", filed: int | None = None, status: int = 200) -> Response:
+        """The human door onto `POST /feedback`. Same validation, same redaction, same tracker.
+
+        A separate path because `/feedback` is authenticated with a key and this one with a
+        session cookie; a browser form has no Bearer token to send (#53).
+        """
+        from ..feedback import KINDS, MAX_BODY, MAX_TITLE, feedback_config
+
+        user = auth.current_user(request, cfg)
+        if user is None:
+            return no_store(RedirectResponse("/login?next=/report", status_code=303))
+        if not feedback_config().enabled:
+            notice = notice or "Reporting is not configured on this server."
+        return no_store(render(
+            request, "report.html", status, page="report", user=user,
+            csrf=auth.csrf_token(cfg.secret or "", user), kinds=KINDS,
+            max_title=MAX_TITLE, max_body=MAX_BODY, notice=notice, filed=filed,
+        ))
+
+    async def report_submit(request: Request) -> Response:
+        from .. import __version__
+        from ..feedback import compose, feedback_config, submit
+
+        user = auth.current_user(request, cfg)
+        if user is None:
+            return no_store(RedirectResponse("/login?next=/report", status_code=303))
+        form = await request.form()
+        if not auth.csrf_ok(cfg.secret or "", user, str(form.get("csrf") or "")):
+            return await report_page(request, "That form had expired. Try again.", status=400)
+        fb = feedback_config()
+        if not fb.enabled:
+            return await report_page(request, "Reporting is not configured on this server.", status=404)
+        try:
+            # The reporter is recorded as the account, never the email: the issue is readable
+            # by anyone with access to the repository and the reporter is not one of them.
+            report = compose(dict(form), f"github user {user.login}")
+        except ValueError as e:
+            return await report_page(request, str(e), status=400)
+        try:
+            created = await run_in_threadpool(submit, report, fb, __version__)
+        except Exception:
+            log.exception("filing feedback from the site failed")
+            return await report_page(request, "The tracker could not be reached. Nothing was lost - try again in a minute.", status=502)
+        return await report_page(request, filed=created.get("number"))
+
     return [
+        Route("/report", report_page, methods=["GET"]),
+        Route("/report", report_submit, methods=["POST"]),
         Route("/keys/scope-request/{request_id}", scope_request_page, methods=["GET"]),
         Route("/keys/scope-request/{request_id}", scope_request_decide, methods=["POST"]),
         Route("/login", login),

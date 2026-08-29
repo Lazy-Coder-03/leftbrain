@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Report a problem · leftbrain{% endblock %}
+{% block content %}
+<section class="login">
+  <h2>Report a problem</h2>
+  <p>
+    The tracker is private, so there is nowhere else to put this. Tell us what you called,
+    what came back, and what you expected instead — that is usually enough to reproduce it.
+  </p>
+  {% if notice %}<p class="notice" role="alert">{{ notice }}</p>{% endif %}
+  {% if filed %}
+    <p class="notice">Thank you — filed as issue #{{ filed }}.</p>
+  {% endif %}
+  <form method="post" action="/report">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <label for="kind">What is it</label>
+    <select id="kind" name="kind">
+      {% for k in kinds %}<option value="{{ k }}"{% if k == 'bug' %} selected{% endif %}>{{ k }}</option>{% endfor %}
+    </select>
+    <label for="title">One line</label>
+    <input id="title" name="title" maxlength="{{ max_title }}" required
+           placeholder="sin(pi) with angle=deg returns 0">
+    <label for="body">What happened</label>
+    <textarea id="body" name="body" rows="10" maxlength="{{ max_body }}" required
+              placeholder="I called math.eval with expr='sin(pi)' and angle='deg'. It returned 0. I expected 0.0548."></textarea>
+    <span class="hint">Anything key-shaped is blanked before the issue is filed. Your email is not attached.</span>
+    <button class="btn" type="submit">Send</button>
+  </form>
+</section>
+{% endblock %}
