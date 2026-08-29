@@ -34,8 +34,82 @@ All notable changes to leftbrain are recorded here. The format follows
 - **`/docs/agents/auth`**, an authentication guide written for a model rather than a person, and
   linked from the 401 body and from RFC 9728's `resource_documentation`.
 
+### Added
+
+- **`holidays` mode `categories`**, mirroring `subdivisions`: the category values a country
+  actually accepts. There is no single enum to publish — `optional` is valid for India and
+  rejected outright for the United States — so the legal set has to be asked for per country
+  rather than guessed at. (#75)
+
 ### Fixed
 
+- **Every string argument was uncallable on five parameters, and latent on 27 more.** A
+  parameter annotated `Any` renders as `anyOf: [{}, {"type": "null"}]` — an empty schema with no
+  type in it. An MCP client serialises its arguments against that schema, so with nothing to
+  serialise against it emitted `{"text": abc}` unquoted: the call failed *inside the client*,
+  never reached the server, and none of the contract's machinery applied — no envelope, no
+  `needs`, and a retry produced the same malformed call. It made `encode`'s headline purpose
+  unreachable for any text containing a letter, and digit-only values happening to work is what
+  made it look intermittent. All 32 now carry concrete unions; a test sweeps for the shape so it
+  cannot come back, and another pins that `"0.1"` still arrives as the exact decimal string
+  rather than a float. (#71)
+- **`collections.sort_by` ignored `order` whenever the key was given as `keys`** — which is the
+  only way to sort on more than one field. "The top 3 departments by spend" took the first three
+  rows of a silently *ascending* sort and returned the three lowest, in a well-formed response
+  with nothing to contradict it. Anyone spot-checking with the singular `key` would have
+  concluded `order` was fine. Mixed directions are now expressible too, as `{field, order}` or a
+  `-field` prefix, and an order that cannot be applied is refused rather than dropped. (#84)
+- **`holidays` applied a `categories: ["public"]` filter and never mentioned it.** `check`
+  returned `is_holiday: false` for 2026-10-18 in West Bengal — the middle of Durga Puja — so an
+  agent would tell its user that October 18 is not a holiday there. Omitting `subdiv` already
+  produced an assumption; this was the one narrowing that stayed hidden. The default is now
+  named on every call that used it, and `check` reports a date the dataset knows under another
+  category as a near miss rather than a bare `false`. (#72, and the visible half of #80)
+- **`geo_offline` reported the zone's reference city as `coordinates`**, whatever place was
+  asked about: `tz_for_place("Mumbai")` and `("Chennai")` both returned Kolkata's, 1,650 and
+  1,300 km out. `tz_for_coords` was visibly self-contradictory — those coordinates beside
+  `distance_to_reference_km: 0.5`. The field is now `zone_reference`, a coordinate lookup echoes
+  the point it was asked about, and `nearest_reference` shows which reference actually chose the
+  zone. (#73)
+- **`datetime.convert_tz` reported a wall clock that never existed.** Given a time inside a DST
+  spring-forward gap it warned correctly and named the reading it used — then printed the other
+  one in `source`, with `is_dst: false`. The instant was right throughout; only the
+  machine-readable fields disagreed with the prose beside them, which is the wrong way round.
+  (#85)
+- **`datetime.recurrence` read "every 2nd tuesday" as monthly, silently.** "Every other tuesday"
+  means the same thing to most speakers and produced a fortnightly schedule; `assumptions` was
+  empty either way, so an agent scheduling a fortnightly standup got a monthly meeting series.
+  It is refused now, the way `03/04/2025` already is, offering both readings as rules the tool
+  accepts. (#81)
+- **`datetime.free_slots` refused `days: "mon-fri"`** — the natural way to write a working week,
+  and the case the feature exists for, with no format documented to guess from. Ranges, comma
+  and space lists, and `weekdays`/`weekends` groups are accepted now. (#82)
+- **`numbers.allocate` spent 8 KB of context on a 7-way split**, emitting ~1,100 digits of
+  `142.857142…` per share while `truncated` reported false, because nothing had been cut. The
+  exact value is `1000/7`. 9,516 bytes down to 1,151. (#74)
+- **A defaulted `mode` was invisible, and its refusal spoke in the wrong vocabulary.** A call
+  naming no mode gets the schema's default; `meta.mode` was absent, and a `validate` call the
+  caller believed said `mode: "email"` was told it needed `rules`, which belongs to `assert`.
+  The mode that ran is now always reported, and a refusal about that mode's own parameters says
+  it was defaulted — but only such refusals, since a `forbidden` never ran the mode at all.
+  (#79)
+- **`holidays.locale` never localised anything.** It is the *date*-parsing locale, which is why
+  `hi` was refused and a country code demanded. It is `date_locale` now; `locale` still works
+  and says what it actually does. (#76)
+- **An alias could resolve to a different country in silence.** `region: "BAH"` returns
+  Bahrain — the upstream package's own abbreviation, not the IOC's, which gives BAH to the
+  Bahamas — and the response echoed `region: "BH"`, which reads as normalisation rather than as
+  a different country. Every alias now says what it resolved to, the two known collisions name
+  the other reading and the code that reaches it, and `countries` returns 250 named entries
+  instead of ~500 undifferentiated strings mixing three code systems. (#83)
+- **`collections` called the same thing by different names in different modes** — records were
+  `items` or `data`, the grouping key `key` or `by` — so learning one mode did not transfer to
+  the next, and `group_by` cost three round-trips to get right. Both names are accepted wherever
+  records are taken. (#78)
+- **A zone listing an unexpected country said nothing about why.** `Asia/Tokyo` includes
+  Australia, which is correct and upstream — Eyre Bird Observatory keeps UTC+9 — but the comment
+  explaining it was being overwritten with an empty string, so correct data read as a bad
+  reverse lookup. (#77)
 - **A throttled key answered `500`, not `429`.** Both rate-limit paths passed the key record into
   `Verdict`'s `message` field positionally, and it is not serialisable — so every caller who hit
   their rate limit or exhausted their daily quota got a server error with no `Retry-After` and no
