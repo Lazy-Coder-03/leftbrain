@@ -32,7 +32,18 @@ from sympy.parsing.sympy_parser import (
     standard_transformations,
 )
 
-from ..contract import Ambiguous, Timeout, TooLarge, ToolError, Unsupported, check_params, ok, tool
+from ..contract import (
+    Ambiguous,
+    Timeout,
+    TooLarge,
+    ToolError,
+    Unsupported,
+    check_params,
+    ok,
+    tool,
+    whole,
+)
+from .numbers import parse_number
 
 MODES = (
     "eval",
@@ -802,8 +813,8 @@ def _describe(expr: Any, precision: int = 15) -> dict[str, Any]:
         return out
 
     if isinstance(expr, sp.Basic):
-        if expr.is_Relational or isinstance(expr, sp.logic.boolalg.Boolean):
-            out["type"] = "relation"
+        if isinstance(expr, (sp.core.relational.Relational, sp.logic.boolalg.BooleanFunction, sp.logic.boolalg.BooleanAtom)):
+            out["type"] = "relation"  # a Symbol subclasses Boolean, so `isinstance(..., Boolean)` caught `y`
             return out
         free = expr.free_symbols
         if free:
@@ -811,7 +822,7 @@ def _describe(expr: Any, precision: int = 15) -> dict[str, Any]:
             out["free_symbols"] = sorted(str(s) for s in free)
             return out
         if expr.is_number:
-            exact = sp.nsimplify(expr) if expr.is_Float else expr
+            exact = _exact_form(expr) if expr.is_Float else expr
             out["exact"] = sp.sstr(exact)
             try:
                 dec = sp.N(expr, precision)
@@ -841,6 +852,21 @@ def _describe(expr: Any, precision: int = 15) -> dict[str, Any]:
             return out
     out["type"] = type(expr).__name__
     return out
+
+
+def _exact_form(value: Any) -> Any:
+    """The exact form of a Float, without losing it: `nsimplify` hands back 0 for 1e-400."""
+    guess = sp.nsimplify(value)
+    try:
+        if abs(sp.N(guess, 20) - sp.N(value, 20)) <= abs(sp.N(value, 20)) * sp.Float("1e-15"):
+            return guess
+    except (TypeError, ValueError):
+        return guess
+    return sp.nsimplify(value, rational=True)
+
+
+def _undefined(value: Any) -> bool:
+    return isinstance(value, sp.Basic) and bool(value.has(sp.zoo, sp.nan, sp.oo, -sp.oo))
 
 
 def _symbol(name: str | None, expr: Any, field: str = "var") -> sp.Symbol:
@@ -1241,12 +1267,49 @@ def _numeric_roots(eqs: list[Any], syms: list[Any], precision: int, domain: str 
 def _mode_diff(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     var = _symbol(p.get("var"), expr)
-    order = int(p.get("order", 1))
+    order = whole(p.get("order", 1), "order", lo=0, hi=100)
     res = sp.diff(expr, var, order)
     d = _describe(sp.simplify(res), p.get("precision", 15))
     if p.get("at") is not None:
-        d["at"] = _describe(res.subs(var, _num(p["at"])), p.get("precision", 15))
+        at = _num(p["at"])
+        value = sp.simplify(res.subs(var, at))
+        if _undefined(value) or value.is_number is False:
+            try:
+                left, right = (sp.limit(res, var, at, side) for side in ("-", "+"))
+            except Exception:
+                left = right = None
+            raise Unsupported(
+                f"{p['expr']} is not differentiable at {var} = {sp.sstr(at)}"
+                + (f": the slope approaches {sp.sstr(left)} from the left and {sp.sstr(right)} from the right" if left is not None and left != right else ""),
+                details={"at": sp.sstr(at), "left": sp.sstr(left) if left is not None else None, "right": sp.sstr(right) if right is not None else None},
+                hint="Ask for the derivative without 'at', or take one-sided limits with mode='limit'.",
+            )
+        d["at"] = _describe(value, p.get("precision", 15))
     return ok(d, assumptions=assumptions, steps=[f"d^{order}/d{var}^{order} of {sp.sstr(expr)}"])
+
+
+#: How far a closed form may differ from the numeric value before the numeric one is used.
+_INTEGRAL_TOLERANCE = sp.Float("1e-8")
+
+
+def _quadrature(expr: Any, var: Any, a: Any, b: Any, precision: int) -> Any:
+    """The definite integral by numeric quadrature, or None when that fails too."""
+    try:
+        value = sp.Integral(expr, (var, a, b)).evalf(min(precision, 25))
+        if isinstance(value, sp.Basic) and not value.free_symbols and not _undefined(value):
+            return value
+    except Exception:
+        pass
+    try:
+        # SymPy's own evalf trips over a step function; mpmath integrates it happily
+        import mpmath
+
+        v = mpmath.quad(sp.lambdify(var, expr, "mpmath"), [float(a), float(b)])
+        if mpmath.isfinite(v) and not mpmath.im(v):
+            return sp.Float(str(mpmath.re(v)), 20)
+    except Exception:
+        pass
+    return None
 
 
 def _mode_integrate(p: dict[str, Any]) -> dict[str, Any]:
@@ -1259,19 +1322,86 @@ def _mode_integrate(p: dict[str, Any]) -> dict[str, Any]:
         raise ToolError("definite integral needs both 'lower' and 'upper'")
     if lo is None:
         res = sp.integrate(expr, var)
-        if isinstance(res, sp.Integral) or res.has(sp.Integral):
+        unevaluated = isinstance(res, sp.Integral) or res.has(sp.Integral)
+        if unevaluated:
             warnings.append("no closed form found; returned unevaluated integral")
         d = _describe(res, precision)
         d["value"] = d["value"] + " + C"
         d["latex"] = d.get("latex", "") + " + C"
+        if not unevaluated:
+            # differentiating the answer is the whole check: SymPy 1.14 returns atan(x)/5
+            # for 1/(x^10+1), whose derivative is not the integrand
+            try:
+                d["verified"] = sp.simplify(sp.diff(res, var) - expr) == 0
+            except Exception:
+                d["verified"] = None
+            if d["verified"] is False:
+                warnings.append("differentiating this answer does not give the integrand back: SymPy's closed form is wrong here")
         return ok(d, assumptions=assumptions, warnings=warnings)
     a, b = _num(lo), _num(hi)
-    res = sp.integrate(expr, (var, a, b))
+    try:
+        res = sp.integrate(expr, (var, a, b))
+    except Exception:
+        res = sp.Integral(expr, (var, a, b))  # a step function trips evalf inside integrate
+    numeric = _quadrature(expr, var, a, b, precision)
     if isinstance(res, sp.Integral) or res.has(sp.Integral):
-        warnings.append("no closed form; value below is numeric")
-        res = sp.Integral(expr, (var, a, b)).evalf(precision)
+        if numeric is None:
+            raise Unsupported(
+                f"∫ {p['expr']} d{var} from {sp.sstr(a)} to {sp.sstr(b)} has no closed form and did not converge numerically",
+                details={"expr": p["expr"], "lower": sp.sstr(a), "upper": sp.sstr(b)},
+                hint="Narrow the range, or check the integrand is defined across it.",
+            )
+        warnings.append("no closed form; the value below is numeric")
+        res = numeric
+    elif _undefined(res) or (numeric is None and _has_pole(expr, var, a, b)):
+        raise Unsupported(
+            f"∫ {p['expr']} d{var} from {sp.sstr(a)} to {sp.sstr(b)} diverges: the integrand has a "
+            f"non-integrable singularity inside the range",
+            details={"expr": p["expr"], "lower": sp.sstr(a), "upper": sp.sstr(b)},
+            hint="Split the range at the singularity, or take a principal value yourself.",
+        )
+    elif numeric is not None:
+        # SymPy 1.14 answers 0 for 1/(x^8+1) over [0, 1] and pi/20 for 1/(x^10+1). A closed
+        # form that disagrees with quadrature is not the answer, whichever way round it is.
+        try:
+            closed = sp.N(res, min(precision, 25))
+            if abs(closed - numeric) > _INTEGRAL_TOLERANCE * max(sp.Float(1), abs(numeric)):
+                warnings.append(
+                    f"the closed form SymPy returned ({sp.sstr(res)}) disagrees with a numeric cross-check; "
+                    f"the numeric value is reported instead"
+                )
+                res = numeric
+        except (TypeError, ValueError):
+            pass
+    if isinstance(res, sp.Basic) and res.is_number and res.is_real is False and _is_real_on(expr, var, a, b) is False:
+        warnings.append(f"{p['expr']} is not real across the whole range, so the value below is complex")
     d = _describe(res, precision)
     return ok(d, assumptions=assumptions, warnings=warnings, steps=[f"∫_{a}^{b} {sp.sstr(expr)} d{var}"])
+
+
+def _has_pole(expr: Any, var: Any, a: Any, b: Any) -> bool:
+    """Whether the integrand blows up strictly inside the range."""
+    try:
+        bad = sp.solveset(sp.denom(sp.together(expr)), var, sp.Interval(min(a, b), max(a, b), True, True))
+    except Exception:
+        return False
+    return isinstance(bad, sp.FiniteSet) and len(bad) > 0
+
+
+def _is_real_on(expr: Any, var: Any, a: Any, b: Any) -> bool | None:
+    """Whether the integrand is real at a few points across the range; None when unclear."""
+    try:
+        lo, hi = float(a), float(b)
+    except (TypeError, ValueError):
+        return None
+    for k in range(1, 8):
+        x = lo + (hi - lo) * k / 8
+        try:
+            if sp.N(expr.subs(var, sp.Float(x)), 10).is_real is False:
+                return False
+        except Exception:
+            return None
+    return True
 
 
 def _mode_limit(p: dict[str, Any]) -> dict[str, Any]:
@@ -1294,6 +1424,22 @@ def _mode_limit(p: dict[str, Any]) -> dict[str, Any]:
                 warnings=["two-sided limit does not exist"],
             )
         raise
+    if isinstance(res, sp.AccumBounds):
+        # sin(1/x) at 0 oscillates; SymPy says so with bounds rather than by raising
+        return ok(
+            {"exists": False, "oscillates_between": [_describe(res.min), _describe(res.max)]},
+            assumptions=assumptions,
+            warnings=[f"the limit does not exist: {p['expr']} oscillates between {sp.sstr(res.min)} and {sp.sstr(res.max)} as {var} approaches {sp.sstr(point)}"],
+        )
+    if dir_ == "+-" and _undefined(res):
+        # SymPy 1.14 answers `zoo` for 1/x at 0 rather than raising, so the two-sided
+        # branch below never fired and `exists: true` sat beside a NaN
+        left, right = sp.limit(expr, var, point, "-"), sp.limit(expr, var, point, "+")
+        return ok(
+            {"exists": False, "left": _describe(left), "right": _describe(right)},
+            assumptions=assumptions,
+            warnings=["two-sided limit does not exist"],
+        )
     d = _describe(res, p.get("precision", 15))
     d["exists"] = True
     return ok(d, assumptions=assumptions)
@@ -1304,7 +1450,14 @@ def _mode_series(p: dict[str, Any]) -> dict[str, Any]:
     var = _symbol(p.get("var"), expr)
     at = _num(p.get("at", 0))
     order = _bounded(p.get("order", 6), "order", MAX_SERIES_ORDER, "terms")
-    s = sp.series(expr, var, at, order)
+    try:
+        s = sp.series(expr, var, at, order)
+    except sp.PoleError:
+        raise Unsupported(
+            f"{p['expr']} has a pole at {var} = {sp.sstr(at)}, so it has no Taylor series there",
+            details={"expr": p["expr"], "at": sp.sstr(at)},
+            hint="Expand about a point where the function is analytic.",
+        ) from None
     d = _describe(s, p.get("precision", 15))
     d["polynomial"] = sp.sstr(s.removeO())
     d["polynomial_latex"] = sp.latex(s.removeO())
@@ -1369,15 +1522,33 @@ def _matrix(rows: Any, name: str) -> sp.Matrix:
     if rows is None:
         raise ToolError(f"matrix '{name}' is required")
     if isinstance(rows, str):
+        try:
+            literal = ast.literal_eval(rows.strip())  # "[[1,2],[3,4]]" is a matrix, not a tuple
+        except (ValueError, SyntaxError, MemoryError, RecursionError):
+            literal = None
+        if isinstance(literal, list):
+            return _matrix(literal, name)
         e, _ = _parse(rows)
         if not isinstance(e, sp.MatrixBase):
-            raise ToolError(f"'{name}' did not parse as a matrix")
+            raise ToolError(f"'{name}' did not parse as a matrix", hint="Pass a nested list, e.g. [[1, 2], [3, 4]], or Matrix([[1, 2], [3, 4]]).")
         return sp.Matrix(e)
     if not isinstance(rows, list) or not rows:
         raise ToolError(f"'{name}' must be a non-empty nested list")
     if not isinstance(rows[0], list):
         rows = [rows]  # a vector
+    width = len(rows[0])
+    for i, r in enumerate(rows, 1):
+        if not isinstance(r, list):
+            raise ToolError(f"'{name}' row {i} is not a list")
+        if len(r) != width:
+            raise ToolError(f"'{name}' row {i} has {len(r)} entr{'y' if len(r) == 1 else 'ies'} but row 1 has {width}")
     return sp.Matrix([[_num(v) for v in r] for r in rows])
+
+
+def _square(A: sp.Matrix, op: str) -> sp.Matrix:
+    if not A.is_square:
+        raise ToolError(f"'{op}' needs a square matrix; this one is {A.shape[0]}×{A.shape[1]}")
+    return A
 
 
 def _mode_matrix(p: dict[str, Any]) -> dict[str, Any]:
@@ -1385,11 +1556,10 @@ def _mode_matrix(p: dict[str, Any]) -> dict[str, Any]:
     precision = p.get("precision", 15)
     A = _matrix(p.get("A") if p.get("A") is not None else p.get("expr"), "A")
     if op == "det":
-        if not A.is_square:
-            raise ToolError("determinant needs a square matrix")
-        return ok(_describe(A.det(), precision))
+        return ok(_describe(_square(A, "det").det(), precision))
     if op == "inv":
-        if not A.is_square or A.det() == 0:
+        _square(A, "inv")
+        if A.det() == 0:
             raise ToolError("matrix is singular; no inverse")
         return ok(_describe(A.inv(), precision))
     if op in ("transpose", "T"):
@@ -1397,7 +1567,7 @@ def _mode_matrix(p: dict[str, Any]) -> dict[str, Any]:
     if op == "rank":
         return ok({"value": A.rank(), "type": "number"})
     if op == "trace":
-        return ok(_describe(A.trace(), precision))
+        return ok(_describe(_square(A, "trace").trace(), precision))
     if op == "rref":
         R, pivots = A.rref()
         d = _describe(R, precision)
@@ -1406,6 +1576,7 @@ def _mode_matrix(p: dict[str, Any]) -> dict[str, Any]:
     if op == "nullspace":
         return ok(_describe([v for v in A.nullspace()], precision))
     if op == "eig":
+        _square(A, "eig")
         vals = A.eigenvals()
         vecs = A.eigenvects()
         return ok(
@@ -1425,14 +1596,29 @@ def _mode_matrix(p: dict[str, Any]) -> dict[str, Any]:
         )
     if op == "solve":
         b = _matrix(p.get("b"), "b")
-        if b.shape[0] != A.shape[0]:
+        if b.shape[0] != A.shape[0] and b.shape[1] == A.shape[0]:
             b = b.T
+        if b.shape[0] != A.shape[0]:
+            raise ToolError(
+                f"'b' has {max(b.shape)} entries but A has {A.shape[0]} rows; every equation needs one right-hand side",
+                details={"A_shape": list(A.shape), "b_shape": list(b.shape)},
+            )
         try:
             x = A.LUsolve(b) if A.is_square else A.solve_least_squares(b)
         except Exception:
             sol = sp.linsolve((A, b))
-            return ok(_describe(sol, precision), warnings=["system is singular; general solution returned"])
-        return ok(_describe(x, precision))
+            if sol is sp.EmptySet or (hasattr(sol, "__len__") and len(sol) == 0):
+                # no assignment satisfies every equation; "general solution" said the opposite
+                return ok(
+                    {"solutions": [], "count": 0, "consistent": False},
+                    warnings=["the equations are inconsistent: no assignment of the unknowns satisfies all of them"],
+                )
+            d = _describe(sol, precision)
+            d["consistent"] = True
+            return ok(d, warnings=["the system is under-determined; the general solution is returned"])
+        d = _describe(x, precision)
+        d["consistent"] = True
+        return ok(d)
     if op in ("mul", "add", "sub"):
         B = _matrix(p.get("B"), "B")
         if op == "mul":
@@ -1443,32 +1629,47 @@ def _mode_matrix(p: dict[str, Any]) -> dict[str, Any]:
             raise ToolError(f"shape mismatch: {A.shape} vs {B.shape}")
         return ok(_describe(A + B if op == "add" else A - B, precision))
     if op == "pow":
-        n = int(p.get("n", 2))
+        n = whole(p.get("n", 2), "n")
+        _square(A, "pow")
+        norm = max((sum(abs(sp.N(v, 15)) for v in A.row(i)) for i in range(A.rows)), default=sp.Float(0))
+        if norm > 1 and n > 0:
+            digits = float(n) * float(sp.log(norm, 10)) + _pymath.log10(A.rows)
+            if digits > MAX_RESULT_DIGITS:
+                raise TooLarge(
+                    f"A^{n:,} would have up to {int(digits):,} digits per entry; the most that can be returned is {MAX_RESULT_DIGITS:,}",
+                    details={"n": n, "estimated_digits": int(digits), "limit_digits": MAX_RESULT_DIGITS},
+                    hint="Use a smaller exponent.",
+                )
         return ok(_describe(A**n, precision))
     raise ToolError(
         "op must be one of det, inv, transpose, rank, trace, rref, nullspace, eig, solve, mul, add, sub, pow"
     )
 
 
-def _fractions(data: Any) -> list[Fraction]:
+def _fractions(data: Any, field: str = "data") -> list[Fraction]:
     if not isinstance(data, list) or not data:
-        raise ToolError("data must be a non-empty list of numbers")
+        raise ToolError(f"{field} must be a non-empty list of numbers")
     out = []
-    for v in data:
+    for i, v in enumerate(data):
+        where = f"{field}[{i}]"
         if isinstance(v, bool):
-            raise ToolError("booleans are not numbers")
+            raise ToolError(f"{where} is a boolean; booleans are not numbers")
         if isinstance(v, int):
             out.append(Fraction(v))
         elif isinstance(v, float):
+            if v != v or v in (float("inf"), float("-inf")):
+                raise ToolError(f"{where} is infinite or not a number; statistics need finite values")
             out.append(Fraction(repr(v)))
         elif isinstance(v, str):
             try:
-                out.append(Fraction(v.strip().replace(",", "")))
-            except ValueError:
-                e, _ = _parse(v)
-                out.append(Fraction(str(sp.Rational(e))))
+                d, _ = parse_number(v)
+            except ToolError:
+                raise ToolError(f"{where} {v!r} is not a number") from None
+            if not d.is_finite():
+                raise ToolError(f"{where} is infinite or not a number; statistics need finite values")
+            out.append(Fraction(d))
         else:
-            raise ToolError(f"not a number: {v!r}")
+            raise ToolError(f"{where} {v!r} is not a number")
     return out
 
 
@@ -1563,7 +1764,7 @@ def _mode_stats(p: dict[str, Any]) -> dict[str, Any]:
         if q is None:
             raise ToolError("percentile needs 'percentile' (0..100)")
         return ok(
-            _frac_out(_percentile(xs, Fraction(str(q))), precision),
+            _frac_out(_percentile(xs, _fractions([q], "percentile")[0]), precision),
             assumptions=["linear interpolation (Excel PERCENTILE.INC / numpy default)"],
         )
     if op == "quartiles":
@@ -1579,8 +1780,10 @@ def _mode_stats(p: dict[str, Any]) -> dict[str, Any]:
     if op == "zscore":
         if p.get("value") is None:
             raise ToolError("zscore needs 'value'")
-        v = _fractions([p["value"]])[0]
-        z = (sp.Rational(v - mean) / sd(True)) if n > 1 else sp.nan
+        if n < 2:
+            raise ToolError("a z-score needs at least 2 data points; one point has no spread to measure against")
+        v = _fractions([p["value"]], "value")[0]
+        z = sp.Rational(v - mean) / sd(True)
         return ok(_describe(sp.simplify(z), precision), assumptions=["sample standard deviation (n-1)"])
     if op in ("geometric_mean", "harmonic_mean"):
         if any(x <= 0 for x in xs):
@@ -1592,9 +1795,11 @@ def _mode_stats(p: dict[str, Any]) -> dict[str, Any]:
             prod *= sp.Rational(x.numerator, x.denominator)
         return ok(_describe(sp.root(prod, n), precision))
     if op == "weighted_mean":
-        ws = _fractions(p.get("weights"))
+        ws = _fractions(p.get("weights"), "weights")
         if len(ws) != n:
             raise ToolError("weights must match data length")
+        if not sum(ws):
+            raise ToolError("the weights sum to zero, so there is nothing to average")
         return ok(_frac_out(sum(x * w for x, w in zip(xs, ws, strict=True)) / sum(ws), precision))
     if op == "cumsum":
         acc, out = Fraction(0), []
@@ -1603,17 +1808,31 @@ def _mode_stats(p: dict[str, Any]) -> dict[str, Any]:
             out.append(_frac_out(acc, precision))
         return ok(out)
     if op in ("corr", "regress", "covariance"):
-        ys = _fractions(p.get("y") or p.get("data2"))
+        ys = _fractions(p.get("y") or p.get("data2"), "y")
         if len(ys) != n:
             raise ToolError("x and y must have the same length")
+        if n < 2:
+            raise ToolError(f"{op} needs at least 2 pairs; one pair has no spread to compare")
         my = sum(ys) / n
         sxy = sum((x - mean) * (y - my) for x, y in zip(xs, ys, strict=True))
         sxx = sum((x - mean) ** 2 for x in xs)
         syy = sum((y - my) ** 2 for y in ys)
         if op == "covariance":
             return ok(_frac_out(sxy / (n - 1), precision), assumptions=["sample covariance (n-1)"])
-        if sxx == 0 or syy == 0:
-            raise ToolError("correlation undefined: zero variance")
+        if sxx == 0:
+            raise ToolError("every x is the same, so there is no line to fit and no correlation to measure")
+        if syy == 0 and op == "regress":
+            # a flat y is a perfectly good fit: slope 0. Only r squared is undefined.
+            intercept = my
+            return ok(
+                {"slope": _frac_out(Fraction(0), precision), "intercept": _frac_out(intercept, precision), "r_squared": None,
+                 "equation": f"y = 0*x + {float(intercept):.6g}",
+                 **({"prediction": _frac_out(intercept, precision)} if p.get("predict") is not None else {})},
+                assumptions=["ordinary least squares"],
+                warnings=["every y is the same, so the fit is a horizontal line and r squared is undefined (it divides by the variance of y)"],
+            )
+        if syy == 0:
+            raise ToolError("every y is the same, so there is no correlation to measure")
         r = sp.Rational(sxy) / sp.sqrt(sp.Rational(sxx) * sp.Rational(syy))
         if op == "corr":
             return ok(_describe(sp.simplify(r), precision), assumptions=["Pearson correlation"])
@@ -1627,7 +1846,7 @@ def _mode_stats(p: dict[str, Any]) -> dict[str, Any]:
             "equation": f"y = {float(slope):.6g}*x + {float(intercept):.6g}",
         }
         if p.get("predict") is not None:
-            xv = _fractions([p["predict"]])[0]
+            xv = _fractions([p["predict"]], "predict")[0]
             out["prediction"] = _frac_out(slope * xv + intercept, precision)
         return ok(out, assumptions=["ordinary least squares"])
     raise ToolError(
@@ -1661,9 +1880,16 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     form = (p.get("form") or "decimal").lower()
     precision = p.get("precision", 15)
+    _check_defined(expr, p["expr"])
     if form == "polar":
         r = sp.simplify(sp.Abs(expr))
         th = sp.simplify(sp.arg(expr))
+        if expr == 0 or _undefined(th):
+            # every direction is as good as another at the origin
+            return ok(
+                {"r": _describe(r, precision), "theta_rad": None, "theta_deg": None, "notation": "0∠(any angle)"},
+                assumptions=assumptions + ["the argument of 0 is undefined: the origin has no direction"],
+            )
         return ok(
             {
                 "r": _describe(r, precision),
@@ -1685,11 +1911,29 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
         return ok(_describe(sp.N(expr, precision), precision), assumptions=assumptions)
     if form in ("fraction", "rational", "exact"):
         tol = p.get("tolerance")
-        e = sp.nsimplify(expr, rational=True, tolerance=tol)
+        if tol is not None:
+            tol = _num(tol)
+            if not tol.is_number or tol <= 0:
+                raise ToolError("tolerance must be a positive number, e.g. 0.01")
+        e = sp.nsimplify(expr, rational=True, tolerance=float(tol) if tol is not None else None)
+        if tol is not None and e.is_Rational:
+            # with a tolerance the caller wants the simplest fraction within it: the literal
+            # is already an exact Rational, so nsimplify had nothing left to do
+            note = _rational_approximation(expr, float(tol))
+            if note is not None and note[0] != e and abs(note[0].q) < abs(e.q):
+                approx, error = note
+                d = _describe(approx, precision)
+                d["approximate"] = True
+                d["absolute_error"] = _clean_decimal(sp.N(error, 6))
+                return ok(
+                    d,
+                    assumptions=assumptions + [f"the simplest fraction within {float(tol):g} of {p['expr']}, not its exact value"],
+                    warnings=[f"approximation: differs from {p['expr']} by about {_clean_decimal(sp.N(error, 3))}"],
+                )
         if not e.is_Rational:
             # `nsimplify(pi, rational=True)` hands `pi` straight back, so the mode that
             # exists to produce a fraction returned the input unchanged (#28 SS2d).
-            note = _rational_approximation(expr, tol)
+            note = _rational_approximation(expr, float(tol) if tol is not None else None)
             if note is None:
                 raise Unsupported(
                     f"{p['expr']} has no rational form and could not be approximated numerically",
@@ -1710,8 +1954,11 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
         v = sp.N(expr, precision)
         if not v.is_real:
             raise ToolError("scientific notation needs a real number")
-        sig = int(p.get("significant", 6))
-        return ok({"value": f"{float(v):.{sig - 1}e}", "decimal": _clean_decimal(v)}, assumptions=assumptions)
+        sig = whole(p.get("significant", 6), "significant", lo=1, hi=50)
+        from decimal import Decimal as _D
+
+        # through Decimal, not float: 10^400 is a number and `float()` of it is infinity
+        return ok({"value": f"{_D(str(v)):.{sig - 1}e}", "decimal": _clean_decimal(v)}, assumptions=assumptions)
     if form == "percent":
         v = sp.N(expr * 100, precision)
         return ok({"value": f"{_clean_decimal(v)}%", "decimal": _clean_decimal(v)}, assumptions=assumptions)
@@ -1721,34 +1968,58 @@ def _mode_convert_form(p: dict[str, Any]) -> dict[str, Any]:
 def _mode_plot_points(p: dict[str, Any]) -> dict[str, Any]:
     expr, assumptions = _parse(p["expr"], angle=p.get("angle") or "rad")
     var = _symbol(p.get("var"), expr)
+    extra = sorted(str(sym) for sym in getattr(expr, "free_symbols", set()) if sym != var)
+    if extra:
+        raise Ambiguous(
+            f"{p['expr']} still has {', '.join(extra)} in it, so it has no value to plot against {var}",
+            field="vars",
+            options=extra,
+        )
     rng = p.get("range") or [-10, 10]
     if not (isinstance(rng, list) and len(rng) == 2):
         raise ToolError("range must be [start, end]")
-    a, b = float(_num(rng[0])), float(_num(rng[1]))
-    n = int(p.get("n", 50))
-    if n < 2 or n > 10000:
-        raise ToolError("n must be between 2 and 10000")
+    try:
+        a, b = float(_num(rng[0])), float(_num(rng[1]))
+    except (TypeError, ValueError):
+        raise ToolError(f"range must be two numbers, not {rng!r}") from None
+    n = whole(p.get("n", 50), "n", lo=2, hi=10000)
     try:
         f = sp.lambdify(var, expr, modules=["math"])
     except Exception:
         f = None
-    pts: list[list[float]] = []
+    raw: list[tuple[float, float]] = []
     skipped = 0
     for k in range(n):
         x = a + (b - a) * k / (n - 1)
-        try:
-            y = f(x) if f else float(expr.subs(var, x).evalf())
-            if isinstance(y, complex) or y != y or abs(y) == float("inf"):
-                skipped += 1
+        y = None
+        for attempt in ((lambda at=x: f(at)) if f else None, lambda at=x: complex(expr.subs(var, sp.Float(at)).evalf())):
+            if attempt is None:
                 continue
-            pts.append([round(x, 12), round(float(y), 12)])
-        except Exception:
+            try:
+                y = attempt()
+                break
+            except Exception:
+                # `math` has no zeta, so lambdify's function raises and SymPy answers instead
+                y = None
+        if y is None or (isinstance(y, complex) and y.imag) or y != y or abs(y) == float("inf"):
             skipped += 1
+            continue
+        raw.append((x, float(y.real if isinstance(y, complex) else y)))
+    poles = 0
+    if len(raw) > 2:
+        # tan(x) sampled beside pi/2 is 1.6e16, which is the pole showing through, not a value
+        typical = sorted(abs(y) for _x, y in raw)[len(raw) // 2]
+        kept = [(x, y) for x, y in raw if not (abs(y) > 1e8 and abs(y) > 1e6 * max(typical, 1e-12))]
+        poles = len(raw) - len(kept)
+        raw = kept
+    pts = [[round(x, 12), round(y, 12)] for x, y in raw]
     ys = [pt[1] for pt in pts]
     out = {"points": pts, "count": len(pts)}
     if ys:
         out["y_min"], out["y_max"] = min(ys), max(ys)
     warnings = [f"{skipped} point(s) skipped (undefined or non-real)"] if skipped else []
+    if poles:
+        warnings.append(f"{poles} sample(s) dropped: the value there is enormous beside the rest, which is a pole showing through rather than a point on the curve")
     return ok(out, assumptions=assumptions, warnings=warnings)
 
 
