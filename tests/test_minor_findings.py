@@ -8,7 +8,6 @@ was technically true and practically misleading.
 from leftbrain.core.collections_ import collections
 from leftbrain.core.datetimex import datetime_tool
 from leftbrain.core.encode import encode
-from leftbrain.core.holidays_ import holidays
 from leftbrain.core.numbers import numbers
 from leftbrain.core.random_ import random_tool
 from leftbrain.core.text import text
@@ -109,14 +108,6 @@ def test_the_short_form_of_a_fortnightly_rule_is_understood():
     """`every other tuesday` is what people write."""
     r = datetime_tool("recurrence", rule="every other tuesday", start="2026-09-01", count=3)
     assert r["ok"] and len(r["result"]["occurrences"]) == 3
-
-
-def test_a_year_with_no_calendar_data_says_so():
-    """An empty list because the tables start in 1948 reads exactly like an empty list because
-    nothing fell that year. Only one of those is an answer, so the other is refused (#90)."""
-    r = holidays("list", region="IN", year=1800)
-    assert r["ok"] is False and r["error"] == "unsupported"
-    assert "1948" in r["message"] and "outside" in r["message"]
 
 
 def test_natural_sort_says_it_does_not_collate_accents():

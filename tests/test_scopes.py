@@ -95,15 +95,15 @@ def test_the_scope_grid_says_which_tools_reach_the_internet(tmp_path):
 
 
 def test_parse_scope_round_trips_dict_json_and_text_forms():
-    s = parse_scope({"tools": {"math": None, "holidays": ["list", "check"]}})
-    assert isinstance(s, Scope) and s.tools == {"math": None, "holidays": ("list", "check")}
-    assert json.loads(s.to_json()) == {"tools": {"math": None, "holidays": ["list", "check"]}}
+    s = parse_scope({"tools": {"math": None, "finance": ["emi", "gst"]}})
+    assert isinstance(s, Scope) and s.tools == {"math": None, "finance": ("emi", "gst")}
+    assert json.loads(s.to_json()) == {"tools": {"math": None, "finance": ["emi", "gst"]}}
     assert parse_scope(s.to_json()) == s  # the stored form comes back identical
     assert parse_scope(s.to_dict()) == s  # so does the /keys/me form (the bare map)
-    assert parse_scope("math,holidays:list+check") == s
-    assert parse_scope(" math , holidays : list + check ") == s  # whitespace is noise
-    assert parse_scope(["math", "holidays:list", "holidays:check"]) == s  # the dashboard's checkbox values
-    assert parse_scope(["holidays:list"]) == Scope({"holidays": ("list",)})  # a mode implies its tool
+    assert parse_scope("math,finance:emi+gst") == s
+    assert parse_scope(" math , finance : emi + gst ") == s  # whitespace is noise
+    assert parse_scope(["math", "finance:emi", "finance:gst"]) == s  # the dashboard's checkbox values
+    assert parse_scope(["finance:emi"]) == Scope({"finance": ("emi",)})  # a mode implies its tool
 
 
 def test_parse_scope_none_means_every_tool():
@@ -113,19 +113,19 @@ def test_parse_scope_none_means_every_tool():
     assert parse_scope(",".join(CATALOGUE)) is None
     assert parse_scope([f"{t}:{m}" for t, modes in CATALOGUE.items() for m in modes] + list(CATALOGUE)) is None
     # naming all of one tool's modes is the same as naming the tool
-    assert parse_scope("holidays:" + "+".join(CATALOGUE["holidays"])) == Scope({"holidays": None})
+    assert parse_scope("finance:" + "+".join(CATALOGUE["finance"])) == Scope({"finance": None})
 
 
 @pytest.mark.parametrize(
     "bad, offender",
     [
         ("math,nope", "nope"),
-        ("holidays:list+fly", "fly"),
+        ("finance:emi+fly", "fly"),
         ({"tools": {"weather": ["current", "yesterday"]}}, "yesterday"),
         ({"tools": {"fx_rate": ["spot"]}}, "fx_rate"),  # has no modes to pick from
         (["geo:teleport"], "teleport"),
         ({"tools": "math"}, "tools"),
-        ("holidays:", "holidays"),
+        ("finance:", "finance"),
     ],
 )
 def test_parse_scope_names_the_offender(bad, offender):
@@ -142,46 +142,46 @@ def test_parse_scope_refuses_an_empty_list():
 
 
 def test_allows_and_summary():
-    s = parse_scope("math,datetime,holidays:list+check")
+    s = parse_scope("math,datetime,finance:emi+gst")
     assert s.allows("math", "eval") and s.allows("math", None) and s.allows("datetime", "now")
-    assert s.allows("holidays", "list") and not s.allows("holidays", "next") and not s.allows("holidays", None)
+    assert s.allows("finance", "emi") and not s.allows("finance", "compound") and not s.allows("finance", None)
     assert not s.allows("numbers", "compare") and not s.allows("fx_rate", None)
     assert parse_scope("fx_rate").allows("fx_rate", None)
     assert s.summary() == "3 tools" and summarize(s) == "3 tools"
     assert summarize(None) == "all tools"
-    assert parse_scope("holidays:list+check").summary() == "holidays: list, check"
-    assert parse_scope("holidays").summary() == "holidays"
-    assert s.listing() == "math, datetime, holidays (list, check)"
+    assert parse_scope("finance:emi+gst").summary() == "finance: emi, gst"
+    assert parse_scope("finance").summary() == "finance"
+    assert s.listing() == "math, datetime, finance (emi, gst)"
 
 
 def test_enforce_reads_the_context_and_returns_the_contract_error():
     calls = []
 
-    @enforce("holidays")
-    def holidays(mode: str = "list", region: str | None = None):
-        """mode: list | check"""
+    @enforce("finance")
+    def finance(mode: str = "emi", region: str | None = None):
+        """mode: emi | gst"""
         calls.append((mode, region))
         return {"ok": True, "result": []}
 
-    assert holidays.__doc__ == "mode: list | check" and holidays.__name__ == "holidays"
-    assert holidays(region="IN")["ok"] and calls == [("list", "IN")]  # no scope in context: untouched
-    token = current_scope.set(parse_scope("math,holidays:check"))
+    assert finance.__doc__ == "mode: emi | gst" and finance.__name__ == "finance"
+    assert finance(region="IN")["ok"] and calls == [("emi", "IN")]  # no scope in context: untouched
+    token = current_scope.set(parse_scope("math,finance:gst"))
     try:
-        assert holidays(mode="check", region="IN")["ok"]
-        out = holidays(mode="next", region="IN")
-        assert out == {"ok": False, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: check", "retryable": False}
-        out = holidays(region="IN")  # the default mode counts as a mode
-        assert out["error"] == "forbidden" and "mode 'list'" in out["message"]
-        assert holidays("check")["ok"]  # positional mode is seen too
+        assert finance(mode="gst", region="IN")["ok"]
+        out = finance(mode="compound", region="IN")
+        assert out == {"ok": False, "error": "forbidden", "message": "this key may not call finance mode 'compound'; allowed: gst", "retryable": False}
+        out = finance(region="IN")  # the default mode counts as a mode
+        assert out["error"] == "forbidden" and "mode 'emi'" in out["message"]
+        assert finance("gst")["ok"]  # positional mode is seen too
     finally:
         current_scope.reset(token)
     token = current_scope.set(parse_scope("math"))
     try:
-        out = holidays(mode="check")
-        assert out["error"] == "forbidden" and out["message"] == "this key may not call holidays; allowed: math"
+        out = finance(mode="gst")
+        assert out["error"] == "forbidden" and out["message"] == "this key may not call finance; allowed: math"
     finally:
         current_scope.reset(token)
-    assert calls == [("list", "IN"), ("check", "IN"), ("check", None)]
+    assert calls == [("emi", "IN"), ("gst", "IN"), ("gst", None)]
 
 
 def test_one_server_carries_every_tool_and_the_offline_build_leaves_the_four_out():
@@ -214,13 +214,13 @@ def test_the_retired_external_endpoint_says_where_the_tools_went(tmp_path):
         assert root["endpoints"] == {"core": "/mcp"} and root["network_tools"] is True
 
 
-def test_the_offline_app_publishes_fourteen_and_says_so(tmp_path):
+def test_the_offline_app_publishes_thirteen_and_says_so(tmp_path):
     from leftbrain.web.config import WebConfig
 
     cfg = WebConfig(client_id=None, client_secret=None, secret="test-secret-0123456789", base_url=None, open_signup=False)
     with TestClient(build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"), web_config=cfg)) as c:
         key, _ = KeyStore(str(tmp_path / "k.sqlite3"), secret="test-secret-0123456789").create("a@b.co")
-        assert len(tool_names(rpc(c, "/mcp", key, "tools/list"))) == 14
+        assert len(tool_names(rpc(c, "/mcp", key, "tools/list"))) == 13
         assert c.get("/", headers={"Accept": "application/json"}).json()["network_tools"] is False
 
 
@@ -243,9 +243,9 @@ def test_wrapping_left_the_published_schemas_and_docstrings_alone():
 
 def test_store_create_set_and_list_with_a_scope(tmp_path):
     store = KeyStore(str(tmp_path / "k.sqlite3"))
-    scope = parse_scope("math,holidays:list+check")
+    scope = parse_scope("math,finance:emi+gst")
     raw, info = store.create("a@b.co", scope=scope)
-    assert info.scope == scope and info.to_dict()["tools"] == {"math": None, "holidays": ["list", "check"]}
+    assert info.scope == scope and info.to_dict()["tools"] == {"math": None, "finance": ["emi", "gst"]}
     assert store.get_by_prefix(info.prefix).scope == scope
     assert store.verify(raw).key.scope == scope
     _, open_info = store.create("a@b.co")
@@ -293,34 +293,34 @@ def test_a_stored_scope_naming_a_retired_tool_still_loads(tmp_path):
 def test_scoped_key_over_http(tmp_path, json_response):
     with TestClient(keyed_app(tmp_path, json_response=json_response)) as c:
         store = KeyStore(str(tmp_path / "k.sqlite3"))
-        scoped, _ = store.create("a@b.co", scope=parse_scope("numbers,holidays:list+check,weather"))
+        scoped, _ = store.create("a@b.co", scope=parse_scope("numbers,finance:emi+gst,weather"))
         open_key, _ = store.create("a@b.co")
 
         r = rpc(c, "/mcp", scoped, "tools/list")
-        assert r.status_code == 200 and tool_names(r) == ["holidays", "numbers", "weather"]  # one endpoint carries the network tools too (#100)
+        assert r.status_code == 200 and tool_names(r) == ["numbers", "finance", "weather"]  # one endpoint carries the network tools too (#100)
         assert r.headers["content-type"].startswith("application/json" if json_response else "text/event-stream")
         if json_response:
             assert int(r.headers["content-length"]) == len(r.content)
         else:
             assert r.text.startswith("event: message\r\ndata: ") and r.text.endswith("\r\n\r\n")
-        assert len(tool_names(rpc(c, "/mcp", open_key, "tools/list"))) == 18
+        assert len(tool_names(rpc(c, "/mcp", open_key, "tools/list"))) == 17
 
         ok = contract(rpc(c, "/mcp", scoped, "tools/call", name="numbers", arguments={"mode": "compare", "values": ["9.11", "9.9"]}))
         assert ok["isError"] is False and ok["structuredContent"]["ok"] and ok["structuredContent"]["result"]["max"]["input"] == "9.9"
-        assert contract(rpc(c, "/mcp", scoped, "tools/call", name="holidays", arguments={"mode": "list", "region": "IN", "year": 2026}))["structuredContent"]["ok"]
+        assert contract(rpc(c, "/mcp", scoped, "tools/call", name="finance", arguments={"mode": "emi", "principal": 100000, "rate": 8.5, "rate_period": "annual", "months": 12}))["structuredContent"]["ok"]
 
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="math", arguments={"expr": "1+1"}))
         assert denied["isError"] is False
         contract_only = {k: v for k, v in denied["structuredContent"].items() if k != "meta"}
-        assert contract_only == {"ok": False, "error": "forbidden", "message": "this key may not call math; allowed: numbers, holidays (list, check), weather", "retryable": False}
+        assert contract_only == {"ok": False, "error": "forbidden", "message": "this key may not call math; allowed: numbers, finance (emi, gst), weather", "retryable": False}
         # every response now carries what it cost, and what the key has left (#28 §6)
         meta = denied["structuredContent"]["meta"]
         assert meta["tool"] == "math" and meta["version"] and isinstance(meta["latency_ms"], int)
         assert meta["quota"]["daily_quota"] == 1000 and meta["request_id"]
         assert json.loads(denied["content"][0]["text"])["error"] == "forbidden"
-        denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="holidays", arguments={"mode": "next", "region": "IN"}))
-        assert denied["structuredContent"]["error"] == "forbidden" and "mode 'next'" in denied["structuredContent"]["message"]
-        assert "allowed: list, check" in denied["structuredContent"]["message"]
+        denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="finance", arguments={"mode": "compound", "principal": 1000, "rate": 5, "rate_period": "annual", "years": 2}))
+        assert denied["structuredContent"]["error"] == "forbidden" and "mode 'compound'" in denied["structuredContent"]["message"]
+        assert "allowed: emi, gst" in denied["structuredContent"]["message"]
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="fx_rate", arguments={"base": "USD", "to": "INR"}))
         assert denied["structuredContent"]["error"] == "forbidden"
 
@@ -328,7 +328,7 @@ def test_scoped_key_over_http(tmp_path, json_response):
         assert "x-ratelimit-remaining-today" in rpc(c, "/mcp", scoped, "tools/list").headers
 
         me = c.get("/keys/me", headers={"Authorization": f"Bearer {scoped}"}).json()["result"]
-        assert me["tools"] == {"numbers": None, "holidays": ["list", "check"], "weather": None}
+        assert me["tools"] == {"numbers": None, "finance": ["emi", "gst"], "weather": None}
         assert c.get("/keys/me", headers={"Authorization": f"Bearer {open_key}"}).json()["result"]["tools"] is None
 
 
@@ -350,7 +350,7 @@ def test_static_key_and_unscoped_key_bodies_pass_through_untouched(tmp_path):
         raw, _ = KeyStore(str(tmp_path / "k.sqlite3")).create("a@b.co")
         via_static = rpc(c, "/mcp", "s3cret", "tools/list")
         via_key = rpc(c, "/mcp", raw, "tools/list")
-        assert via_static.content == via_key.content and len(tool_names(via_key)) == 14
+        assert via_static.content == via_key.content and len(tool_names(via_key)) == 13
 
 
 def test_a_scoped_key_whose_body_is_not_a_tools_list_is_replayed_intact(tmp_path):
@@ -383,19 +383,19 @@ def test_dashboard_creates_a_scoped_key_and_shows_its_summary(tmp_path):
     with TestClient(oauth_app(tmp_path)) as c:
         login_via_github(c)
         csrf = csrf_from(c.get("/dashboard").text)
-        r = c.post("/dashboard/keys", data={"name": "scoped", "csrf": csrf, "scope_form": "1", "scope": ["holidays", "holidays:list", "holidays:check", "numbers"]})
+        r = c.post("/dashboard/keys", data={"name": "scoped", "csrf": csrf, "scope_form": "1", "scope": ["finance", "finance:emi", "finance:gst", "numbers"]})
         assert r.status_code == 200
         key = r.text.split('<code id="new-key">')[1].split("</code>")[0]
         me = c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]
-        assert me["tools"] == {"holidays": ["list", "check"], "numbers": None}
+        assert me["tools"] == {"finance": ["emi", "gst"], "numbers": None}
         row = c.get("/dashboard").text.split(key[:13], 1)[1].split("</tr>")[0]
         assert "2 tools" in row and f'href="/dashboard/keys/{key[:13]}/scope"' in row and "Edit scope" in row
-        assert 'title="holidays (list, check), numbers"' in row
-        assert tool_names(rpc(c, "/mcp", key, "tools/list")) == ["holidays", "numbers"]
+        assert 'title="finance (emi, gst), numbers"' in row
+        assert tool_names(rpc(c, "/mcp", key, "tools/list")) == ["numbers", "finance"]
         # a single tool is spelled out on the row
-        r = c.post("/dashboard/keys", data={"name": "one", "csrf": csrf, "scope_form": "1", "scope": ["holidays", "holidays:list"]})
+        r = c.post("/dashboard/keys", data={"name": "one", "csrf": csrf, "scope_form": "1", "scope": ["finance", "finance:emi"]})
         key2 = r.text.split('<code id="new-key">')[1].split("</code>")[0]
-        assert "holidays: list" in c.get("/dashboard").text.split(key2[:13], 1)[1].split("</tr>")[0]
+        assert "finance: emi" in c.get("/dashboard").text.split(key2[:13], 1)[1].split("</tr>")[0]
         # everything ticked is no restriction; a form without the grid (scripted post) is too
         every = {"name": "open", "csrf": csrf, "scope_form": "1", "scope": [*CATALOGUE, *[f"{t}:{m}" for t, ms in CATALOGUE.items() for m in ms]]}
         key3 = c.post("/dashboard/keys", data=every).text.split('<code id="new-key">')[1].split("</code>")[0]
@@ -408,13 +408,13 @@ def test_dashboard_mode_boxes_only_count_when_their_tool_is_ticked(tmp_path):
     with TestClient(oauth_app(tmp_path)) as c:
         login_via_github(c)
         csrf = csrf_from(c.get("/dashboard").text)
-        r = c.post("/dashboard/keys", data={"name": "x", "csrf": csrf, "scope_form": "1", "scope": ["numbers", "holidays:list"]})
+        r = c.post("/dashboard/keys", data={"name": "x", "csrf": csrf, "scope_form": "1", "scope": ["numbers", "finance:emi"]})
         key = r.text.split('<code id="new-key">')[1].split("</code>")[0]
         assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]["tools"] == {"numbers": None}
         # a tool ticked with none of its modes ticked means every mode
-        r = c.post("/dashboard/keys", data={"name": "y", "csrf": csrf, "scope_form": "1", "scope": "holidays"})
+        r = c.post("/dashboard/keys", data={"name": "y", "csrf": csrf, "scope_form": "1", "scope": "finance"})
         key = r.text.split('<code id="new-key">')[1].split("</code>")[0]
-        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]["tools"] == {"holidays": None}
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]["tools"] == {"finance": None}
         # nothing ticked at all is refused, not silently "all tools"
         r = c.post("/dashboard/keys", data={"name": "z", "csrf": csrf, "scope_form": "1"})
         assert r.status_code == 200 and "new-key" not in r.text and "at least one tool" in r.text
@@ -433,16 +433,16 @@ def test_dashboard_edit_scope_page_and_post(tmp_path):
         assert prefix in page.text and f'action="/dashboard/keys/{prefix}/scope"' in page.text
         assert page.text.count(" checked") == sum(1 + len(m) for m in CATALOGUE.values())  # an open key: everything ticked
 
-        r = c.post(f"/dashboard/keys/{prefix}/scope", data={"csrf": csrf, "scope_form": "1", "scope": ["numbers", "holidays", "holidays:check"]}, follow_redirects=False)
+        r = c.post(f"/dashboard/keys/{prefix}/scope", data={"csrf": csrf, "scope_form": "1", "scope": ["numbers", "finance", "finance:gst"]}, follow_redirects=False)
         assert r.status_code == 302 and r.headers["location"] == "/dashboard" and r.headers["cache-control"] == "no-store"
-        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]["tools"] == {"numbers": None, "holidays": ["check"]}
+        assert c.get("/keys/me", headers={"Authorization": f"Bearer {key}"}).json()["result"]["tools"] == {"numbers": None, "finance": ["gst"]}
         assert contract(rpc(c, "/mcp", key, "tools/call", name="math", arguments={"expr": "1+1"}))["structuredContent"]["error"] == "forbidden"
-        assert tool_names(rpc(c, "/mcp", key, "tools/list")) == ["holidays", "numbers"]
+        assert tool_names(rpc(c, "/mcp", key, "tools/list")) == ["numbers", "finance"]
         assert "2 tools" in c.get("/dashboard").text.split(prefix, 1)[1].split("</tr>")[0]
 
         page = c.get(f"/dashboard/keys/{prefix}/scope").text  # pre-filled with the current scope
-        assert 'value="numbers" data-tool="numbers" checked' in page and 'value="holidays" data-tool="holidays" checked' in page
-        assert 'value="holidays:check" data-of="holidays" checked' in page and 'value="holidays:list" data-of="holidays" checked' not in page
+        assert 'value="numbers" data-tool="numbers" checked' in page and 'value="finance" data-tool="finance" checked' in page
+        assert 'value="finance:gst" data-of="finance" checked' in page and 'value="finance:emi" data-of="finance" checked' not in page
         assert 'value="math" data-tool="math" checked' not in page and 'value="math:eval" data-of="math" checked' not in page
 
         # back to every tool
@@ -495,10 +495,10 @@ def test_cli_create_and_set_tools(tmp_path, capsys):
     from leftbrain.keys import main
 
     db = str(tmp_path / "k.sqlite3")
-    main(["--db", db, "create", "--owner", "a@b.co", "--tools", "math,datetime,holidays:list+check"])
+    main(["--db", db, "create", "--owner", "a@b.co", "--tools", "math,datetime,finance:emi+gst"])
     out = capsys.readouterr().out
     made = json.loads(out[: out.index("\n\n")])
-    assert made["tools"] == {"math": None, "datetime": None, "holidays": ["list", "check"]}
+    assert made["tools"] == {"math": None, "datetime": None, "finance": ["emi", "gst"]}
     main(["--db", db, "list"])
     rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert rows[0]["tools"] == made["tools"]
@@ -523,7 +523,7 @@ def test_cli_usage_errors_name_the_offending_tool_or_mode(tmp_path, capsys):
     assert "abacus" in capsys.readouterr().err
     _, info = KeyStore(db).create("a@b.co")
     with pytest.raises(SystemExit):
-        main(["--db", db, "set", info.prefix, "--tools", "holidays:fly"])
+        main(["--db", db, "set", info.prefix, "--tools", "finance:fly"])
     assert "fly" in capsys.readouterr().err
     for argv in (
         ["set", info.prefix, "--tools", "math", "--all-tools"],  # one or the other

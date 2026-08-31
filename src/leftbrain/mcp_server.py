@@ -29,7 +29,6 @@ from .core import (
 from .core import (
     datetimex,
     geo_offline,
-    holidays_,
     random_,
 )
 from .core import (
@@ -251,34 +250,6 @@ def convert(
     auto (pick units or currency from the arguments)
     """
     return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals, date=date, ingredient=ingredient, cup=cup, category=category, region=region, gender=gender)))
-
-
-@enforce("holidays")
-def holidays(
-    mode: str = "list",
-    region: str | None = None,
-    year: int | None = None,
-    years: list[int] | None = None,
-    month: int | None = None,
-    subdiv: str | None = None,
-    date: str | None = None,
-    n: int | None = None,
-    categories: list[str] | None = None,
-    locale: str | None = None,
-    date_locale: str | None = None,
-    language: str | None = None,
-    name: str | None = None,
-    start: str | None = None,
-    end: str | None = None,
-    subdivs: list[str] | None = None,
-    regions: list[str] | None = None,
-) -> dict[str, Any]:
-    """Use for public holidays and festivals of any country/state (region="IN", subdiv="WB").
-    mode: list (year/years, month) | check (date) | next (date, n) | countries | subdivisions |
-          categories | festival (name, year) | upcoming (start, end) | compare (subdivs/regions).
-    The model's holiday knowledge is stale; this dataset is current.
-    """
-    return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale, date_locale=date_locale, language=language, name=name, start=start, end=end, subdivs=subdivs, regions=regions)))
 
 
 @enforce("numbers")
@@ -593,7 +564,6 @@ CORE_TOOLS: tuple[tuple[str, Any], ...] = (
     ("datetime", datetime),
     ("scale", scale),
     ("convert", convert),
-    ("holidays", holidays),
     ("numbers", numbers),
     ("finance", finance),
     ("text", text),
@@ -647,7 +617,7 @@ def _describe_parameters(server: ContractMCPServer) -> int:
 
 
 def build_server(*, network: bool = True) -> ContractMCPServer:
-    """One leftbrain server: the fourteen core tools, and the four network tools unless told not to.
+    """One leftbrain server: the thirteen core tools, and the four network tools unless told not to.
 
     ``network=False`` is the offline build - ``LEFTBRAIN_SERVE_EXTERNAL=0`` or ``--no-network``.
     It leaves the four out of ``tools/list`` altogether rather than serving them from somewhere

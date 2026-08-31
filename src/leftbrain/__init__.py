@@ -19,7 +19,6 @@ from .core import (
     encode,
     finance,
     geo_offline,
-    holidays_,
     mathx,
     numbers,
     random_,
@@ -39,7 +38,6 @@ math_tool = mathx.math
 datetime_tool = datetimex.datetime_tool
 scale_tool = scale.scale
 convert_tool = convert.convert
-holidays_tool = holidays_.holidays
 numbers_tool = numbers.numbers
 text_tool = text.text
 collections_tool = collections_.collections
@@ -55,7 +53,6 @@ TOOLS = {
     "datetime": datetime_tool,
     "scale": scale_tool,
     "convert": convert_tool,
-    "holidays": holidays_tool,
     "numbers": numbers_tool,
     "text": text_tool,
     "collections": collections_tool,
@@ -80,7 +77,6 @@ __all__ = [
     "fail",
     "finance_tool",
     "geo_tool",
-    "holidays_tool",
     "math_tool",
     "numbers_tool",
     "ok",

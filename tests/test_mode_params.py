@@ -14,11 +14,11 @@ import pytest
 PARAMS_NAMES = {"p", "params"}
 
 MODULES = [
-    "mathx", "datetimex", "scale", "convert", "holidays_", "numbers", "finance",
+    "mathx", "datetimex", "scale", "convert", "numbers", "finance",
     "text", "collections_", "validate", "random_", "geo_offline", "encode", "color",
 ]
 #: Modules whose public entry function is not named after the module.
-ENTRY = {"holidays_": "holidays", "collections_": "collections", "random_": "random_tool",
+ENTRY = {"collections_": "collections", "random_": "random_tool",
          "datetimex": "datetime_tool", "mathx": "math"}
 
 

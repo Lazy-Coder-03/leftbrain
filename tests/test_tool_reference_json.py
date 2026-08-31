@@ -27,7 +27,7 @@ def client(tmp_path, monkeypatch):
 
 def test_the_index_lists_every_tool_including_the_network_ones(client):
     body = client.get("/docs/tools").json()
-    assert body["count"] == 18 and body["version"] == __version__
+    assert body["count"] == 17 and body["version"] == __version__
     names = [t["name"] for t in body["tools"]]
     assert "math" in names and "url_check" in names
     assert [t["name"] for t in body["tools"] if t["network"]] == ["weather", "fx_rate", "geo", "url_check"]
@@ -45,14 +45,14 @@ def test_a_browser_still_gets_the_page(client):
 
 
 def test_one_tool_gives_every_mode_with_its_parameters(client):
-    body = client.get("/docs/tools/holidays").json()
-    from leftbrain.core.holidays_ import MODES as HOLIDAY_MODES
+    body = client.get("/docs/tools/finance").json()
+    from leftbrain.core.finance import MODES as FINANCE_MODES
 
-    assert [m["name"] for m in body["modes"]] == list(HOLIDAY_MODES)
-    check = next(m for m in body["modes"] if m["name"] == "check")
-    region = next(p for p in check["parameters"] if p["name"] == "region")
-    assert region["required"] is True and region["type"] == "string" and region["doc"]
-    assert check["examples"] and all("mode" in e for e in check["examples"])
+    assert [m["name"] for m in body["modes"]] == list(FINANCE_MODES)
+    emi = next(m for m in body["modes"] if m["name"] == "emi")
+    principal = next(p for p in emi["parameters"] if p["name"] == "principal")
+    assert principal["required"] is True and principal["doc"]
+    assert emi["examples"] and all("mode" in e for e in emi["examples"])
 
 
 def test_a_tool_with_no_modes_documents_its_parameters_once(client):
@@ -62,10 +62,10 @@ def test_a_tool_with_no_modes_documents_its_parameters_once(client):
 
 
 def test_no_default_is_null_rather_than_the_table_s_em_dash(client):
-    body = client.get("/docs/tools/holidays").json()
-    check = next(m for m in body["modes"] if m["name"] == "check")
-    region = next(p for p in check["parameters"] if p["name"] == "region")
-    assert region["default"] is None
+    body = client.get("/docs/tools/finance").json()
+    emi = next(m for m in body["modes"] if m["name"] == "emi")
+    principal = next(p for p in emi["parameters"] if p["name"] == "principal")
+    assert principal["default"] is None
 
 
 def test_an_unknown_tool_is_a_contract_shaped_404(client):

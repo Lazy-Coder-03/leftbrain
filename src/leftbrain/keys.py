@@ -15,7 +15,7 @@ Northflank's ``DATABASE_URL`` is honoured automatically.
 
 CLI::
 
-    leftbrain-keys create --owner you@example.com [--daily 1000] [--rpm 60] [--expires 90d|never] [--note "..."] [--tools "math,holidays:list+check"]
+    leftbrain-keys create --owner you@example.com [--daily 1000] [--rpm 60] [--expires 90d|never] [--note "..."] [--tools "math,finance:emi+gsck"]
     leftbrain-keys list | disable <prefix> | enable <prefix> | revoke <prefix>
     leftbrain-keys usage [<prefix>] [--days 7] | set <prefix> --daily N --rpm N --expires 90d|never --tools "..." | --all-tools | stats
 
@@ -664,7 +664,7 @@ def main(argv: list[str] | None = None) -> None:
     c.add_argument("--daily", type=int, default=DEFAULT_DAILY)
     c.add_argument("--rpm", type=int, default=DEFAULT_RPM)
     c.add_argument("--expires", type=parse_lifetime, default=365, metavar="90d|never", help="lifetime in days, or never (default 365d)")
-    c.add_argument("--tools", metavar='"math,holidays:list+check"', help="limit the key to these tools (tool:mode+mode limits a tool's modes); default: every tool")
+    c.add_argument("--tools", metavar='"math,finance:emi+gst"', help="limit the key to these tools (tool:mode+mode limits a tool's modes); default: every tool")
     ls = sub.add_parser("list")
     ls.add_argument("--owner")
     for name in ("disable", "enable", "revoke"):
@@ -677,7 +677,7 @@ def main(argv: list[str] | None = None) -> None:
     st.add_argument("--daily", type=int)
     st.add_argument("--rpm", type=int)
     st.add_argument("--expires", type=parse_lifetime, default=argparse.SUPPRESS, metavar="90d|never", help="new expiry counted from now, or never (one key only)")
-    st.add_argument("--tools", metavar='"math,holidays:list+check"', help="limit the key to these tools (one key only)")
+    st.add_argument("--tools", metavar='"math,finance:emi+gst"', help="limit the key to these tools (one key only)")
     st.add_argument("--all-tools", action="store_true", help="lift the tool limit: every tool and mode again (one key only)")
     u = sub.add_parser("usage")
     u.add_argument("prefix", nargs="?")

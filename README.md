@@ -19,7 +19,7 @@ Design rules:
 2. **Refuse ambiguity instead of guessing.** `IST`, `03/04/2025`, `ton`, `oz`, `KB` — each returns the concrete options rather than a silent assumption.
 3. **Surface every interpretation.** Each response carries `assumptions[]` ("read as DD/MM per locale IN") and `warnings[]` ("day clamped to month end").
 4. **Exact and decimal, together.** `sqrt(2)/2` *and* `0.7071…`, `7/4` *and* `1.75`, so the model never re-rounds.
-5. **Few tools, many modes.** 14 core tools, each with a `mode` parameter, so the tool list stays cheap on every turn.
+5. **Few tools, many modes.** 13 core tools, each with a `mode` parameter, so the tool list stays cheap on every turn.
 6. **Descriptions say *when*, not *what*.** The usual failure is the model not calling the tool.
 
 ## Tools
@@ -32,7 +32,6 @@ Design rules:
 | `datetime` | now, convert_tz, parse, add, diff, weekday, nth_weekday, business_days, overlap, duration_sum, free_slots, recurrence, cron_next, age, fiscal | the current time, DST-correct conversions, "next Friday 5pm", month-end clamping, working days with public holidays, common free slots across time zones, RRULE expansion, cron |
 | `scale` | – | 4 → 7 servings, price per kg → per 250 g, 3 workers × 5 days → 12 workers (`mode=inverse`), with every dependent quantity |
 | `convert` | units, temperature, currency, fuel_economy, cooking, sizes | km→mi, sqft→sqm, °C→°F (absolute or delta), GB→GiB, USD→INR (needs a rate), mpg↔L/100 km (US or UK gallon, never guessed), cups↔grams by ingredient density, shoe and clothing size charts |
-| `holidays` | list, check, next, countries, subdivisions, festival, upcoming, compare, categories | public holidays and festivals for 150+ countries and their states — "when is Durga Puja", what is coming up, which dates two states differ on, and an ICS or CSV of any of it |
 | `numbers` | compare, round, format, allocate, sequence, parse, to_words, semver | `9.11` vs `9.9`, half-up vs banker's rounding, `₹1,23,45,678.50`, splitting ₹100 three ways with no lost paisa, "One lakh twenty-three thousand… only", `1.10` > `1.9` |
 | `finance` | emi, compound, cagr, npv_irr, gst, percent | ₹10L at 8.5% for 20 years → ₹8,678.23 with the schedule that reconciles to zero, SIP future value, CAGR, NPV/IRR by bisection, ₹1,180 inclusive → ₹1,000 + ₹90 CGST + ₹90 SGST, 20% then 10% off is 28% not 30% |
 | `text` | count, regex_match, regex_replace, diff, sort, dedupe, extract, find, similarity | character/word/occurrence counts, running a regex, exact diffs, natural sort, extracting emails/phones/GSTINs, edit distance and best-match from a list |
@@ -74,7 +73,7 @@ carries what the reference page carries minus the executed responses: each mode'
 every parameter with its type, default and whether it is required, and the example arguments.
 
 ```bash
-curl https://leftbrain.idlesync.in/docs/tools/holidays | jq '.modes[].name'
+curl https://leftbrain.idlesync.in/docs/tools/datetime | jq '.modes[].name'
 ```
 
 `tools/list` over `/mcp` is the other machine-readable route; it needs a key, reports no modes,
@@ -354,7 +353,7 @@ and the key API behaves like this:
   blanked before filing, the reporter is recorded as a key prefix or GitHub login and never an
   email address, and filing costs no daily quota because it is not a tool call.
 - **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`, and `tools` (the key's scope, or `null` for every tool).
-- **Scoped keys**: a key can be limited to specific tools, and to specific modes of a tool — from the dashboard (the **Tools** disclosure on the create form, or **Edit scope** on a key's row) or with `leftbrain-keys … --tools "math,datetime,holidays:list+check"`. A scoped key's `tools/list` shows only the tools it may call, and a `tools/call` outside the scope returns the contract error `{"ok": false, "error": "forbidden", "message": "this key may not call holidays mode 'next'; allowed: list, check"}` — a result, not an HTTP error, so an agent reads it and stops. Keys without a scope may call everything; a changed scope applies on the key's next call.
+- **Scoped keys**: a key can be limited to specific tools, and to specific modes of a tool — from the dashboard (the **Tools** disclosure on the create form, or **Edit scope** on a key's row) or with `leftbrain-keys … --tools "math,datetime,finance:emi+gst"`. A scoped key's `tools/list` shows only the tools it may call, and a `tools/call` outside the scope returns the contract error `{"ok": false, "error": "forbidden", "message": "this key may not call finance mode 'compound'; allowed: emi, gst"}` — a result, not an HTTP error, so an agent reads it and stops. Keys without a scope may call everything; a changed scope applies on the key's next call.
 
 Environment: `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `LEFTBRAIN_SECRET` (cookie signing, 32+ random chars), `LEFTBRAIN_BASE_URL` (e.g. `https://leftbrain.idlesync.in`, used for the OAuth callback), and `LEFTBRAIN_TRUSTED_PROXY_HOPS` (default `1`) — how many proxies append to `X-Forwarded-For` in front of the process, so per-IP limits are keyed on the entry *your* proxy wrote rather than the caller-supplied leftmost one. One reverse proxy (Northflank, Render, Fly, nginx) is `1`; add Cloudflare in front and it becomes `2`; `0` means nothing proxies it and no forwarding header is believed.
 
@@ -364,7 +363,7 @@ Admin CLI (any DSN):
 
 ```bash
 leftbrain-keys create --owner you@example.com --daily 50000 --rpm 300 --expires 90d --note "partner"   # default 365d; --expires never warns
-leftbrain-keys create --owner bot@example.com --tools "math,datetime,holidays:list+check"              # only these tools; tool:mode+mode narrows a tool
+leftbrain-keys create --owner bot@example.com --tools "math,datetime,finance:emi+gst"              # only these tools; tool:mode+mode narrows a tool
 leftbrain-keys list                                     # one JSON line per key, with expires_at / expired / tools
 leftbrain-keys disable lblz_xxxxxxxx
 leftbrain-keys enable lblz_xxxxxxxx

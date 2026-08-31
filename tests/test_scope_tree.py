@@ -39,8 +39,8 @@ def test_a_tool_with_no_modes_gets_a_spacer_so_the_rows_line_up(render):
 
 def test_the_count_is_rendered_by_the_server_not_only_by_script(render):
     """A key's scope has to be readable with JavaScript off."""
-    html = render(parse_scope("math,holidays:list+check"))
-    assert f">2/{len(CATALOGUE['holidays'])}<" in html, "holidays has two of its modes"
+    html = render(parse_scope("math,finance:emi+gst"))
+    assert f">2/{len(CATALOGUE['finance'])}<" in html, "finance has two of its modes"
     assert f">{len(CATALOGUE['math'])}/{len(CATALOGUE['math'])}<" in html
 
 
