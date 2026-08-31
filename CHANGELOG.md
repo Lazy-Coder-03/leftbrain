@@ -22,6 +22,21 @@ All notable changes to leftbrain are recorded here. The format follows
 
 - **Docs.** The Claude Code client page says what "Disabled for this project" means and how
   to clear it; the quickstart's paste-in prompt tells the agent the same. (#104)
+- **One endpoint. `/external/mcp` is retired; the network tools are on `/mcp`.** Adding
+  leftbrain was two `mcp add` commands and, since OAuth, two sign-ins, for what every other
+  layer - one key, one quota, one dashboard, one scope grid, one `/docs/tools` - already treated
+  as one product. `weather`, `fx_rate`, `geo` and `url_check` are now published by the same
+  server as the fourteen core tools, and the stdio `leftbrain` command carries them too.
+  `LEFTBRAIN_SERVE_EXTERNAL=0` (or `--no-network`) leaves the four out of a process; per-key
+  control over the same four is the scope grid, which marks them (#103). A request to
+  `/external/mcp` answers `410` with `moved_to: "/mcp"` and a message saying what happened,
+  with no key required, so a client still configured with it is told rather than shown a bare
+  404. The root document lists one endpoint and a `network_tools` flag. `leftbrain-external`
+  remains for a process that should carry only the four. **This flips the default from
+  opt-in to opt-out for network access**; that was decided deliberately (#100).
+- **Every parameter of `fx_rate` and `url_check` now carries its description** on the wire.
+  The pass that copies the reference's parameter docs onto the published schema only handled
+  tools with modes; the two mode-less tools were never on the described server before. (#100)
 
 ### Fixed
 
