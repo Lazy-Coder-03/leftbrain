@@ -57,6 +57,18 @@ def _protected(path: str) -> bool:
     return _under(path, PROTECTED_PREFIXES)
 
 
+def _mount_for(path: str, mounted: tuple[str, ...]) -> str:
+    """The MCP endpoint ``path`` is under, longest match first; ``/mcp`` when it is under none.
+
+    ``/external/mcp/x`` belongs to ``/external/mcp`` and not to ``/mcp``; a non-MCP path such
+    as ``/keys/me`` is told about the core endpoint, which is the one every install has.
+    """
+    for prefix in sorted(mounted, key=len, reverse=True):
+        if path == prefix or path.startswith(prefix + "/"):
+            return prefix
+    return "/mcp"
+
+
 def _trusted_proxy_hops() -> int:
     """How many proxies sit in front of this process (``LEFTBRAIN_TRUSTED_PROXY_HOPS``).
 
@@ -177,13 +189,16 @@ def _bearer(scope: Any) -> str:
 class AuthMiddleware:
     """Static key and/or key-store check with quota metering. Public paths pass through."""
 
-    def __init__(self, app: Any, *, static_key: str | None, store: Any | None, base_url: str | None = None) -> None:
+    def __init__(self, app: Any, *, static_key: str | None, store: Any | None, base_url: str | None = None, mounted: tuple[str, ...] = ("/mcp",)) -> None:
         self.app = app
         self.static = static_key.encode() if static_key else None
         self.store = store
         #: set only when this server is an OAuth authorization server, so a 401 can point
         #: at the discovery document and tell an agent what to do next (#34)
         self.base_url = base_url
+        #: the MCP endpoints actually mounted, so a 401 on /external/mcp points at that
+        #: endpoint's own metadata and not at /mcp's (#101)
+        self.mounted = mounted
         # resolved once here rather than imported at module level, which is how the rest of
         # this file keeps `keys` (and its optional drivers) off the import path
         from .keys import KEY_PREFIX
@@ -340,21 +355,26 @@ class AuthMiddleware:
 
         await self._with_headers(scope, replay, buffered, quota)
 
-    def _challenge(self) -> str:
+    def _metadata_url(self, path: str) -> str:
+        """The protected-resource document for the endpoint ``path`` is under (RFC 9728 §3.1)."""
+        return f"{self.base_url}/.well-known/oauth-protected-resource{_mount_for(path, self.mounted)}"
+
+    def _challenge(self, path: str) -> str:
         """RFC 9728: point the client at the document that names our authorization server.
 
-        Claude Code probes the well-known paths before it ever reaches this, so the pointer
-        is not what starts discovery there — but ChatGPT and Claude's web connectors read it,
-        and the MCP spec requires the 401 to carry it.
+        The pointer has to name the document for the endpoint that was actually asked for.
+        RFC 9728 §3.3 has the client check that document's ``resource`` against the URL it is
+        connecting to, and Claude Code does: a 401 on /external/mcp that pointed at /mcp's
+        document was refused with "does not match expected" before any tool call (#101).
         """
         if not self.base_url:
             return "Bearer"
-        return f'Bearer realm="leftbrain", resource_metadata="{self.base_url}/.well-known/oauth-protected-resource/mcp"'
+        return f'Bearer realm="leftbrain", resource_metadata="{self._metadata_url(path)}"'
 
-    def _how_to_authorize(self) -> dict[str, str]:
+    def _how_to_authorize(self, path: str) -> dict[str, str]:
         """What an agent should do next, in fields it can act on and a line it can read aloud."""
         return {
-            "if_you_have_a_browser": f"{self.base_url}/.well-known/oauth-protected-resource/mcp",
+            "if_you_have_a_browser": self._metadata_url(path),
             "if_you_have_no_browser": f"POST {self.base_url}/oauth/device_authorization",
             "tell_your_user": f"leftbrain needs authorising. I can give you a short code to approve at {self.base_url}/device",
             "static_key_alternative": f"{self.base_url}/dashboard",
@@ -364,9 +384,10 @@ class AuthMiddleware:
     async def _reject(self, scope: Any, receive: Any, send: Any, status: int, error: str, message: str, extra: dict[str, str] | None = None) -> None:
         # the three existing fields are untouched; a valid key never sees this body at all
         body: dict[str, Any] = {"ok": False, "error": error, "message": message}
+        path = scope.get("path", "")
         if self.base_url:
-            body["how_to_authorize"] = self._how_to_authorize()
-        resp = JSONResponse(body, status_code=status, headers={"WWW-Authenticate": self._challenge(), **(extra or {})})
+            body["how_to_authorize"] = self._how_to_authorize(path)
+        resp = JSONResponse(body, status_code=status, headers={"WWW-Authenticate": self._challenge(path), **(extra or {})})
         await resp(scope, receive, send)
 
 
@@ -464,6 +485,10 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     auth_kind = "none" if not (static_key or store) else ("keys" if store else "bearer")
     if cfg.oauth_ready and cfg.base_url is None:
         print(json.dumps({"warning": "LEFTBRAIN_BASE_URL is not set; the OAuth callback URL is derived from request headers"}), flush=True)
+
+    # every MCP endpoint this process serves: /mcp, and /external/mcp and /files/mcp when
+    # mounted. Each gets its own protected-resource document and its own 401 pointer (#101).
+    mounted = tuple(f"{prefix}/mcp" for prefix, _ in servers)
 
     mounts: list[Any] = []
     root_app = None
@@ -606,12 +631,12 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
 
     # before the catch-all mount, which 404s anything that is not /mcp-shaped: the discovery
     # documents and /register must answer for their own sake (#34)
-    oauth_routes = build_oauth_routes(store, cfg)
+    oauth_routes = build_oauth_routes(store, cfg, mounted=mounted)
 
     routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), Route("/feedback", feedback, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
-        app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None)
+        app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None, mounted=mounted)
     return RequestMetaMiddleware(SecurityHeadersMiddleware(app))
 
 
