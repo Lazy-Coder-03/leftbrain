@@ -27,7 +27,7 @@ from .core import (
     validate,
 )
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 #: Where the source and the issue tracker are. The site footer, the report page and the
 #: feedback endpoint's "not configured" answer all point here, so nobody who hits a wrong
 #: answer is ever without a route to report it (#102).

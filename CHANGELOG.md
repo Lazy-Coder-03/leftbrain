@@ -4,7 +4,18 @@ All notable changes to leftbrain are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-08-31
+
+### Upgrading to 0.5.0
+
+- If a client or key used the `holidays` tool, it is gone: `tools/list` no longer offers it and
+  a call is refused as an unknown tool. For "is this date a working day" questions, use
+  `datetime` `business_days` / `add` / `diff` with `region` and `subdiv` - the public-holiday
+  calendar behind those is unchanged. There is no replacement for festival lookups; a date the
+  server cannot source is a date it should not answer.
+- Keys scoped to `holidays` keep working for every other tool they name; edit the scope on the
+  dashboard when convenient.
+- Reminder from 0.4.2: `/external/mcp` is retired; every tool is on `/mcp`.
 
 ### Removed
 
