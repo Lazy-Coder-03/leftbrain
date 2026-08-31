@@ -136,7 +136,7 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
             return JSONResponse(doc)
         page = await run_in_threadpool(toolref_mod.tool_page, name)  # first build runs every example
         if page is None:
-            return fail_page(request, 404, "No such tool", "leftbrain has fourteen tools; that isn't one of them.")
+            return fail_page(request, 404, "No such tool", "leftbrain has seventeen tools; that isn't one of them.")
         title, html = page
         return docs_shell(request, title, html, "tools", tool=name, user=auth.current_user(request, cfg))
 
