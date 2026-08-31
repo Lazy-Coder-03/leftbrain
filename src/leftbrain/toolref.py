@@ -140,17 +140,18 @@ class ToolSpec:
 
 @lru_cache(maxsize=1)
 def specs() -> dict[str, ToolSpec]:
-    """Every tool both MCP servers publish, keyed by tool name.
+    """Every tool the server publishes, keyed by tool name.
 
     ``server._tool_manager`` is the registry behind the async ``server.list_tools()``; reading
     it directly keeps the docs build synchronous. ``tests/test_toolref.py`` asserts the two
-    agree, so an SDK change cannot quietly desynchronise the page from the wire.
+    agree, so an SDK change cannot quietly desynchronise the page from the wire. One server
+    carries the network tools too (#100), and it is the one whose schemas carry parameter
+    descriptions, so it is the only one read here.
     """
-    from .external.mcp_server import server as external_server
     from .mcp_server import server as core_server
 
     out: dict[str, ToolSpec] = {}
-    for server in (core_server, external_server):
+    for server in (core_server,):
         for tool in server._tool_manager.list_tools():
             out[tool.name] = ToolSpec(
                 name=tool.name,
@@ -638,7 +639,7 @@ def catalogue_json() -> dict[str, Any]:
             "errors": sorted(CODES),
             "retryable": sorted(code for code, yes in CODES.items() if yes),
         },
-        "endpoints": {"core": "/mcp", "external": "/external/mcp"},
+        "endpoints": {"core": "/mcp"},
         "tools": listed,
     }
 
@@ -705,8 +706,9 @@ def index_markdown() -> str:
     parts += [
         "## Network tools",
         "",
-        "Served from `/external/mcp` instead of `/mcp`. They reach the internet, so their answers are "
-        "as-of the moment of the call and their examples are not executed when this page is built.",
+        "On `/mcp` with everything else, and marked on the scope grid. They reach the internet, so "
+        "their answers are as-of the moment of the call and their examples are not executed when this "
+        "page is built. `LEFTBRAIN_SERVE_EXTERNAL=0` leaves them off a self-hosted server entirely.",
         "",
     ]
     for tool in EXTERNAL_CATALOGUE:
@@ -1437,7 +1439,7 @@ CONVERT = ToolDoc(
     related=(
         "[`scale`](/docs/tools/scale) when a unit change has to ripple through several line items · "
         "[`numbers`](/docs/tools/numbers) `format` to present the result for a locale · "
-        "the `fx_rate` tool in `leftbrain-external` for live exchange rates."
+        "[`fx_rate`](/docs/tools/fx_rate) for live exchange rates."
     ),
     examples=convert_mod.EXAMPLES,
     modes=(
@@ -3496,7 +3498,7 @@ CATALOGUE: tuple[ToolDoc, ...] = (
 
 
 # --------------------------------------------------------------------------- #
-# Network tools - served from /external/mcp, documented but never executed here
+# Network tools - reach the internet, documented but never executed here
 # --------------------------------------------------------------------------- #
 
 WEATHER = ToolDoc(
@@ -3694,5 +3696,5 @@ URL_CHECK = ToolDoc(
     ),
 )
 
-#: The network-backed tools, served from `/external/mcp`.
+#: The network-backed tools: on `/mcp` with the rest, and the only ones that reach out.
 EXTERNAL_CATALOGUE: tuple[ToolDoc, ...] = (WEATHER, FX_RATE, GEO_ONLINE, URL_CHECK)

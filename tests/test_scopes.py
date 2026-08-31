@@ -63,6 +63,37 @@ def test_catalogue_mirrors_the_modules_and_covers_the_external_tools():
     assert CATALOGUE["fx_rate"] == () and CATALOGUE["url_check"] == ()
 
 
+def test_the_network_tools_are_the_external_servers_and_agree_with_the_docs():
+    """One fact, three places that state it: the catalogue, the tool reference, /docs/tools (#103)."""
+    from leftbrain import toolref
+    from leftbrain.scopes import NETWORK_TOOLS
+
+    assert NETWORK_TOOLS == {"weather", "fx_rate", "geo", "url_check"}
+    assert NETWORK_TOOLS < set(CATALOGUE) and list(CATALOGUE)[-len(NETWORK_TOOLS):] == sorted(NETWORK_TOOLS, key=list(CATALOGUE).index)
+    assert {t.name for t in toolref.EXTERNAL_CATALOGUE} == NETWORK_TOOLS
+    assert {t.name for t in toolref.CATALOGUE if t.network} == set()  # no core tool reaches out
+    listed = next(v for v in toolref.catalogue_json().values() if isinstance(v, list) and v and isinstance(v[0], dict))
+    assert {entry["name"] for entry in listed if entry["network"]} == NETWORK_TOOLS
+
+
+def test_the_scope_grid_says_which_tools_reach_the_internet(tmp_path):
+    """A freshly created key may call all four, and the page that decides that must say so (#103)."""
+    from test_web import login_via_github, oauth_app
+
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        page = c.get("/dashboard").text  # the create-key form's Tools disclosure
+        for tool in ("weather", "fx_rate", "geo", "url_check"):
+            assert f'value="{tool}" data-tool="{tool}" checked data-network>' in page, tool
+        for tool in ("math", "datetime", "geo_offline"):
+            assert f'value="{tool}" data-tool="{tool}" checked>' in page, tool
+        assert page.count('class="pill net"') == 4
+        assert page.count("data-network-group") == 1  # one heading, above the four
+        assert page.index("data-network-group") < page.index('data-tool="weather"')
+        assert page.index('data-tool="color"') < page.index("data-network-group")
+        assert 'data-offline' in page and ">No network<" in page
+
+
 def test_parse_scope_round_trips_dict_json_and_text_forms():
     s = parse_scope({"tools": {"math": None, "holidays": ["list", "check"]}})
     assert isinstance(s, Scope) and s.tools == {"math": None, "holidays": ("list", "check")}
@@ -153,6 +184,46 @@ def test_enforce_reads_the_context_and_returns_the_contract_error():
     assert calls == [("list", "IN"), ("check", "IN"), ("check", None)]
 
 
+def test_one_server_carries_every_tool_and_the_offline_build_leaves_the_four_out():
+    """One product, one connection (#100). Offline is a build of the same server, not another endpoint."""
+    from leftbrain.external.mcp_server import NETWORK_TOOLS as network_registry
+    from leftbrain.mcp_server import NETWORK_NOTE, build_server, server
+    from leftbrain.scopes import CATALOGUE
+
+    NETWORK_TOOLS = {name for name, _ in network_registry}
+
+    published = [t.name for t in server._tool_manager.list_tools()]
+    assert published == list(CATALOGUE)  # all 18, in catalogue order
+    assert NETWORK_NOTE in (server.instructions or "")
+    offline = build_server(network=False)
+    assert [t.name for t in offline._tool_manager.list_tools()] == [t for t in CATALOGUE if t not in NETWORK_TOOLS]
+    assert NETWORK_NOTE not in (offline.instructions or "")
+
+
+def test_the_retired_external_endpoint_says_where_the_tools_went(tmp_path):
+    with TestClient(keyed_app(tmp_path)) as c:
+        for path in ("/external/mcp", "/external/mcp/anything"):
+            r = c.post(path, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            assert r.status_code == 410, path
+            body = r.json()
+            assert body["ok"] is False and body["error"] == "unsupported" and body["moved_to"] == "/mcp"
+            assert "/mcp" in body["message"] and "weather" in body["message"]
+        assert c.get("/external/mcp").status_code == 410  # any method, no key needed: the reason must reach an old client
+        assert "oauth-protected-resource/external/mcp" not in c.get("/", headers={"Accept": "application/json"}).text
+        root = c.get("/", headers={"Accept": "application/json"}).json()
+        assert root["endpoints"] == {"core": "/mcp"} and root["network_tools"] is True
+
+
+def test_the_offline_app_publishes_fourteen_and_says_so(tmp_path):
+    from leftbrain.web.config import WebConfig
+
+    cfg = WebConfig(client_id=None, client_secret=None, secret="test-secret-0123456789", base_url=None, open_signup=False)
+    with TestClient(build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"), web_config=cfg)) as c:
+        key, _ = KeyStore(str(tmp_path / "k.sqlite3"), secret="test-secret-0123456789").create("a@b.co")
+        assert len(tool_names(rpc(c, "/mcp", key, "tools/list"))) == 14
+        assert c.get("/", headers={"Accept": "application/json"}).json()["network_tools"] is False
+
+
 def test_wrapping_left_the_published_schemas_and_docstrings_alone():
     from mcp.server.mcpserver.utilities.func_metadata import func_metadata
 
@@ -226,15 +297,13 @@ def test_scoped_key_over_http(tmp_path, json_response):
         open_key, _ = store.create("a@b.co")
 
         r = rpc(c, "/mcp", scoped, "tools/list")
-        assert r.status_code == 200 and tool_names(r) == ["holidays", "numbers"]
+        assert r.status_code == 200 and tool_names(r) == ["holidays", "numbers", "weather"]  # one endpoint carries the network tools too (#100)
         assert r.headers["content-type"].startswith("application/json" if json_response else "text/event-stream")
         if json_response:
             assert int(r.headers["content-length"]) == len(r.content)
         else:
             assert r.text.startswith("event: message\r\ndata: ") and r.text.endswith("\r\n\r\n")
-        assert tool_names(rpc(c, "/external/mcp", scoped, "tools/list")) == ["weather"]
-        assert len(tool_names(rpc(c, "/mcp", open_key, "tools/list"))) == 14
-        assert len(tool_names(rpc(c, "/external/mcp", open_key, "tools/list"))) == 4
+        assert len(tool_names(rpc(c, "/mcp", open_key, "tools/list"))) == 18
 
         ok = contract(rpc(c, "/mcp", scoped, "tools/call", name="numbers", arguments={"mode": "compare", "values": ["9.11", "9.9"]}))
         assert ok["isError"] is False and ok["structuredContent"]["ok"] and ok["structuredContent"]["result"]["max"]["input"] == "9.9"
@@ -252,7 +321,7 @@ def test_scoped_key_over_http(tmp_path, json_response):
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="holidays", arguments={"mode": "next", "region": "IN"}))
         assert denied["structuredContent"]["error"] == "forbidden" and "mode 'next'" in denied["structuredContent"]["message"]
         assert "allowed: list, check" in denied["structuredContent"]["message"]
-        denied = contract(rpc(c, "/external/mcp", scoped, "tools/call", name="fx_rate", arguments={"base": "USD", "to": "INR"}))
+        denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="fx_rate", arguments={"base": "USD", "to": "INR"}))
         assert denied["structuredContent"]["error"] == "forbidden"
 
         assert contract(rpc(c, "/mcp", open_key, "tools/call", name="math", arguments={"expr": "1+1"}))["structuredContent"]["ok"]
@@ -414,6 +483,7 @@ def test_dashboard_scope_grid_is_plain_html_with_the_behaviour_in_site_js():
     js = (HERE / "static" / "site.js").read_text(encoding="utf-8")
     css = (HERE / "static" / "site.css").read_text(encoding="utf-8")
     assert "data-tool" in js and "data-of" in js and ".scope" in css
+    assert "data-offline" in js and "data-network" in js and ".pill.net" in css and ".scope .group" in css
     grid = (HERE / "templates" / "_scope_grid.html").read_text(encoding="utf-8")
     assert "<script" not in grid and re.search(r'type="checkbox" name="scope"', grid)
 

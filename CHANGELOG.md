@@ -6,10 +6,37 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The scope grid says which tools reach the internet.** `weather`, `fx_rate`, `geo` and
+  `url_check` carry a `network` pill with a title that says the call's input goes to a
+  third-party service, sit under a "Reaches the internet" heading, and a **No network** button
+  beside All / None / Expand all unticks the four and leaves everything else as it was. The
+  same partial serves the create-key form, the key's scope editor and both consent pages, so
+  a key that arrives with all four ticked - every key with no scope, including one minted by
+  approving a consent screen - is never decided on a page that does not mention the internet.
+  The fact lives with the data: `scopes.NETWORK_TOOLS` is the external half of the catalogue,
+  and a test holds it equal to the tool reference's `network` flag. (#103)
+
 ### Changed
 
 - **Docs.** The Claude Code client page says what "Disabled for this project" means and how
   to clear it; the quickstart's paste-in prompt tells the agent the same. (#104)
+- **One endpoint. `/external/mcp` is retired; the network tools are on `/mcp`.** Adding
+  leftbrain was two `mcp add` commands and, since OAuth, two sign-ins, for what every other
+  layer - one key, one quota, one dashboard, one scope grid, one `/docs/tools` - already treated
+  as one product. `weather`, `fx_rate`, `geo` and `url_check` are now published by the same
+  server as the fourteen core tools, and the stdio `leftbrain` command carries them too.
+  `LEFTBRAIN_SERVE_EXTERNAL=0` (or `--no-network`) leaves the four out of a process; per-key
+  control over the same four is the scope grid, which marks them (#103). A request to
+  `/external/mcp` answers `410` with `moved_to: "/mcp"` and a message saying what happened,
+  with no key required, so a client still configured with it is told rather than shown a bare
+  404. The root document lists one endpoint and a `network_tools` flag. `leftbrain-external`
+  remains for a process that should carry only the four. **This flips the default from
+  opt-in to opt-out for network access**; that was decided deliberately (#100).
+- **Every parameter of `fx_rate` and `url_check` now carries its description** on the wire.
+  The pass that copies the reference's parameter docs onto the published schema only handled
+  tools with modes; the two mode-less tools were never on the described server before. (#100)
 
 ### Fixed
 

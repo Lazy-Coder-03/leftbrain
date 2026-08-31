@@ -43,7 +43,9 @@ Design rules:
 | `encode` | hash, hmac, checksum, base64, hex, url, html, jwt_decode, json | SHA-256, HMAC, CRC32, base64 — models hallucinate all of these; `expected` → `matches` in constant time |
 | `color` | convert, describe, swatch, contrast, mix, harmony, nearest, simulate, grayscale | hex ↔ RGB ↔ HSL ↔ HSV ↔ CMYK with alpha, the nearest of the 148 CSS names by Lab ΔE, WCAG contrast with the lightness fix that passes, blends, hue harmonies, snapping to a brand palette, deuteranopia/protanopia/tritanopia, five greyscale methods, and a real PNG swatch to look at |
 
-### External (`leftbrain-external`, network, key-less public APIs)
+### Network tools (`weather`, `fx_rate`, `geo`, `url_check`)
+
+The four that reach the internet, on the same server as everything else. `LEFTBRAIN_SERVE_EXTERNAL=0` (or `--no-network`) leaves them out of a process entirely; the dashboard marks them, and a key can be scoped without them in one click.
 
 | Tool | Source |
 |---|---|
@@ -262,7 +264,6 @@ lb.validate_tool("assert", data=doc, rules=[{"path": "leave.days", "op": "lte", 
 
 ```bash
 claude mcp add leftbrain -- leftbrain
-claude mcp add leftbrain-external -- leftbrain-external
 claude mcp add leftbrain-files -e LEFTBRAIN_FILE_ROOTS=/path/to/docs -- leftbrain-files
 ```
 
@@ -271,8 +272,7 @@ claude mcp add leftbrain-files -e LEFTBRAIN_FILE_ROOTS=/path/to/docs -- leftbrai
 ```json
 {
   "mcpServers": {
-    "leftbrain":          { "command": "leftbrain" },
-    "leftbrain-external": { "command": "leftbrain-external" }
+    "leftbrain": { "command": "leftbrain" }
   }
 }
 ```
@@ -286,8 +286,7 @@ One process serves every tool set with Streamable HTTP:
 ```bash
 pip install "leftbrain[server]"
 LEFTBRAIN_API_KEY=your-secret leftbrain-serve --port 8080
-# core:      http://localhost:8080/mcp
-# external:  http://localhost:8080/external/mcp
+# all tools: http://localhost:8080/mcp   (--no-network leaves out the four that reach the internet)
 # files:     add --files (and set LEFTBRAIN_FILE_ROOTS)
 ```
 

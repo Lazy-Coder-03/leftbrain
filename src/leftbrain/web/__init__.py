@@ -12,11 +12,15 @@ from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from .. import __version__
+from ..scopes import NETWORK_TOOLS
 from .config import WebConfig
 
 HERE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(HERE / "templates"))
 templates.env.globals["version"] = __version__
+#: which rows of the scope grid reach the internet - the dashboard, the create-key form and
+#: both consent pages include the same partial, so it is a global and not a per-view argument (#103)
+templates.env.globals["network_tools"] = NETWORK_TOOLS
 
 
 def _asset_stamp() -> str:

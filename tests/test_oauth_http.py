@@ -14,12 +14,12 @@ MCP_HEADERS = {"Accept": "application/json, text/event-stream"}
 LIST = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
 
 
-def make_app(tmp_path, external=False, **over):
+def make_app(tmp_path, files=False, **over):
     cfg = WebConfig(**{
         "client_id": None, "client_secret": None, "secret": SECRET,
         "base_url": BASE, "open_signup": False, **over,
     })
-    return build_app(include_external=external, keys_db=str(tmp_path / "k.sqlite3"), web_config=cfg)
+    return build_app(include_external=False, include_files=files, keys_db=str(tmp_path / "k.sqlite3"), web_config=cfg)
 
 
 def test_the_protected_resource_document_names_this_server(tmp_path):
@@ -35,28 +35,28 @@ def test_the_protected_resource_document_names_this_server(tmp_path):
 
 def test_every_mounted_endpoint_has_its_own_protected_resource_document(tmp_path):
     """RFC 9728 §3.3: the client checks `resource` against the URL it is connecting to (#101)."""
-    with TestClient(make_app(tmp_path, external=True)) as c:
+    with TestClient(make_app(tmp_path, files=True)) as c:
         core = c.get("/.well-known/oauth-protected-resource/mcp").json()
-        ext = c.get("/.well-known/oauth-protected-resource/external/mcp")
+        ext = c.get("/.well-known/oauth-protected-resource/files/mcp")
         assert ext.status_code == 200
         assert core["resource"] == f"{BASE}/mcp"
-        assert ext.json()["resource"] == f"{BASE}/external/mcp"
+        assert ext.json()["resource"] == f"{BASE}/files/mcp"
         # the same authorization server and the same agent document behind both
         assert ext.json()["authorization_servers"] == core["authorization_servers"] == [BASE]
         assert ext.json()["resource_documentation"] == core["resource_documentation"]
 
 
 def test_an_endpoint_that_is_not_mounted_has_no_document(tmp_path):
-    with TestClient(make_app(tmp_path, external=False)) as c:
-        assert c.get("/.well-known/oauth-protected-resource/external/mcp").status_code == 404
+    with TestClient(make_app(tmp_path, files=False)) as c:
         assert c.get("/.well-known/oauth-protected-resource/files/mcp").status_code == 404
+        assert c.get("/.well-known/oauth-protected-resource/external/mcp").status_code == 404  # retired (#100)
 
 
-def test_a_401_on_external_mcp_points_at_its_own_document(tmp_path):
+def test_a_401_on_a_second_mount_points_at_its_own_document(tmp_path):
     """Measured on 0.4.1: the pointer named /mcp's document whichever mount was asked for, and
-    Claude Code refused /external/mcp with "does not match expected" (#101)."""
-    with TestClient(make_app(tmp_path, external=True)) as c:
-        for endpoint in ("/mcp", "/external/mcp"):
+    Claude Code refused the second mount with "does not match expected" (#101)."""
+    with TestClient(make_app(tmp_path, files=True)) as c:
+        for endpoint in ("/mcp", "/files/mcp"):
             r = c.post(endpoint, json={})
             assert r.status_code == 401
             doc = f"{BASE}/.well-known/oauth-protected-resource{endpoint}"
@@ -87,7 +87,7 @@ def test_the_no_browser_route_names_registration_first(tmp_path):
 
 def test_a_401_off_the_mcp_paths_points_at_the_core_document(tmp_path):
     """/keys/me is protected too; it has no document of its own, so it names the core one."""
-    with TestClient(make_app(tmp_path, external=True)) as c:
+    with TestClient(make_app(tmp_path, files=True)) as c:
         r = c.get("/keys/me")
         assert r.status_code == 401
         assert f'resource_metadata="{BASE}/.well-known/oauth-protected-resource/mcp"' in r.headers["www-authenticate"]

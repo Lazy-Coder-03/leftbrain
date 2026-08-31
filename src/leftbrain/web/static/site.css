@@ -72,6 +72,9 @@ table.keys{width:100%;border-collapse:collapse;font-size:.92rem}table.keys th{te
 .scope .count{font-family:var(--mono);font-size:.72rem;color:var(--ink2);background:var(--bg);border:1px solid var(--line2);border-radius:999px;padding:1px 8px;flex:0 0 auto;font-variant-numeric:tabular-nums}
 .scope .node.partial>.row .count{color:var(--accent);border-color:var(--accent-soft);background:var(--accent-soft)}
 .scope .node.off>.row .name{color:var(--ink2);font-weight:500}
+.scope .group{padding:9px 12px 5px;font-family:var(--mono);font-size:.74rem;font-weight:600;color:var(--ink2);text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid var(--line2);background:var(--bg)}
+.scope .group .hint{text-transform:none;letter-spacing:0;font-weight:400}
+.scope .pill.net{color:var(--accent);flex:0 0 auto}
 .scope .node.off>.row .count{opacity:.5}
 /* children: indented under a guide line, the way a file tree reads */
 .scope .kids{display:none;grid-template-columns:repeat(auto-fill,minmax(148px,1fr));gap:2px 12px;padding:2px 12px 10px 38px;margin-left:19px;border-left:1px solid var(--line2)}

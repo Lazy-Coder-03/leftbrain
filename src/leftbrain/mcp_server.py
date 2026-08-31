@@ -9,6 +9,7 @@ usual failure is the model not calling it, not the tool being wrong.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from typing import Any
 
@@ -50,13 +51,9 @@ even when the answer seems obvious. Every response has the shape
 When ok is false and 'needs' is present, the input was ambiguous: pick one of needs.options and call again.
 Read 'assumptions' - they say how ambiguous input was interpreted."""
 
-server = ContractMCPServer(
-    "leftbrain",
-    title="leftbrain",
-    instructions=INSTRUCTIONS,
-    version=__version__,
-    website_url="https://leftbrain.idlesync.in",
-)
+#: Appended to the instructions when the network tools are on the server, because the
+#: opening line promises determinism and these four are the exception to it.
+NETWORK_NOTE = "weather, fx_rate, geo and url_check reach the internet; their answers are as-of the moment of the call."
 
 
 def _clean(d: dict[str, Any]) -> dict[str, Any]:
@@ -82,7 +79,6 @@ Document = str | float | int | bool | list[Any] | dict[str, Any] | None
 #: A place: a name, "lat,lon", [lat, lon], or {"lat": .., "lon": ..}.
 Place = str | list[Any] | dict[str, Any] | None
 
-@server.tool(name="math")
 @enforce("math")
 def math(
     mode: str = "eval",
@@ -142,7 +138,6 @@ def math(
     return run_guarded("math", mode, params, timeout=timeout)
 
 
-@server.tool(name="datetime")
 @enforce("datetime")
 def datetime(
     mode: str = "now",
@@ -203,7 +198,6 @@ def datetime(
     return datetimex.datetime_tool(mode, **params)
 
 
-@server.tool(name="scale")
 @enforce("scale")
 def scale(
     from_qty: float | str | None = None,
@@ -226,7 +220,6 @@ def scale(
     return scale_mod.scale(**_clean(dict(from_qty=from_qty, to_qty=to_qty, from_unit=from_unit, to_unit=to_unit, entities=entities, mode=mode, factor=factor, precision=precision, assume=assume)))
 
 
-@server.tool(name="convert")
 @enforce("convert")
 def convert(
     value: float | str,
@@ -260,7 +253,6 @@ def convert(
     return convert_mod.convert(mode, **_clean(dict(value=value, from_unit=from_unit, to_unit=to_unit, assume=assume, delta=delta, rate=rate, rates=rates, base=base, precision=precision, decimals=decimals, date=date, ingredient=ingredient, cup=cup, category=category, region=region, gender=gender)))
 
 
-@server.tool(name="holidays")
 @enforce("holidays")
 def holidays(
     mode: str = "list",
@@ -289,7 +281,6 @@ def holidays(
     return holidays_.holidays(mode, **_clean(dict(region=region, year=year, years=years, month=month, subdiv=subdiv, date=date, n=n, categories=categories, locale=locale, date_locale=date_locale, language=language, name=name, start=start, end=end, subdivs=subdivs, regions=regions)))
 
 
-@server.tool(name="numbers")
 @enforce("numbers")
 def numbers(
     mode: str = "compare",
@@ -330,7 +321,6 @@ def numbers(
     return run_guarded("numbers", mode, _clean(dict(values=values, a=a, b=b, value=value, decimals=decimals, significant=significant, nearest=nearest, rounding=rounding, locale=locale, style=style, currency=currency, accounting=accounting, total=total, parts=parts, weights=weights, percentages=percentages, labels=labels, method=method, kind=kind, start=start, step=step, ratio=ratio, end=end, n=n, system=system, suffix_only=suffix_only)))
 
 
-@server.tool(name="finance")
 @enforce("finance")
 def finance(
     mode: str = "emi",
@@ -373,7 +363,6 @@ def finance(
     return finance_mod.finance(mode, **_clean(dict(principal=principal, rate=rate, rate_period=rate_period, months=months, years=years, schedule=schedule, decimals=decimals, rounding=rounding, compounding=compounding, contribution=contribution, contribution_timing=contribution_timing, start_value=start_value, end_value=end_value, cashflows=cashflows, amount=amount, amount_is=amount_is, supply=supply, op=op, a=a, b=b, percent=percent, value=value, price=price, discounts=discounts, total=total, tip=tip, people=people)))
 
 
-@server.tool(name="text")
 @enforce("text")
 def text(
     mode: str = "count",
@@ -408,7 +397,6 @@ def text(
     return run_guarded("text", mode, _clean(dict(text=text, what=what, substring=substring, case_sensitive=case_sensitive, pattern=pattern, flags=flags, replacement=replacement, count=count, a=a, b=b, granularity=granularity, items=items, key=key, order=order, natural=natural, case_insensitive=case_insensitive, unique=unique, limit=limit, context=context, normalize_whitespace=normalize_whitespace, overlapping=overlapping)))
 
 
-@server.tool(name="collections")
 @enforce("collections")
 def collections(
     mode: str = "set_ops",
@@ -459,7 +447,6 @@ def collections(
     return run_guarded("collections", mode, _clean(dict(items=items, a=a, b=b, op=op, key=key, keys=keys, fields=fields, field=field, agg=agg, agg_field=agg_field, ops=ops, data=data, depth=depth, separator=separator, page=page, per_page=per_page, size=size, n=n, case_insensitive=case_insensitive, include_items=include_items, order=order, rename=rename, short_names=short_names, flatten_lists=flatten_lists, where=where, by=by, pivot_columns=pivot_columns, column=column, columns=columns, delimiter=delimiter, has_header=has_header, escape_formulas=escape_formulas, decimals=decimals)))
 
 
-@server.tool(name="validate")
 @enforce("validate")
 def validate(
     mode: str = "assert",
@@ -487,7 +474,6 @@ def validate(
     return run_guarded("validate", mode, _clean(dict(data=data, rules=rules, schema=schema, kind=kind, value=value, region=region, sql=sql, dialect=dialect, pattern=pattern, network=network)))
 
 
-@server.tool(name="random")
 @enforce("random")
 def random(
     mode: str = "uuid",
@@ -515,7 +501,6 @@ def random(
     return random_.random_tool(mode, **_clean(dict(n=n, min=min, max=max, unique=unique, seed=seed, items=items, weights=weights, kind=kind, length=length, version=version, decimals=decimals, p=p, groups=groups, k=k, format=format)))
 
 
-@server.tool(name="geo_offline")
 @enforce("geo_offline")
 def geo(
     mode: str = "tz_for_place",
@@ -538,7 +523,6 @@ def geo(
     return geo_offline.geo_offline(mode, **params)
 
 
-@server.tool(name="encode")
 @enforce("encode")
 def encode(
     mode: str = "hash",
@@ -568,7 +552,6 @@ def encode(
     return encode_mod.encode(mode, **_clean(dict(text=text, algo=algo, key=key, expected=expected, action=action, urlsafe=urlsafe, token=token, data=data, indent=indent, bytes_base64=bytes_base64, bytes_hex=bytes_hex, encoding=encoding, key_base64=key_base64, strip_padding=strip_padding, plus=plus, safe=safe, quote=quote, sort_keys=sort_keys)))
 
 
-@server.tool(name="color")
 @enforce("color")
 def color(
     mode: str = "convert",
@@ -602,8 +585,29 @@ def color(
     return color_mod.color(mode, **_clean(dict(value=value, spaces=spaces, other=other, ratio=ratio, space=space, kind=kind, palette=palette, size=size, method=method, ramp=ramp, image=image, level=level, decimals=decimals)))
 
 
-def _describe_parameters() -> int:
-    """Copy the reference's parameter docs onto the published JSON schema.
+#: Name and function, in the order the tools are published. Registration is a loop over
+#: this rather than a decorator per function so that a server can be built more than once -
+#: one per process for stdio, one per app for HTTP, with or without the network tools (#100).
+CORE_TOOLS: tuple[tuple[str, Any], ...] = (
+    ("math", math),
+    ("datetime", datetime),
+    ("scale", scale),
+    ("convert", convert),
+    ("holidays", holidays),
+    ("numbers", numbers),
+    ("finance", finance),
+    ("text", text),
+    ("collections", collections),
+    ("validate", validate),
+    ("random", random),
+    ("geo_offline", geo),  # the function is `geo`; `geo_offline` is the module it wraps
+    ("encode", encode),
+    ("color", color),
+)
+
+
+def _describe_parameters(server: ContractMCPServer) -> int:
+    """Copy the reference's parameter docs onto the published JSON schema of ``server``.
 
     A client that defers tool schemas shows a preview when deciding whether to load the full
     definition, and ours read as `A?: any, B?: any, angle?: any...` - thirty untyped optionals
@@ -624,11 +628,13 @@ def _describe_parameters() -> int:
             continue
         properties = (tool.parameters or {}).get("properties", {})
         per_name: dict[str, list[str]] = {}
-        for mode in doc.modes:
-            for param in mode.params:
+        # a tool without modes (fx_rate, url_check) documents its parameters on the tool itself
+        documented = [(mode.name, mode.params) for mode in doc.modes] or [(None, doc.params)]
+        for mode_name, params in documented:
+            for param in params:
                 if param.name in properties and param.doc:
                     per_name.setdefault(param.name, [])
-                    line = f"{mode.name}: {param.doc}" if len(doc.modes) > 1 else param.doc
+                    line = f"{mode_name}: {param.doc}" if len(doc.modes) > 1 else param.doc
                     if line not in per_name[param.name]:
                         per_name[param.name].append(line)
         for name, lines in per_name.items():
@@ -640,12 +646,44 @@ def _describe_parameters() -> int:
     return described
 
 
-try:  # descriptions are worth having, never worth failing to start over
-    _describe_parameters()
-except Exception as _e:  # noqa: BLE001 - a tool with no descriptions still works
-    import logging
+def build_server(*, network: bool = True) -> ContractMCPServer:
+    """One leftbrain server: the fourteen core tools, and the four network tools unless told not to.
 
-    logging.getLogger("leftbrain").warning("parameter descriptions unavailable: %s", _e)
+    ``network=False`` is the offline build - ``LEFTBRAIN_SERVE_EXTERNAL=0`` or ``--no-network``.
+    It leaves the four out of ``tools/list`` altogether rather than serving them from somewhere
+    else: there is no somewhere else any more (#100). Per-key control over the same four is the
+    scope grid, which marks them (#103).
+    """
+    srv = ContractMCPServer(
+        "leftbrain",
+        title="leftbrain",
+        instructions=INSTRUCTIONS + ("\n" + NETWORK_NOTE if network else ""),
+        version=__version__,
+        website_url="https://leftbrain.idlesync.in",
+    )
+    for name, fn in CORE_TOOLS:
+        srv.tool(name=name)(fn)
+    if network:
+        from .external.mcp_server import register as register_network_tools
+
+        register_network_tools(srv)
+    try:  # descriptions are worth having, never worth failing to start over
+        _describe_parameters(srv)
+    except Exception as e:  # noqa: BLE001 - a tool with no descriptions still works
+        import logging
+
+        logging.getLogger("leftbrain").warning("parameter descriptions unavailable: %s", e)
+    return srv
+
+
+def network_wanted() -> bool:
+    """``LEFTBRAIN_SERVE_EXTERNAL`` - the one switch, read the same way by stdio and HTTP."""
+    return os.environ.get("LEFTBRAIN_SERVE_EXTERNAL", "1") != "0"
+
+
+#: The server as a module-level object, for anything that introspects it (the docs build, the
+#: schema tests). It carries every tool; ``build_server`` is what a process should run.
+server = build_server()
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -653,14 +691,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--transport", choices=["stdio", "streamable-http", "sse"], default="stdio")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--no-network", action="store_true", help="leave out weather, fx_rate, geo and url_check (or set LEFTBRAIN_SERVE_EXTERNAL=0)")
     ap.add_argument("--version", action="version", version=f"leftbrain {__version__}")
     args = ap.parse_args(argv)
+    srv = build_server(network=network_wanted() and not args.no_network)
     if args.transport == "stdio":
-        server.run(transport="stdio")
+        srv.run(transport="stdio")
     else:
-        server.settings.host = args.host
-        server.settings.port = args.port
-        server.run(transport=args.transport)
+        srv.settings.host = args.host
+        srv.settings.port = args.port
+        srv.run(transport=args.transport)
 
 
 if __name__ == "__main__":

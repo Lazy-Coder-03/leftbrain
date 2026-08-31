@@ -124,6 +124,16 @@
         if (!b) return;
         if (b.hasAttribute('data-all')) setAll(true);
         else if (b.hasAttribute('data-none')) setAll(false);
+        else if (b.hasAttribute('data-offline')) {
+          // "everything except the internet" is the most likely intent after "all", so it is one
+          // click: the network rows go off and every other row is left exactly as it was.
+          tools.filter(function (t) { return t.hasAttribute('data-network'); }).forEach(function (t) {
+            t.checked = false;
+            modesOf(t).forEach(function (m) { m.disabled = true; m.checked = false; });
+            paint(t.closest('[data-node]'), t);
+          });
+          total();
+        }
         else if (b.hasAttribute('data-expand')) {
           var nodes = $$('[data-node]', grid).filter(function (n) { return n.querySelector('.kids'); });
           var open = nodes.every(function (n) { return n.getAttribute('aria-expanded') === 'true'; });

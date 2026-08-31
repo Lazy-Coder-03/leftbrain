@@ -2,7 +2,6 @@
 
 Endpoints (Streamable HTTP MCP):
     /mcp            core tools (math, datetime, convert, ...)
-    /external/mcp   weather, fx_rate, geo, url_check
     /files/mcp      pdf/image/file tools  (opt-in: --files or LEFTBRAIN_SERVE_FILES=1)
     /healthz        liveness JSON
     /               service description JSON
@@ -45,7 +44,10 @@ from .scopes import Scope, allowed_tools, current_scope, current_tool_recorder
 
 log = logging.getLogger("leftbrain")
 
-MCP_PREFIXES = ("/mcp", "/external/mcp", "/files/mcp")
+MCP_PREFIXES = ("/mcp", "/files/mcp")
+#: Retired in 0.4.2: the network tools moved onto /mcp (#100). The path stays routable so a
+#: client still configured with it is told where to go rather than shown a bare 404.
+RETIRED_EXTERNAL = "/external/mcp"
 PROTECTED_PREFIXES = (*MCP_PREFIXES, "/keys/me", "/feedback")
 
 
@@ -60,8 +62,8 @@ def _protected(path: str) -> bool:
 def _mount_for(path: str, mounted: tuple[str, ...]) -> str:
     """The MCP endpoint ``path`` is under, longest match first; ``/mcp`` when it is under none.
 
-    ``/external/mcp/x`` belongs to ``/external/mcp`` and not to ``/mcp``; a non-MCP path such
-    as ``/keys/me`` is told about the core endpoint, which is the one every install has.
+    ``/files/mcp/x`` belongs to ``/files/mcp`` and not to ``/mcp``; a non-MCP path such as
+    ``/keys/me`` is told about the core endpoint, which is the one every install has.
     """
     for prefix in sorted(mounted, key=len, reverse=True):
         if path == prefix or path.startswith(prefix + "/"):
@@ -196,7 +198,7 @@ class AuthMiddleware:
         #: set only when this server is an OAuth authorization server, so a 401 can point
         #: at the discovery document and tell an agent what to do next (#34)
         self.base_url = base_url
-        #: the MCP endpoints actually mounted, so a 401 on /external/mcp points at that
+        #: the MCP endpoints actually mounted, so a 401 on /files/mcp points at that
         #: endpoint's own metadata and not at /mcp's (#101)
         self.mounted = mounted
         #: whether POST /keys/signup answers; the 401 must not send anyone to a closed door (#104)
@@ -379,7 +381,7 @@ class AuthMiddleware:
 
         The pointer has to name the document for the endpoint that was actually asked for.
         RFC 9728 §3.3 has the client check that document's ``resource`` against the URL it is
-        connecting to, and Claude Code does: a 401 on /external/mcp that pointed at /mcp's
+        connecting to, and Claude Code does: a 401 on a second mount that pointed at /mcp's
         document was refused with "does not match expected" before any tool call (#101).
         """
         if not self.base_url:
@@ -473,13 +475,12 @@ class _McpOnly:
 
 
 def build_app(*, include_external: bool = True, include_files: bool = False, stateless: bool = True, json_response: bool = False, host: str = "0.0.0.0", api_key: str | None = None, keys_db: str | None = None, web_config: Any | None = None) -> Any:
-    from .mcp_server import server as core
+    from .mcp_server import build_server
 
-    servers: list[tuple[str, Any]] = [("", core)]
-    if include_external:
-        from .external.mcp_server import server as external
-
-        servers.append(("/external", external))
+    # One server carries the core tools and, unless switched off, the four network tools:
+    # adding leftbrain is one connection, and "offline only" is a deployment switch here or a
+    # per-key choice on the scope grid, not a second endpoint (#100).
+    servers: list[tuple[str, Any]] = [("", build_server(network=include_external))]
     if include_files:
         from .files.mcp_server import server as files_srv
 
@@ -501,8 +502,8 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     if cfg.oauth_ready and cfg.base_url is None:
         print(json.dumps({"warning": "LEFTBRAIN_BASE_URL is not set; the OAuth callback URL is derived from request headers"}), flush=True)
 
-    # every MCP endpoint this process serves: /mcp, and /external/mcp and /files/mcp when
-    # mounted. Each gets its own protected-resource document and its own 401 pointer (#101).
+    # every MCP endpoint this process serves: /mcp, and /files/mcp when mounted. Each gets
+    # its own protected-resource document and its own 401 pointer (#101).
     mounted = tuple(f"{prefix}/mcp" for prefix, _ in servers)
 
     mounts: list[Any] = []
@@ -519,10 +520,20 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
 
         if wants_html(request):
             return await landing(request, store, cfg)
-        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"external": "/external/mcp"} if include_external else {}), **({"files": "/files/mcp"} if include_files else {})}, "auth": auth_kind, "signup": "/keys/signup" if (store and cfg.open_signup) else None, "login": "/login", "docs": "/docs", "tools": "/docs/tools", "transport": "streamable-http", "stateless": stateless})
+        return JSONResponse({"name": "leftbrain", "version": __version__, "description": "Exact, deterministic tools for AI agents", "endpoints": {"core": "/mcp", **({"files": "/files/mcp"} if include_files else {})}, "network_tools": include_external, "auth": auth_kind, "signup": "/keys/signup" if (store and cfg.open_signup) else None, "login": "/login", "docs": "/docs", "tools": "/docs/tools", "transport": "streamable-http", "stateless": stateless})
 
     async def healthz(_: Request) -> JSONResponse:
         return JSONResponse({"ok": True, "version": __version__})
+
+    async def external_gone(_: Request) -> JSONResponse:
+        """410 for the retired second endpoint: says what happened and where to point instead."""
+        return JSONResponse({
+            "ok": False,
+            "error": "unsupported",
+            "message": f"{RETIRED_EXTERNAL} was retired in 0.4.2: weather, fx_rate, geo and url_check are served from /mcp with every other tool. Point this client at /mcp and remove the second server entry.",
+            "moved_to": "/mcp",
+            "since": "0.4.2",
+        }, status_code=410)
 
     async def signup(request: Request) -> JSONResponse:
         if store is None or not cfg.open_signup:
@@ -649,7 +660,8 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     # documents and /register must answer for their own sake (#34)
     oauth_routes = build_oauth_routes(store, cfg, mounted=mounted)
 
-    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), Route("/feedback", feedback, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
+    every_method = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"]
+    routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route(RETIRED_EXTERNAL, external_gone, methods=every_method), Route(RETIRED_EXTERNAL + "/{rest:path}", external_gone, methods=every_method), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), Route("/feedback", feedback, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
         app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None, mounted=mounted, signup_open=bool(store and cfg.open_signup))
@@ -674,7 +686,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--host", default=os.environ.get("HOST", "0.0.0.0"))
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8080")))
     ap.add_argument("--files", action="store_true", default=os.environ.get("LEFTBRAIN_SERVE_FILES", "") in ("1", "true", "yes"), help="also mount the files tools at /files/mcp")
-    ap.add_argument("--no-external", action="store_true", help="do not mount the network tools")
+    ap.add_argument("--no-external", "--no-network", dest="no_external", action="store_true", help="leave weather, fx_rate, geo and url_check off /mcp (or set LEFTBRAIN_SERVE_EXTERNAL=0)")
     ap.add_argument("--stateful", action="store_true", help="keep per-client sessions (default: stateless, scales horizontally)")
     ap.add_argument("--json", action="store_true", help="plain JSON responses instead of SSE streams")
     ap.add_argument("--api-key", default=None, help="require this single bearer token (or set LEFTBRAIN_API_KEY)")
@@ -700,7 +712,7 @@ def main(argv: list[str] | None = None) -> None:
     keys_db = os.environ.get("LEFTBRAIN_KEYS_URL") or os.environ.get("DATABASE_URL") or os.environ.get("LEFTBRAIN_KEYS_DB")
     if keys_db and args.workers > 1:
         print("note: the SQLite key store keeps per-minute rate windows in memory; with several workers the per-minute limit is per worker (daily quotas stay exact)", flush=True)
-    print(json.dumps({"leftbrain": __version__, "listen": f"http://{args.host}:{args.port}", "core": "/mcp", "external": None if args.no_external else "/external/mcp", "files": "/files/mcp" if args.files else None, "auth": "keys" if keys_db else ("bearer" if os.environ.get("LEFTBRAIN_API_KEY") else "none"), "signup": "/keys/signup" if (keys_db and os.environ.get("LEFTBRAIN_OPEN_SIGNUP", "0") in ("1", "true", "yes")) else None}), flush=True)
+    print(json.dumps({"leftbrain": __version__, "listen": f"http://{args.host}:{args.port}", "core": "/mcp", "network_tools": not args.no_external, "files": "/files/mcp" if args.files else None, "auth": "keys" if keys_db else ("bearer" if os.environ.get("LEFTBRAIN_API_KEY") else "none"), "signup": "/keys/signup" if (keys_db and os.environ.get("LEFTBRAIN_OPEN_SIGNUP", "0") in ("1", "true", "yes")) else None}), flush=True)
     uvicorn.run("leftbrain.serve:app_from_env", host=args.host, port=args.port, workers=args.workers, factory=True, log_level="info")
 
 

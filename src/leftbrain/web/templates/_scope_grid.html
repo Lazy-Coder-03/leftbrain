@@ -1,5 +1,7 @@
 {# The tool scope, as a tree: one row per tool, its modes as collapsible children.
-   Everything ticked when `scope_of` is none. #}
+   Everything ticked when `scope_of` is none. The tools that reach the internet are marked,
+   grouped last under a heading, and can be unticked together: with no scope a key may call
+   all of them, and that default must never be set on a page that does not say so (#103). #}
 <input type="hidden" name="scope_form" value="1">
 <div class="scope" data-scope-grid role="tree" aria-label="Tools this key may call">
   <div class="tools-head">
@@ -8,9 +10,14 @@
       <button type="button" class="linklike" data-all>All</button>
       <button type="button" class="linklike" data-none>None</button>
       <button type="button" class="linklike" data-expand>Expand all</button>
+      <button type="button" class="linklike" data-offline title="Untick every tool that reaches the internet">No network</button>
     </span>
   </div>
   {% for tool, modes in catalogue.items() %}{% set on = scope_of is none or tool in scope_of.tools %}
+  {%- set network = tool in network_tools -%}
+  {%- if network and (loop.first or loop.previtem[0] not in network_tools) %}
+  <div class="group" role="presentation" data-network-group>Reaches the internet <span class="hint">- the call's input goes to a third-party service</span></div>
+  {%- endif %}
   {%- set picked = [] -%}
   {%- for m in modes -%}{%- if on and (scope_of is none or scope_of.tools[tool] is none or m in scope_of.tools[tool]) -%}{{ picked.append(m) or "" }}{%- endif -%}{%- endfor -%}
   <div class="node{% if not modes %} leaf{% endif %}" data-node role="treeitem" aria-expanded="false">
@@ -19,9 +26,10 @@
         <svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true"><path d="M4 2.5 8 6l-4 3.5z" fill="currentColor"/></svg>
       </button>{% else %}<span class="twisty spacer" aria-hidden="true"></span>{% endif %}
       <label class="name">
-        <input type="checkbox" name="scope" value="{{ tool }}" data-tool="{{ tool }}"{% if on %} checked{% endif %}>
+        <input type="checkbox" name="scope" value="{{ tool }}" data-tool="{{ tool }}"{% if on %} checked{% endif %}{% if network %} data-network{% endif %}>
         <span>{{ tool }}</span>
       </label>
+      {%- if network %}<span class="pill net" title="Reaches the internet: this tool sends the call's input to a third-party service">network</span>{% endif %}
       {%- if counts is defined %}<span class="hint calls">{{ counts.get(tool, 0) }} call{{ "" if counts.get(tool, 0) == 1 else "s" }}</span>{% endif %}
       {% if modes %}<span class="count" data-count>{{ picked|length }}/{{ modes|length }}</span>{% endif %}
     </div>
