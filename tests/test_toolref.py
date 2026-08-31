@@ -96,6 +96,25 @@ def test_catalogue_covers_every_tool():
     assert set(toolref.specs()) == {t.name for t in toolref.CATALOGUE + toolref.EXTERNAL_CATALOGUE}
 
 
+def test_specs_carry_the_descriptions_the_wire_carries_for_the_network_tools_too():
+    """Regression for two bugs that surfaced when the network tools joined the main server (#100).
+
+    `specs()` used to read the core server and then the standalone external server, whose
+    schemas had never been through the description pass, and overwrote `weather` with the bare
+    one - so the docs and the wire disagreed. And the description pass only walked `doc.modes`,
+    so the mode-less tools (`fx_rate`, `url_check`) never got descriptions at all.
+    """
+    specs = toolref.specs()
+    for tool, param in (("weather", "mode"), ("geo", "mode"), ("fx_rate", "base"), ("fx_rate", "to"), ("url_check", "url"), ("url_check", "method")):
+        description = specs[tool].schema["properties"][param].get("description")
+        assert description, f"{tool}.{param} has no description on the wire"
+    # and the one the docs read is the one the wire publishes: no second server can shadow it
+    from leftbrain.mcp_server import server as core_server
+
+    published = {t.name: t.input_schema for t in asyncio.run(core_server.list_tools())}
+    assert specs["weather"].schema == published["weather"]
+
+
 def test_the_tool_registry_matches_what_the_server_publishes():
     """`specs()` reads the internal registry; the wire uses the async `list_tools()`."""
     from leftbrain.mcp_server import server as core_server
