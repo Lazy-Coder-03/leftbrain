@@ -10,7 +10,6 @@ import pytest
 from leftbrain.core.convert import convert
 from leftbrain.core.datetimex import datetime_tool
 from leftbrain.core.geo_offline import geo_offline
-from leftbrain.core.holidays_ import holidays
 from leftbrain.core.mathx import math as math_tool
 
 # --- §2c: ranges and reversals ----------------------------------------------
@@ -65,19 +64,6 @@ def test_a_negative_exchange_rate_is_refused():
     r = convert("currency", value=100, from_unit="USD", to_unit="INR", rate=-83)
     assert r["ok"] is False and r["error"] == "invalid_input"
     assert "rate" in r["message"]
-
-
-def test_a_month_outside_the_year_is_refused():
-    r = holidays("list", region="IN", year=2026, month=13)
-    assert r["ok"] is False and r["error"] == "invalid_input"
-
-
-def test_the_month_filter_applies_to_long_weekends_too():
-    """`month=8` used to filter `holidays` but leave `long_weekends` as the whole year."""
-    r = holidays("list", region="IN", year=2026, month=8)
-    assert r["ok"]
-    for weekend in r["result"].get("long_weekends", []):
-        assert "-08-" in str(weekend), weekend
 
 
 @pytest.mark.parametrize(

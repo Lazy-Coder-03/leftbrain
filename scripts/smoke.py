@@ -66,8 +66,8 @@ TESTS = [
     ("convert sqft", lambda: lb.convert_tool(value=1200, from_unit="sqft", to_unit="sqm")),
     ("convert ccy", lambda: lb.convert_tool(value=100, from_unit="USD", to_unit="INR", rate=83.5)),
     ("convert ccy norates", lambda: lb.convert_tool(value=100, from_unit="USD", to_unit="INR")),
-    ("holidays", lambda: lb.holidays_tool("list", region="IN", year=2026, month=10)),
-    ("holidays check", lambda: lb.holidays_tool("check", region="IN", date="2026-01-26")),
+    # the holidays tool was retired in 0.5.0; the public-holiday calendar survives behind datetime's region=
+    ("datetime business_days region", lambda: lb.datetime_tool("business_days", start="2026-09-28", end="2026-10-09", region="IN")),
     ("numbers compare", lambda: lb.numbers_tool("compare", values=["9.11", "9.9"])),
     ("numbers round", lambda: lb.numbers_tool("round", value="2.675", decimals=2)),
     ("numbers format IN", lambda: lb.numbers_tool("format", value=12345678.5, locale="en_IN", style="currency", currency="INR")),

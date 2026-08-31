@@ -12,7 +12,6 @@ import pytest
 
 from leftbrain.core.collections_ import collections
 from leftbrain.core.datetimex import datetime_tool
-from leftbrain.core.holidays_ import holidays
 from leftbrain.core.mathx import math as math_tool
 from leftbrain.core.numbers import numbers
 from leftbrain.core.text import text
@@ -126,11 +125,6 @@ def test_recurrence_says_when_it_stopped_early():
     assert r["ok"] and len(r["result"]["occurrences"]) == 100
     assert r["result"]["truncated"] is True
     assert any("trunc" in w for w in r["warnings"]), r["warnings"]
-
-
-def test_holidays_next_caps_n_and_says_so():
-    r = holidays("next", region="IN", n=100000)
-    assert refused(r) or (r["ok"] and r["warnings"])
 
 
 def test_regex_match_reports_the_real_total_not_the_limit():

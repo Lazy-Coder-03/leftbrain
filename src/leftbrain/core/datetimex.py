@@ -397,37 +397,6 @@ def _relative(text: str, ref: datetime) -> tuple[datetime, bool, list[str]] | No
     return result, date_only, assumptions
 
 
-def _festival_anchor(value: Any, field: str) -> tuple[Any, list[str]] | None:
-    """`{"festival": "Saptami", "year": 2026, "region": "IN", "subdiv": "WB"}` -> its date.
-
-    `datetime` does date arithmetic and `holidays` knows festival dates; nothing joined them,
-    so "three days before Saptami" meant the agent doing the lookup, doing the arithmetic and
-    hoping it got both right - which is the arithmetic this server exists to take off it (#92).
-    """
-    if not isinstance(value, dict) or "festival" not in value:
-        return None
-    from .holidays_ import festival_dates
-
-    region = value.get("region") or value.get("country")
-    if not region:
-        raise ToolError(f"{field}.festival needs a 'region' to look the festival up in")
-    notes: list[str] = []
-    year = value.get("year") or date.today().year
-    found = festival_dates(str(value["festival"]), int(year), str(region),
-                           value.get("subdiv") or value.get("state"), value.get("categories"), notes)
-    if len(found) > 1:
-        # A festival spanning several days is not one anchor. Say which days there are rather
-        # than silently taking the first.
-        raise Ambiguous(
-            f"{value['festival']!r} covers {len(found)} dates in {year}; anchor on one of its days",
-            field=f"{field}.festival",
-            options=[n for _d, n in found],
-        )
-    day, name = found[0]
-    notes.append(f"{value['festival']!r} resolved to {name!r} on {day.isoformat()}")
-    return day, notes
-
-
 def parse_dt(
     value: Any,
     *,
@@ -452,10 +421,13 @@ def parse_dt(
 
     if isinstance(value, bool):
         raise ToolError(f"'{field}' must be a date, not a boolean")
-    anchored = _festival_anchor(value, field)
-    if anchored is not None:  # a festival standing in for a date (#92)
-        value, notes = anchored
-        assumptions += notes
+    if isinstance(value, dict) and "festival" in value:
+        # `{"festival": "Saptami", ...}` stood in for a date while the holidays tool existed (#92).
+        # That tool was retired in 0.5.0; a festival name with no source behind it is not a date.
+        raise ToolError(
+            f"'{field}' names a festival, and festival anchors were retired with the holidays tool in 0.5.0",
+            hint="Pass the date itself, e.g. '2026-10-18'.",
+        )
     if isinstance(value, datetime):
         dt, date_only = value, False
     elif isinstance(value, date):
@@ -682,7 +654,7 @@ def _weekend(spec: Any) -> set[int]:
 def _holiday_set(region: str | None, subdiv: str | None, years: set[int], extra: Any) -> dict[date, str]:
     out: dict[date, str] = {}
     if region:
-        from .holidays_ import holiday_map
+        from .holiday_calendar import holiday_map
 
         out.update(holiday_map(region, years, subdiv))
     if isinstance(extra, (str, dict)):

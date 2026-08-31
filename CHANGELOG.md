@@ -4,6 +4,23 @@ All notable changes to leftbrain are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+
+- **The `holidays` tool.** It answered "which festival is when" from tables it could not vouch
+  for. A dry run across 2026 for twenty Indian states and twenty-four countries, and a
+  three-source comparison (the West Bengal gazette, an astronomical tithi computation, and the
+  upstream tables) showed the upstream Durga Puja days off by one for 2026 and half the
+  Bengali festivals absent altogether - and a date with no source behind it is exactly what
+  this server exists to replace. Rather than ship it as a source of confident wrong answers,
+  it is retired: `holidays` is no longer published, `/docs/tools/holidays` is gone, the
+  catalogue is 17 tools, and `datetime`'s festival anchors (`{"festival": ...}` as a date) are
+  refused with the reason. A key whose stored scope names `holidays` keeps loading and simply
+  no longer lists it. **What stays:** `datetime`'s `add`, `diff` and `business_days` still
+  honour `region` / `subdiv`, because counting working days needs only the public-holiday
+  tables, which are the part of the upstream dataset that is what it says it is. (#80, #86, #91)
+
 ## [0.4.2] - 2026-08-31
 
 ### Added

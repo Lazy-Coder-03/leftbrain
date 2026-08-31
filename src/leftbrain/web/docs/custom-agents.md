@@ -114,7 +114,7 @@ asyncio.run(main())
 
 :::response
 ```text
-tools: ['math', 'datetime', 'scale', 'convert', 'holidays', 'numbers', 'finance', 'text', 'collections', 'validate', 'random', 'geo_offline', 'encode', 'color']
+tools: ['math', 'datetime', 'scale', 'convert', 'numbers', 'finance', 'text', 'collections', 'validate', 'random', 'geo_offline', 'encode', 'color']
 max: {'input': '9.9', 'value': '9.9'}
 ```
 :::
@@ -156,7 +156,7 @@ await client.close();
 
 :::response
 ```text
-tools: math, datetime, scale, convert, holidays, numbers, finance, text, collections, validate, random, geo_offline, encode, color
+tools: math, datetime, scale, convert, numbers, finance, text, collections, validate, random, geo_offline, encode, color
 max: { input: '9.9', value: '9.9' }
 ```
 :::

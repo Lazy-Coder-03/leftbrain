@@ -1,4 +1,4 @@
-"""Tests for scale, convert, holidays, numbers, text, collections, validate, random, geo, encode."""
+"""Tests for scale, convert, numbers, text, collections, validate, random, geo, encode."""
 
 import leftbrain as lb
 
@@ -123,12 +123,6 @@ def test_convert_sizes():
     assert lb.convert_tool(mode="sizes", category="clothing", value="XXXXL", from_unit="alpha", to_unit="chest_cm", region="us", gender="men")["ok"] is False
 
 
-# --- holidays --------------------------------------------------------------
-
-def test_holidays():
-    r = lb.holidays_tool("check", region="IN", date="2026-01-26")
-    assert r["result"]["is_holiday"] and "Republic" in r["result"]["name"]
-    assert lb.holidays_tool("list", region="US", year=2026, month=7)["result"]["count"] >= 1
 
 
 # --- numbers ---------------------------------------------------------------

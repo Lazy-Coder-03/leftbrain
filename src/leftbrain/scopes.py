@@ -3,12 +3,12 @@
 A scope is a whitelist. ``None`` is no scope at all - every tool, every mode - and is what
 every key has unless its owner narrows it. Stored on the key as JSON::
 
-    {"tools": {"math": null, "holidays": ["list", "check"], "weather": null}}
+    {"tools": {"math": null, "finance": ["emi", "gst"], "weather": null}}
 
 A tool mapped to ``null`` allows all of its modes; a list allows only those. The same
 shape is accepted back by :func:`parse_scope`, along with the CLI's text form
-(``"math,datetime,holidays:list+check"``) and the dashboard's checkbox values
-(``["math", "holidays:list", "holidays:check"]``).
+(``"math,datetime,finance:emi+gst"``) and the dashboard's checkbox values
+(``["math", "finance:emi", "finance:gst"]``).
 
 Enforcement happens twice. :func:`enforce` wraps every MCP tool and answers a call the
 key's scope does not cover with the contract's ``forbidden`` error, reading the scope
@@ -36,7 +36,7 @@ def _catalogue() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]
     about the transport: everything the external server publishes reaches the internet, and
     the person deciding what a key may call is making a data-egress decision (#103).
     """
-    from .core import collections_, datetimex, encode, geo_offline, holidays_, mathx, random_
+    from .core import collections_, datetimex, encode, geo_offline, mathx, random_
     from .core import color as color_mod
     from .core import convert as convert_mod
     from .core import finance as finance_mod
@@ -51,7 +51,6 @@ def _catalogue() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]
         "datetime": tuple(datetimex.MODES),
         "scale": tuple(scale_mod.MODES),
         "convert": tuple(convert_mod.MODES),
-        "holidays": tuple(holidays_.MODES),
         "numbers": tuple(numbers_mod.MODES),
         "finance": tuple(finance_mod.MODES),
         "text": tuple(text_mod.MODES),
@@ -98,14 +97,14 @@ class Scope:
         return json.dumps({"tools": self.to_dict()}, separators=(",", ":"))
 
     def summary(self) -> str:
-        """Short enough for a table cell: ``holidays: list, check`` for one tool, ``3 tools`` for more."""
+        """Short enough for a table cell: ``finance: emi, gst`` for one tool, ``3 tools`` for more."""
         if len(self.tools) == 1:
             (tool, modes), = self.tools.items()
             return tool if modes is None else f"{tool}: {', '.join(modes)}"
         return f"{len(self.tools)} tools"
 
     def listing(self) -> str:
-        """Every tool, with its modes in brackets when they are limited: ``math, holidays (list, check)``."""
+        """Every tool, with its modes in brackets when they are limited: ``math, finance (emi, gst)``."""
         return ", ".join(t if m is None else f"{t} ({', '.join(m)})" for t, m in self.tools.items())
 
 
@@ -142,7 +141,7 @@ def _from_map(raw: dict[str, Any], *, strict: bool) -> Scope | None:
 
 
 def _from_text(text: str) -> dict[str, Any]:
-    """``"math,datetime,holidays:list+check"`` -> the map form."""
+    """``"math,datetime,finance:emi+gst"`` -> the map form."""
     raw: dict[str, Any] = {}
     for item in text.split(","):
         item = item.strip()

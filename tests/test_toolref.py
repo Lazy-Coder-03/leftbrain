@@ -12,7 +12,7 @@ import pytest
 from starlette.testclient import TestClient
 
 from leftbrain import toolref
-from leftbrain.core import collections_, datetimex, encode, geo_offline, holidays_, mathx, random_
+from leftbrain.core import collections_, datetimex, encode, geo_offline, mathx, random_
 from leftbrain.core import color as color_mod
 from leftbrain.core import convert as convert_mod
 from leftbrain.core import finance as finance_mod
@@ -30,7 +30,6 @@ MODULE_MODES = {
     "datetime": datetimex.MODES,
     "scale": scale_mod.MODES,
     "convert": convert_mod.MODES,
-    "holidays": holidays_.MODES,
     "numbers": numbers_mod.MODES,
     "finance": finance_mod.MODES,
     "text": text_mod.MODES,
@@ -48,7 +47,6 @@ MODULE_MODES = {
 
 #: Modes with no failure path at all, and why. Anything else needs a failing example.
 NO_FAILURE_MODES = {
-    ("holidays", "countries"): "takes no parameters, so there is nothing to get wrong",
     ("validate", "email"): "an unusable address is an answer (valid: false), not an error",
     ("validate", "url"): "an unusable URL is an answer (valid: false), not an error",
     ("validate", "ip"): "an unparseable address is an answer (valid: false), not an error",
@@ -66,7 +64,7 @@ VOLATILE_MODES = {
 }
 
 #: Modes that legitimately have a single worked example.
-SINGLE_EXAMPLE_MODES = {("holidays", "countries"), ("encode", "jwt_decode")}
+SINGLE_EXAMPLE_MODES = {("encode", "jwt_decode")}
 
 ALL_MODES = [(tool, mode) for tool in toolref.CATALOGUE for mode in tool.modes]
 EVERY_MODE = [(tool, mode) for tool in toolref.CATALOGUE + toolref.EXTERNAL_CATALOGUE for mode in tool.modes]
@@ -91,7 +89,7 @@ def client(tmp_path_factory):
 
 def test_catalogue_covers_every_tool():
     assert [t.name for t in toolref.CATALOGUE] == [name for name, _d, _m in TOOLS]
-    assert len(toolref.CATALOGUE) == 14
+    assert len(toolref.CATALOGUE) == 13
     assert [t.name for t in toolref.EXTERNAL_CATALOGUE] == ["weather", "fx_rate", "geo", "url_check"]
     assert set(toolref.specs()) == {t.name for t in toolref.CATALOGUE + toolref.EXTERNAL_CATALOGUE}
 
@@ -281,7 +279,7 @@ def test_tools_index_lists_every_tool(client):
 def test_unknown_tool_is_a_branded_404(client):
     r = client.get("/docs/tools/telepathy", headers={"Accept": "text/html"})
     assert r.status_code == 404
-    assert "fourteen tools" in r.text and 'class="brand"' in r.text
+    assert "seventeen tools" in r.text and 'class="brand"' in r.text  # 13 core + 4 network, since the holidays tool was retired
 
 
 def test_pages_have_no_raw_markdown_artefacts(client):

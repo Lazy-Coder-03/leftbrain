@@ -31,7 +31,7 @@ from functools import lru_cache
 from typing import Any
 
 from .contract import CODES, schema_rejection
-from .core import collections_, datetimex, geo_offline, holidays_, mathx, random_
+from .core import collections_, datetimex, geo_offline, mathx, random_
 from .core import color as color_mod
 from .core import convert as convert_mod
 from .core import encode as encode_mod
@@ -1060,7 +1060,6 @@ DATETIME = ToolDoc(
         "Ages, fiscal periods, overlaps and timesheet totals.",
     ),
     related=(
-        "[`holidays`](/docs/tools/holidays) for the calendars behind `region` · "
         "[`geo_offline`](/docs/tools/geo_offline) to turn a city name into an IANA zone before "
         "converting · [`numbers`](/docs/tools/numbers) for formatting the durations you get back."
     ),
@@ -1591,187 +1590,6 @@ CONVERT = ToolDoc(
                 Param("rate", "Rate, when the arguments resolve to a currency conversion."),
                 Param("rates", "Rate table, as in `currency`."),
                 Param("assume", "`common`, as in `units`."),
-            ),
-        ),
-    ),
-)
-
-
-# --------------------------------------------------------------------------- #
-# holidays
-# --------------------------------------------------------------------------- #
-
-HOLIDAYS = ToolDoc(
-    name="holidays",
-    intro=(
-        "Public holiday calendars for 150-plus countries, offline. A model's holiday knowledge is "
-        "stale and hallucinates regional ones; this dataset is generated from published rules, so "
-        "moving feasts and state-specific days are right. Regions are ISO country codes; states and "
-        "provinces go in `subdiv`, and without one you get national holidays only — said out loud in "
-        "`assumptions` rather than left to be discovered."
-    ),
-    when=(
-        "Before promising a delivery or SLA date in a country you do not live in.",
-        "Planning around long weekends — `list` returns them already computed.",
-        "Checking whether one specific date is a working day.",
-        "Feeding `region`/`subdiv` into `datetime`'s `business_days` and `add`.",
-    ),
-    related=(
-        "[`datetime`](/docs/tools/datetime) `business_days` and `add` consume the same `region` and "
-        "`subdiv` · [`geo_offline`](/docs/tools/geo_offline) `country` to resolve a country name to "
-        "its ISO code."
-    ),
-    examples=holidays_.EXAMPLES,
-    modes=(
-        Mode(
-            name="list",
-            purpose="Every holiday in a year, plus the long weekends.",
-            description=(
-                "Lists the holidays for one or more years, optionally filtered to a single month. "
-                "Alongside the list you get `long_weekends`: every holiday that falls on a Friday or a "
-                "Monday, with the span it creates — the thing people actually want when they ask for a "
-                "holiday list."
-            ),
-            params=(
-                Param("language", "Language for holiday names; see mode `categories`."),
-                Param("region", "ISO country code (`IN`, `US`, `GB`); `UK` is accepted as `GB`.", required=True),
-                Param("year", "The year.", default="current year"),
-                Param("years", "Several years at once."),
-                Param("month", "Filter the list to one month, 1..12. Filters `long_weekends` too."),
-                Param("subdiv", "State or province code for regional holidays."),
-                Param("categories", "Holiday categories, where the country's calendar defines them."),
-            ),
-        ),
-        Mode(
-            name="check",
-            purpose="Is this one date a public holiday?",
-            description=(
-                "Answers for a single date: whether it is a holiday, its name if so, its weekday, and "
-                "whether it falls on a weekend. The date goes through the same parser as `datetime`, so "
-                "an ambiguous numeric date is refused here too."
-            ),
-            params=(
-                Param("date_locale", "How an ambiguous date is read (DD/MM vs MM/DD). `locale` is the old name."),
-                Param("language", "Language for holiday names; see mode `categories`."),
-                Param("region", "ISO country code.", required=True),
-                Param("date", "The date to check.", default="`today`"),
-                Param("subdiv", "State or province code."),
-                Param("locale", "Country code deciding DD/MM vs MM/DD in `date`."),
-            ),
-        ),
-        Mode(
-            name="next",
-            purpose="The upcoming holidays from a date.",
-            description=(
-                "Returns the next `n` holidays on or after a date, each with its weekday and how many "
-                "days away it is. The window spans the given year and the next, so a query late in "
-                "December still returns January's holidays."
-            ),
-            params=(
-                Param("date_locale", "How an ambiguous date is read. `locale` is the old name."),
-                Param("language", "Language for holiday names."),
-                Param("region", "ISO country code.", required=True),
-                Param("date", "Start looking from here.", default="`today`"),
-                Param("n", "How many holidays to return.", default="5"),
-                Param("subdiv", "State or province code."),
-            ),
-        ),
-        Mode(
-            name="countries",
-            purpose="Every supported country code.",
-            description=(
-                "Lists every ISO country code the dataset covers — about 150. Call it once to find out "
-                "whether a country is supported before building a `region` into a workflow. The listing "
-                "below is trimmed for length; the call returns all of them."
-            ),
-            params=(),
-            never_fails="This mode takes no parameters and always succeeds.",
-        ),
-        Mode(
-            name="subdivisions",
-            purpose="The state/province codes a country supports.",
-            description=(
-                "Lists the `subdiv` codes valid for a country. Countries with no regional calendar "
-                "return an empty list — which is the answer to “does this country have state "
-                "holidays?”, not an error."
-            ),
-            params=(
-                Param("region", "ISO country code.", required=True),
-            ),
-        ),
-        Mode(
-            name="festival",
-            purpose="A festival by name, with its named days in order.",
-            description=(
-                "`check` and `next` are date-first: you bring a date and they tell you about it. "
-                "This is name-first — “when is Durga Puja” — and it searches *every* category, "
-                "because a festival is often not a public holiday. A multi-day festival comes "
-                "back as one thing with its days named (Saptami, Mahashtami, Mahanavami) rather "
-                "than as unrelated rows sharing a prefix.\n\n"
-                "Common names are mapped onto whatever this dataset calls the same festival — "
-                "Durga Puja is filed as `Dussehra`, Kali Puja only as `Naraka Chaturdashi` — and "
-                "the substitution is stated. A name it cannot find is refused with the near "
-                "misses, never an empty list: “not in this dataset” and “no such festival” are "
-                "different claims and only the first one is ours to make."
-            ),
-            params=(
-                Param("name", "The festival to look up.", required=True),
-                Param("region", "ISO country code.", required=True),
-                Param("subdiv", "State/province code."),
-                Param("year", "Defaults to the current year."),
-                Param("categories", "Defaults to every category this country has."),
-                Param("language", "Language for the names; see mode `categories`."),
-            ),
-        ),
-        Mode(
-            name="upcoming",
-            purpose="Everything marked in a window, not only public holidays.",
-            description=(
-                "“What festivals are coming up?” Searches every category by default and reports "
-                "each named day separately, so a multi-day festival shows each of its days. "
-                "Without `end` the window is the twelve months from `start`."
-            ),
-            params=(
-                Param("region", "ISO country code.", required=True),
-                Param("subdiv", "State/province code."),
-                Param("start", "Defaults to today."),
-                Param("end", "Defaults to a year after `start`."),
-                Param("n", "How many to return (default 20)."),
-                Param("categories", "Defaults to every category."),
-                Param("language", "Language for the names."),
-            ),
-        ),
-        Mode(
-            name="compare",
-            purpose="The same dates across two or more regions, as a table.",
-            description=(
-                "“Which Durga Puja days are holidays in West Bengal but not Assam?” Two calls "
-                "and a hand-written diff otherwise — and the diff is easy to get wrong, because "
-                "the two responses use names that do not line up. Each date says which of the "
-                "compared places observe it and which do not."
-            ),
-            params=(
-                Param("subdivs", "Two or more state codes, within one `region`."),
-                Param("regions", "Two or more country codes, instead of `subdivs`."),
-                Param("region", "ISO country code, when comparing `subdivs`."),
-                Param("year", "Defaults to the current year."),
-                Param("month", "Narrow to one month."),
-                Param("categories", "Defaults to every category."),
-            ),
-        ),
-        Mode(
-            name="categories",
-            purpose="The category values a country accepts.",
-            description=(
-                "There is no single list of categories to publish: `optional` is valid for India and "
-                "rejected outright for the United States, so the legal set has to be asked for per "
-                "country. Call this before passing `categories`, the way you would call "
-                "`subdivisions` before passing `subdiv`. The default when you pass nothing is "
-                "`public`, which is a real filter — it is why a regional festival can come back as "
-                "`is_holiday: false`."
-            ),
-            params=(
-                Param("region", "ISO country code.", required=True),
             ),
         ),
     ),
@@ -3484,7 +3302,6 @@ CATALOGUE: tuple[ToolDoc, ...] = (
     DATETIME,
     SCALE,
     CONVERT,
-    HOLIDAYS,
     NUMBERS,
     FINANCE,
     TEXT,
