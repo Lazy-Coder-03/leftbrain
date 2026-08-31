@@ -98,8 +98,14 @@ def _token_route(provider: Any, oauth: Any) -> Route:
     return Route(TOKEN_PATH, endpoint=endpoint, methods=["POST", "OPTIONS"])
 
 
-def build_oauth_routes(keys: Any, cfg: Any) -> list[Route]:
-    """Every OAuth route, or nothing at all when the server is not configured for it."""
+def build_oauth_routes(keys: Any, cfg: Any, mounted: tuple[str, ...] = ("/mcp",)) -> list[Route]:
+    """Every OAuth route, or nothing at all when the server is not configured for it.
+
+    ``mounted`` names every MCP endpoint the server serves. Each gets its own RFC 9728
+    document at ``/.well-known/oauth-protected-resource<endpoint>`` declaring itself as the
+    ``resource``, because a client checks that field against the URL it is connecting to and
+    refuses a mismatch (#101).
+    """
     if keys is None or not cfg.oauth_enabled:
         return []
 
@@ -145,14 +151,15 @@ def build_oauth_routes(keys: Any, cfg: Any) -> list[Route]:
             route = _token_route(provider, oauth)
         routes.append(route)
 
-    routes += create_protected_resource_routes(
-        resource,
-        [issuer],
-        [MCP_SCOPE],
-        resource_name="leftbrain",
-        # RFC 9728's own field for "where an agent reads how to authenticate here"
-        resource_documentation=AnyHttpUrl(f"{cfg.base_url}/docs/agents/auth"),
-    )
+    for endpoint in mounted:
+        routes += create_protected_resource_routes(
+            resource if endpoint == "/mcp" else AnyHttpUrl(f"{cfg.base_url}{endpoint}"),
+            [issuer],
+            [MCP_SCOPE],
+            resource_name="leftbrain",
+            # RFC 9728's own field for "where an agent reads how to authenticate here"
+            resource_documentation=AnyHttpUrl(f"{cfg.base_url}/docs/agents/auth"),
+        )
     routes += consent_routes(keys, cfg, provider, oauth)
     routes += device_routes(keys, cfg, provider, oauth)
     return routes

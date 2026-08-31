@@ -4,6 +4,20 @@ All notable changes to leftbrain are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **OAuth on `/external/mcp`.** The 401 challenge named `/mcp`'s protected-resource document
+  whichever endpoint was asked for, and there was no document for the other mounts at all. A
+  client that checks the document's `resource` against the URL it is connecting to - Claude
+  Code does, as RFC 9728 requires - refused `/external/mcp` with "does not match expected"
+  before any tool call. Every mounted endpoint now has its own document at
+  `/.well-known/oauth-protected-resource<endpoint>`, and the challenge and the 401 body's
+  `how_to_authorize` point at the one for the endpoint that was requested. A protected path
+  that is not an MCP endpoint (`/keys/me`) is pointed at the core document. Static-key auth
+  never read the challenge and is unchanged. (#101)
+
 ## [0.4.1] - 2026-08-30
 
 ### Added
