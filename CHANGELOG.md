@@ -6,6 +6,18 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **The scope grid says which tools reach the internet.** `weather`, `fx_rate`, `geo` and
+  `url_check` carry a `network` pill with a title that says the call's input goes to a
+  third-party service, sit under a "Reaches the internet" heading, and a **No network** button
+  beside All / None / Expand all unticks the four and leaves everything else as it was. The
+  same partial serves the create-key form, the key's scope editor and both consent pages, so
+  a key that arrives with all four ticked - every key with no scope, including one minted by
+  approving a consent screen - is never decided on a page that does not mention the internet.
+  The fact lives with the data: `scopes.NETWORK_TOOLS` is the external half of the catalogue,
+  and a test holds it equal to the tool reference's `network` flag. (#103)
+
 ### Changed
 
 - **Docs.** The Claude Code client page says what "Disabled for this project" means and how

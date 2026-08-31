@@ -29,8 +29,13 @@ from typing import Any
 from .contract import billable, fail
 
 
-def _catalogue() -> dict[str, tuple[str, ...]]:
-    """Every tool of the core and external servers, in the order the servers publish them, with its modes."""
+def _catalogue() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+    """The core tools and the external tools, each in the order its server publishes them, with modes.
+
+    Returned as two dicts rather than one because the split is a fact about the tools and not
+    about the transport: everything the external server publishes reaches the internet, and
+    the person deciding what a key may call is making a data-egress decision (#103).
+    """
     from .core import collections_, datetimex, encode, geo_offline, holidays_, mathx, random_
     from .core import color as color_mod
     from .core import convert as convert_mod
@@ -41,7 +46,7 @@ def _catalogue() -> dict[str, tuple[str, ...]]:
     from .core import validate as validate_mod
     from .external import tools as external_tools
 
-    return {
+    core = {
         "math": tuple(mathx.MODES),
         "datetime": tuple(datetimex.MODES),
         "scale": tuple(scale_mod.MODES),
@@ -56,14 +61,22 @@ def _catalogue() -> dict[str, tuple[str, ...]]:
         "geo_offline": tuple(geo_offline.MODES),
         "encode": tuple(encode.MODES),
         "color": tuple(color_mod.MODES),
+    }
+    external = {
         "weather": tuple(external_tools.WEATHER_MODES),
         "fx_rate": (),
         "geo": tuple(external_tools.GEO_MODES),
         "url_check": (),
     }
+    return core, external
 
 
-CATALOGUE: dict[str, tuple[str, ...]] = _catalogue()
+_CORE, _EXTERNAL = _catalogue()
+CATALOGUE: dict[str, tuple[str, ...]] = {**_CORE, **_EXTERNAL}
+#: The tools that reach the internet: the external server's, by construction. A key with no
+#: scope may call all of them, so every surface that lets someone choose has to say which
+#: rows these are (#103).
+NETWORK_TOOLS: frozenset[str] = frozenset(_EXTERNAL)
 
 
 @dataclass(frozen=True)

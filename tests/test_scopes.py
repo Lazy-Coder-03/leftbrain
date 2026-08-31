@@ -63,6 +63,37 @@ def test_catalogue_mirrors_the_modules_and_covers_the_external_tools():
     assert CATALOGUE["fx_rate"] == () and CATALOGUE["url_check"] == ()
 
 
+def test_the_network_tools_are_the_external_servers_and_agree_with_the_docs():
+    """One fact, three places that state it: the catalogue, the tool reference, /docs/tools (#103)."""
+    from leftbrain import toolref
+    from leftbrain.scopes import NETWORK_TOOLS
+
+    assert NETWORK_TOOLS == {"weather", "fx_rate", "geo", "url_check"}
+    assert NETWORK_TOOLS < set(CATALOGUE) and list(CATALOGUE)[-len(NETWORK_TOOLS):] == sorted(NETWORK_TOOLS, key=list(CATALOGUE).index)
+    assert {t.name for t in toolref.EXTERNAL_CATALOGUE} == NETWORK_TOOLS
+    assert {t.name for t in toolref.CATALOGUE if t.network} == set()  # no core tool reaches out
+    listed = next(v for v in toolref.catalogue_json().values() if isinstance(v, list) and v and isinstance(v[0], dict))
+    assert {entry["name"] for entry in listed if entry["network"]} == NETWORK_TOOLS
+
+
+def test_the_scope_grid_says_which_tools_reach_the_internet(tmp_path):
+    """A freshly created key may call all four, and the page that decides that must say so (#103)."""
+    from test_web import login_via_github, oauth_app
+
+    with TestClient(oauth_app(tmp_path)) as c:
+        login_via_github(c)
+        page = c.get("/dashboard").text  # the create-key form's Tools disclosure
+        for tool in ("weather", "fx_rate", "geo", "url_check"):
+            assert f'value="{tool}" data-tool="{tool}" checked data-network>' in page, tool
+        for tool in ("math", "datetime", "geo_offline"):
+            assert f'value="{tool}" data-tool="{tool}" checked>' in page, tool
+        assert page.count('class="pill net"') == 4
+        assert page.count("data-network-group") == 1  # one heading, above the four
+        assert page.index("data-network-group") < page.index('data-tool="weather"')
+        assert page.index('data-tool="color"') < page.index("data-network-group")
+        assert 'data-offline' in page and ">No network<" in page
+
+
 def test_parse_scope_round_trips_dict_json_and_text_forms():
     s = parse_scope({"tools": {"math": None, "holidays": ["list", "check"]}})
     assert isinstance(s, Scope) and s.tools == {"math": None, "holidays": ("list", "check")}
@@ -414,6 +445,7 @@ def test_dashboard_scope_grid_is_plain_html_with_the_behaviour_in_site_js():
     js = (HERE / "static" / "site.js").read_text(encoding="utf-8")
     css = (HERE / "static" / "site.css").read_text(encoding="utf-8")
     assert "data-tool" in js and "data-of" in js and ".scope" in css
+    assert "data-offline" in js and "data-network" in js and ".pill.net" in css and ".scope .group" in css
     grid = (HERE / "templates" / "_scope_grid.html").read_text(encoding="utf-8")
     assert "<script" not in grid and re.search(r'type="checkbox" name="scope"', grid)
 
