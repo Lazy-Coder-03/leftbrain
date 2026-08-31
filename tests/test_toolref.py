@@ -279,7 +279,7 @@ def test_tools_index_lists_every_tool(client):
 def test_unknown_tool_is_a_branded_404(client):
     r = client.get("/docs/tools/telepathy", headers={"Accept": "text/html"})
     assert r.status_code == 404
-    assert "fourteen tools" in r.text and 'class="brand"' in r.text
+    assert "seventeen tools" in r.text and 'class="brand"' in r.text  # 13 core + 4 network, since the holidays tool was retired
 
 
 def test_pages_have_no_raw_markdown_artefacts(client):
