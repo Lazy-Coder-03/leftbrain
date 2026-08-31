@@ -1,12 +1,15 @@
-"""Report a wrong answer without needing access to a private repository (#53).
+"""Report a wrong answer from where it happened (#53).
 
-The repo is private, so the site's footer had to stop linking to it: someone who hits a wrong
-answer, a confusing docs page or a 500 has nowhere to put that, and an agent that gets a bad
-envelope has nowhere at all. This is one code path with two doors onto it — a form for a
-signed-in person, and `POST /feedback` for an agent holding a key.
+The tracker is public, but that is not where a wrong answer is noticed. An agent that gets a
+bad envelope is mid-call, holds a leftbrain key and nothing else, and cannot sign in to
+GitHub; a person on the docs page is signed in here, not there. This is one code path with
+two doors onto it — a form for a signed-in person, and `POST /feedback` for an agent holding
+a key — and both file onto the same tracker anyone can also open by hand.
 
-It is **off unless configured**. Without a token and a repository it answers `unsupported`,
-because an endpoint that silently swallows reports is worse than one that says it is closed.
+It is **off unless configured**. Without a token and a repository it answers `unsupported`
+and names the tracker, because an endpoint that silently swallows reports is worse than one
+that says it is closed, and one that says it is closed without saying where else to go is
+only a little better (#102).
 """
 
 from __future__ import annotations
@@ -43,6 +46,21 @@ class FeedbackConfig:
     @property
     def enabled(self) -> bool:
         return bool(self.token and self.repo)
+
+
+def project_links(cfg: FeedbackConfig | None = None) -> dict[str, str]:
+    """``repo`` and ``tracker``: the source and the issue list.
+
+    When feedback is configured against a repository, that repository is the tracker — a
+    self-hoster who files reports into their own fork should be sending people there too.
+    Otherwise it is the project's own, from the package, so a server with feedback off still
+    has somewhere to point (#102).
+    """
+    from . import __repo__
+
+    cfg = cfg or feedback_config()
+    repo = f"https://github.com/{cfg.repo}" if cfg.repo else __repo__
+    return {"repo": repo, "tracker": f"{repo}/issues"}
 
 
 def feedback_config() -> FeedbackConfig:
@@ -89,8 +107,8 @@ def issue_body(report: Submission, version: str) -> str:
     return (
         f"{report.body}\n\n---\n"
         f"Filed through leftbrain's feedback endpoint by **{report.reporter}** "
-        f"on version `{version}`. The reporter has no access to this repository, so any "
-        f"question for them has to go back the way it came."
+        f"on version `{version}`. The reporter was not on GitHub when they filed it and may "
+        f"not be reachable here, so any question for them has to go back the way it came."
     )
 
 

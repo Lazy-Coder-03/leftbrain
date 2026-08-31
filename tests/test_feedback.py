@@ -1,7 +1,8 @@
-"""#53: report a wrong answer without access to a private repository.
+"""#53: report a wrong answer from where it happened.
 
-The repo is private, so the site's footer had to stop linking to it. Someone who hits a wrong
-answer had nowhere to put it, and an agent that got a bad envelope had nowhere at all.
+An agent that gets a bad envelope is mid-call with a key and no GitHub login; a person on the
+docs is signed in here, not there. Both file onto the same public tracker anyone can also open
+by hand, and when filing is off the server says where that is (#102).
 """
 
 import json
@@ -70,7 +71,8 @@ def test_the_issue_says_where_it_came_from_and_that_the_reporter_cannot_be_repli
     body = issue_body(compose({"title": "t", "body": "the tool said 4"}, "key lblz_abc"), "0.4.0")
     assert "the tool said 4" in body
     assert "key lblz_abc" in body and "0.4.0" in body
-    assert "no access to this repository" in body
+    # the tracker is public, so the reason a reply cannot go there is where they were, not what they may see
+    assert "not on GitHub" in body and "back the way it came" in body
 
 
 def test_it_is_off_unless_both_halves_are_configured():
@@ -106,6 +108,22 @@ def test_it_answers_unsupported_when_nobody_configured_it(keyed, monkeypatch):
     with TestClient(app) as c:
         r = post(c, key)
         assert r.status_code == 404 and r.json()["error"] == "unsupported"
+        # closed is not the same as nowhere: the public tracker is named (#102)
+        from leftbrain import __repo__
+
+        assert r.json()["tracker"] == f"{__repo__}/issues"
+        assert f"{__repo__}/issues" in r.json()["message"]
+
+
+def test_the_tracker_is_the_feedback_repository_when_one_is_configured(monkeypatch):
+    """A self-hoster filing reports into their fork should be sending people there too."""
+    from leftbrain import __repo__
+    from leftbrain.feedback import project_links
+
+    monkeypatch.delenv("LEFTBRAIN_FEEDBACK_REPO", raising=False)
+    assert project_links() == {"repo": __repo__, "tracker": f"{__repo__}/issues"}
+    monkeypatch.setenv("LEFTBRAIN_FEEDBACK_REPO", "someone/leftbrain-fork")
+    assert project_links()["tracker"] == "https://github.com/someone/leftbrain-fork/issues"
 
 
 def test_it_needs_a_key(keyed):
@@ -231,7 +249,12 @@ def test_the_form_says_so_when_reporting_is_not_configured(tmp_path, monkeypatch
 
     with TestClient(oauth_app(tmp_path)) as c:
         login_via_github(c)
-        assert "not configured" in c.get("/report").text
+        page = c.get("/report").text
+        assert "not configured" in page
+        # and the page still gives the person a door (#102)
+        from leftbrain import __repo__
+
+        assert f'href="{__repo__}/issues"' in page
 
 
 def test_a_form_post_files_the_issue(tmp_path, monkeypatch):

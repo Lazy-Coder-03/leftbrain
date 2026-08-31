@@ -97,6 +97,9 @@ def test_the_shimmer_is_dropped_for_reduced_motion(client):
     assert "@media (prefers-reduced-motion:reduce)" in css and "animation:none" in css
 
 
-def test_the_footer_does_not_link_to_the_private_repository(client):
+def test_the_footer_links_to_the_public_repository(client):
+    """The inverse of what this test asserted while the repository was private (#102)."""
+    from leftbrain import __repo__
+
     html = client.get("/", headers={"Accept": "text/html"}).text
-    assert "github.com/Lazy-Coder-03" not in html
+    assert f'href="{__repo__}"' in html and f'href="{__repo__}/issues"' in html

@@ -455,6 +455,16 @@ def test_docs_changelog_page(tmp_path):
         assert r.text.index('href="/docs/changelog" class="cur"') > r.text.index('href="/docs/tools"')
 
 
+def test_footer_links_to_the_source_and_the_tracker(tmp_path):
+    """The repository is public; the footer stopped linking to it while it was not (#102)."""
+    from leftbrain import __repo__
+
+    with TestClient(make_app(tmp_path)) as c:
+        html = c.get("/docs").text
+        assert f'<a href="{__repo__}">Source</a>' in html
+        assert f'<a href="{__repo__}/issues">Issues</a>' in html
+
+
 def test_footer_version_links_to_the_changelog(tmp_path):
     from leftbrain import __version__
 

@@ -51,6 +51,8 @@ leftbrain-keys = "leftbrain.keys:main"
 [project.urls]
 Homepage = "https://leftbrain.idlesync.in"
 Documentation = "https://leftbrain.idlesync.in/docs"
+Repository = "https://github.com/Lazy-Coder-03/leftbrain"
+Issues = "https://github.com/Lazy-Coder-03/leftbrain/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/leftbrain"]

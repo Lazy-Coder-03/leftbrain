@@ -4,10 +4,12 @@
 <section class="login">
   <h2>Report a problem</h2>
   <p>
-    The tracker is private, so there is nowhere else to put this. Tell us what you called,
-    what came back, and what you expected instead — that is usually enough to reproduce it.
+    This files straight onto <a href="{{ tracker }}">the tracker</a> for you, with anything
+    key-shaped blanked, so you do not need a GitHub account. Tell us what you called, what came
+    back, and what you expected instead — that is usually enough to reproduce it.
   </p>
   {% if notice %}<p class="notice" role="alert">{{ notice }}</p>{% endif %}
+  {% if not enabled %}<p>You can still <a href="{{ tracker }}">open an issue on the tracker</a> directly.</p>{% endif %}
   {% if filed %}
     <p class="notice">Thank you — filed as issue #{{ filed }}.</p>
   {% endif %}

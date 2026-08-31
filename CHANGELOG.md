@@ -6,6 +6,11 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **Docs.** The Claude Code client page says what "Disabled for this project" means and how
+  to clear it; the quickstart's paste-in prompt tells the agent the same. (#104)
+
 ### Fixed
 
 - **OAuth on `/external/mcp`.** The 401 challenge named `/mcp`'s protected-resource document
@@ -30,12 +35,17 @@ All notable changes to leftbrain are recorded here. The format follows
   device flow exists so the approval can happen on a different machine from the agent, so the
   approving browser's operating system says nothing about where the agent runs - the same
   reasoning that already names a cloud client `· web`. (#104)
-
-### Changed
-
-- **Docs.** The Claude Code client page says what "Disabled for this project" means and how
-  to clear it; the quickstart's paste-in prompt tells the agent the same. (#104)
-
+- **The site links to its repository again, and "feedback is off" says where else to go.**
+  `feedback.py`, the README and the report page all said the repository was private and that
+  the feedback endpoint was therefore the only place to report a wrong answer. It is public, and
+  on the hosted server the endpoint was not configured, so there was no route at all. The
+  footer now links Source and Issues; the report page links the tracker whether or not filing
+  is on; `POST /feedback` when off answers `unsupported` with the tracker in `message` and a
+  `tracker` field; and the reason the endpoint exists is stated correctly - an agent mid-call
+  holds a key, not a GitHub login. One source of truth: `leftbrain.__repo__` (and
+  `Repository` / `Issues` in `pyproject.toml`), overridden by `LEFTBRAIN_FEEDBACK_REPO` when a
+  self-hoster files reports into their own fork. The Northflank guide names the two feedback
+  variables. (#102)
 ## [0.4.1] - 2026-08-30
 
 ### Added
