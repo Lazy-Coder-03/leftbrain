@@ -41,6 +41,10 @@ leftbrain, and authenticate — a browser opens leftbrain's consent page. Approv
 appear. Your config holds only the URL; the credential lives with Claude Code, and the key it
 created is on your [dashboard](/dashboard) as `Claude Code · <your OS>`.
 
+If `claude mcp list` shows it as **Disabled for this project** instead, Claude Code has
+remembered a server of the same name that was removed or disabled here before; the server has
+not been asked anything yet. Run `/mcp`, enable it, and then authenticate as above.
+
 ## Claude Desktop, Cursor, VS Code
 
 Add this to the client's MCP config — `claude_desktop_config.json`, `.cursor/mcp.json`, or `.vscode/mcp.json` (VS Code uses `"servers"` instead of `"mcpServers"`):

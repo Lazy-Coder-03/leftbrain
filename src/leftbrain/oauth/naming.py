@@ -3,7 +3,9 @@
 ``Claude Code · Windows`` tells its owner which row to revoke; an opaque identifier does not.
 A client running in its vendor's cloud reads ``· web``, never the approving browser's operating
 system: that would be a lie someone could act on, revoking ``ChatGPT · Windows`` in the belief
-it was tied to their PC.
+it was tied to their PC. A key minted through the device grant reads ``· device`` for the same
+reason: that flow exists so the approval can happen on a different machine from the agent, so
+the approving browser says nothing about where the agent runs (#104).
 """
 
 from __future__ import annotations
@@ -35,12 +37,14 @@ def os_from_user_agent(ua: str | None) -> str | None:
     return None
 
 
-def connector_key_name(client_name: str | None, redirect_uris: list[str], user_agent: str | None) -> str:
+def connector_key_name(client_name: str | None, redirect_uris: list[str], user_agent: str | None, *, grant: str = "browser") -> str:
     """``<app> · <where it runs>``, trimmed to fit the note column.
 
     A client is treated as running on the approver's machine when it registered a loopback
     redirect, which is exactly the distinction that matters: a cloud client's redirect goes
     to its vendor, so the browser that approved says nothing about where the client runs.
+    ``grant="device"`` overrides that: the device grant is approved from wherever a browser is,
+    which need not be the agent's machine, so the key is named for the grant instead.
 
     ``client_name`` comes from the client and is therefore untrusted. Runs of whitespace,
     newlines included, collapse to single spaces so it cannot forge a second line; it is
@@ -48,5 +52,8 @@ def connector_key_name(client_name: str | None, redirect_uris: list[str], user_a
     """
     app = re.sub(r"\s+", " ", (client_name or "").strip()) or "app"
     local = any(is_loopback(u) for u in redirect_uris)
-    where = (os_from_user_agent(user_agent) or "local") if local else "web"
+    if grant == "device":
+        where = "device"
+    else:
+        where = (os_from_user_agent(user_agent) or "local") if local else "web"
     return f"{app[: MAX_NAME - len(where) - 3]} · {where}"

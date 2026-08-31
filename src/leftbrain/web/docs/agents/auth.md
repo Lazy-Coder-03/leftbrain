@@ -130,7 +130,9 @@ Then poll `/token` every `interval` seconds with
 
 A consent page naming you, showing where the result is sent, and listing the tools. When they
 approve, leftbrain **creates an API key** for them, named after you and the machine they approved
-from — `Your agent's name · Windows`. It appears on their dashboard alongside keys they made by
+from — `Your agent's name · Windows`; through the device grant, `Your agent's name · device`,
+because the browser that approved need not be the machine you run on. It appears on their
+dashboard alongside keys they made by
 hand: readable, re-scopable, revocable, and counting against their key limit.
 
 If you are told there are no key slots left, relay the message **verbatim**. It names the fix

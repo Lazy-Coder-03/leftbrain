@@ -6,7 +6,7 @@ Endpoints (Streamable HTTP MCP):
     /files/mcp      pdf/image/file tools  (opt-in: --files or LEFTBRAIN_SERVE_FILES=1)
     /healthz        liveness JSON
     /               service description JSON
-    /keys/signup    POST {"email": ...} -> issues a free API key   (when a key store is enabled)
+    /keys/signup    POST {"email": ...} -> issues a free API key   (when LEFTBRAIN_OPEN_SIGNUP is on)
     /keys/me        GET  -> quota, usage and tool scope for the calling key
 
 Authentication (either or both may be enabled):
@@ -189,7 +189,7 @@ def _bearer(scope: Any) -> str:
 class AuthMiddleware:
     """Static key and/or key-store check with quota metering. Public paths pass through."""
 
-    def __init__(self, app: Any, *, static_key: str | None, store: Any | None, base_url: str | None = None, mounted: tuple[str, ...] = ("/mcp",)) -> None:
+    def __init__(self, app: Any, *, static_key: str | None, store: Any | None, base_url: str | None = None, mounted: tuple[str, ...] = ("/mcp",), signup_open: bool = False) -> None:
         self.app = app
         self.static = static_key.encode() if static_key else None
         self.store = store
@@ -199,6 +199,8 @@ class AuthMiddleware:
         #: the MCP endpoints actually mounted, so a 401 on /external/mcp points at that
         #: endpoint's own metadata and not at /mcp's (#101)
         self.mounted = mounted
+        #: whether POST /keys/signup answers; the 401 must not send anyone to a closed door (#104)
+        self.signup_open = signup_open
         # resolved once here rather than imported at module level, which is how the rest of
         # this file keeps `keys` (and its optional drivers) off the import path
         from .keys import KEY_PREFIX
@@ -211,7 +213,7 @@ class AuthMiddleware:
             return
         supplied = _bearer(scope)
         if not supplied:
-            await self._reject(scope, receive, send, 401, "missing key", "send Authorization: Bearer <key>" + (" (get one at POST /keys/signup)" if self.store else ""))
+            await self._reject(scope, receive, send, 401, "missing key", "send Authorization: Bearer <key>" + self._where_to_get_one())
             return
         if self.static is not None and hmac.compare_digest(supplied.encode(), self.static):
             scope.setdefault("state", {})["auth"] = {"kind": "static"}
@@ -355,6 +357,19 @@ class AuthMiddleware:
 
         await self._with_headers(scope, replay, buffered, quota)
 
+    def _where_to_get_one(self) -> str:
+        """The clause after "send a key": only ever a door that is open.
+
+        0.4.1 said "get one at POST /keys/signup" whenever a key store existed, and that route
+        answers 404 "signup is closed" unless LEFTBRAIN_OPEN_SIGNUP is on — the hosted server
+        sent every unauthenticated agent to a closed door (#104).
+        """
+        if self.signup_open:
+            return " (get one at POST /keys/signup)"
+        if self.store is not None:
+            return " (sign in at /login to create one)"
+        return ""
+
     def _metadata_url(self, path: str) -> str:
         """The protected-resource document for the endpoint ``path`` is under (RFC 9728 §3.1)."""
         return f"{self.base_url}/.well-known/oauth-protected-resource{_mount_for(path, self.mounted)}"
@@ -375,7 +390,7 @@ class AuthMiddleware:
         """What an agent should do next, in fields it can act on and a line it can read aloud."""
         return {
             "if_you_have_a_browser": self._metadata_url(path),
-            "if_you_have_no_browser": f"POST {self.base_url}/oauth/device_authorization",
+            "if_you_have_no_browser": f"POST {self.base_url}/register, then POST {self.base_url}/oauth/device_authorization",
             "tell_your_user": f"leftbrain needs authorising. I can give you a short code to approve at {self.base_url}/device",
             "static_key_alternative": f"{self.base_url}/dashboard",
             "documentation": f"{self.base_url}/docs/agents/auth",
@@ -636,7 +651,7 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
     routes: list[Any] = [Route("/", index), Route("/healthz", healthz), Route("/keys/signup", signup, methods=["POST"]), Route("/keys/me", me), Route("/keys/me/scope", me_scope, methods=["POST"]), Route("/feedback", feedback, methods=["POST"]), *build_web(store, cfg), *oauth_routes, *mounts, Mount("", app=_McpOnly(root_app))]
     app: Any = Starlette(routes=routes, lifespan=lifespan, exception_handlers={404: not_found})
     if static_key or store:
-        app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None, mounted=mounted)
+        app = AuthMiddleware(app, static_key=static_key, store=store, base_url=cfg.base_url if oauth_routes else None, mounted=mounted, signup_open=bool(store and cfg.open_signup))
     return RequestMetaMiddleware(SecurityHeadersMiddleware(app))
 
 

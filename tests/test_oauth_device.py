@@ -196,8 +196,21 @@ def test_approving_mints_a_named_key_that_counts_against_the_cap(tmp_path):
         settle(c, started["user_code"])
     made = KeyStore(str(tmp_path / "k.sqlite3"), secret=SECRET).list(USER.email)
     assert len(made) == 1 and made[0].holds_slot
-    # a cloud-registered redirect would read `web`; this client registered loopback
-    assert made[0].note == "leftbrain-agent · Windows"
+    # the approving browser was Windows, but the device grant exists so that the approval can
+    # happen away from the agent's machine, so the key is named for the grant, not the OS (#104)
+    assert made[0].note == "leftbrain-agent · device"
+
+
+def test_an_unregistered_client_is_told_to_register_first(tmp_path):
+    """Measured on 0.4.1: a bare {"error": "invalid_client"} after the 401 had sent the agent
+    straight here, with no mention of /register anywhere in the exchange (#104)."""
+    with TestClient(make_app(tmp_path)) as c:
+        r = start_device(c, "never-registered")
+        assert r.status_code == 400
+        body = r.json()
+        assert body["error"] == "invalid_client"
+        assert f"POST {BASE}/register" in body["error_description"]
+        assert f"{BASE}/docs/agents/auth" in body["error_description"]
 
 
 def test_at_the_cap_the_device_page_says_so_and_mints_nothing(tmp_path):
