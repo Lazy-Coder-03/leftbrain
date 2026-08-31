@@ -542,11 +542,12 @@ def build_app(*, include_external: bool = True, include_files: bool = False, sta
 
     async def feedback(request: Request) -> JSONResponse:
         """File a report against the repository, for a caller who cannot see it (#53)."""
-        from .feedback import MAX_PER_KEY, compose, feedback_config, submit
+        from .feedback import MAX_PER_KEY, compose, feedback_config, project_links, submit
 
         fb = feedback_config()
         if not fb.enabled:
-            return JSONResponse({"ok": False, "error": "unsupported", "message": "feedback is not configured on this server"}, status_code=404)
+            # closed, and says where else to go: the tracker is public (#102)
+            return JSONResponse({"ok": False, "error": "unsupported", "message": f"feedback is not configured on this server; open an issue at {project_links(fb)['tracker']}", "tracker": project_links(fb)["tracker"]}, status_code=404)
         auth = request.scope.get("state", {}).get("auth") or {}
         key = auth.get("key")
         try:

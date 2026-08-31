@@ -348,9 +348,10 @@ and the key API behaves like this:
 - **Every request** carries `X-RateLimit-Remaining-Today`, `X-RateLimit-Limit-Day`, `X-RateLimit-Limit-Minute` headers; `429` with `Retry-After` when a limit is hit; `403` for a disabled key, and `403 {"error": "expired", "message": "key expired on 2026-11-25; create a new one at /dashboard"}` once a key's lifetime is up. Expired keys stop counting towards the active-key cap.
 - **The daily quota counts tool calls, not requests.** One `tools/call` that did work spends exactly one unit. The MCP handshake (`initialize`, `tools/list`, …), `GET /keys/me`, and any call the server refused before doing the work — bad input, an ambiguity it would not guess, a tool outside the key's scope — cost nothing. The per-minute limit is deliberately different: it sees *every* request, because it is abuse protection rather than a budget. `X-RateLimit-Remaining-Today` and `meta.quota.remaining_today` are always the same number, and both count the call carrying them.
 - **Feedback**: `POST /feedback` with a key files an issue on the tracker, and signed-in people
-  get a form at `/report` — the repository is private, so there is otherwise nowhere to report a
-  wrong answer. Off unless `LEFTBRAIN_FEEDBACK_TOKEN` and `LEFTBRAIN_FEEDBACK_REPO` are set;
-  without them it answers `unsupported` rather than swallowing the report. Anything key-shaped is
+  get a form at `/report` — an agent mid-call holds a key and not a GitHub login, and a person
+  on the docs is signed in here, not there. Off unless `LEFTBRAIN_FEEDBACK_TOKEN` and
+  `LEFTBRAIN_FEEDBACK_REPO` are set; without them it answers `unsupported` and names the
+  tracker rather than swallowing the report. Anything key-shaped is
   blanked before filing, the reporter is recorded as a key prefix or GitHub login and never an
   email address, and filing costs no daily quota because it is not a tool call.
 - **Caller self-check**: `GET /keys/me` with the key → owner, quota, used today, `expires_at`, and `tools` (the key's scope, or `null` for every tool).

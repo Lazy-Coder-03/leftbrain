@@ -22,7 +22,7 @@
     {% if user %}<a class="btn ghost" href="/dashboard">{{ user.login }}</a>{% else %}<a class="btn primary" href="/login">Get an API key</a>{% endif %}
   </nav>
   <div id="page">{% block content %}{% endblock %}</div>
-  <footer><span>© 2026 leftbrain · MIT · <a href="/docs/changelog">v{{ version }}</a></span><span><a href="/docs/tools">Tools</a> · <a href="https://pypi.org/project/leftbrain/">PyPI</a> · <a href="/healthz">Status</a></span></footer>
+  <footer><span>© 2026 leftbrain · MIT · <a href="/docs/changelog">v{{ version }}</a></span><span><a href="/docs/tools">Tools</a> · <a href="{{ repo }}">Source</a> · <a href="{{ tracker }}">Issues</a> · <a href="https://pypi.org/project/leftbrain/">PyPI</a> · <a href="/healthz">Status</a></span></footer>
 </div>
 <script src="/static/site.js?v={{ asset_v }}" defer></script>
 </body>

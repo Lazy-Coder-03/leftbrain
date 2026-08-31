@@ -31,7 +31,11 @@ def free_tier() -> dict[str, Any]:
 
 
 def render(request: Request, name: str, status: int = 200, **ctx: Any) -> Response:
-    return templates.TemplateResponse(request, name, {**free_tier(), **ctx}, status_code=status)
+    from ..feedback import project_links
+
+    # `repo` and `tracker` are read per request like the free tier: a configured feedback
+    # repository is the tracker, and that is environment, not code (#102)
+    return templates.TemplateResponse(request, name, {**free_tier(), **project_links(), **ctx}, status_code=status)
 
 
 def no_store(response: Response) -> Response:
@@ -479,12 +483,13 @@ def routes(store: Any, cfg: WebConfig) -> list[Any]:
         user = auth.current_user(request, cfg)
         if user is None:
             return no_store(RedirectResponse("/login?next=/report", status_code=303))
-        if not feedback_config().enabled:
+        enabled = feedback_config().enabled
+        if not enabled:
             notice = notice or "Reporting is not configured on this server."
         return no_store(render(
             request, "report.html", status, page="report", user=user,
             csrf=auth.csrf_token(cfg.secret or "", user), kinds=KINDS,
-            max_title=MAX_TITLE, max_body=MAX_BODY, notice=notice, filed=filed,
+            max_title=MAX_TITLE, max_body=MAX_BODY, notice=notice, filed=filed, enabled=enabled,
         ))
 
     async def report_submit(request: Request) -> Response:

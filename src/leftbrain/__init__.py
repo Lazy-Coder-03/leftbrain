@@ -29,6 +29,10 @@ from .core import (
 )
 
 __version__ = "0.4.1"
+#: Where the source and the issue tracker are. The site footer, the report page and the
+#: feedback endpoint's "not configured" answer all point here, so nobody who hits a wrong
+#: answer is ever without a route to report it (#102).
+__repo__ = "https://github.com/Lazy-Coder-03/leftbrain"
 
 # Friendly aliases: leftbrain.math_tool(...), leftbrain.datetime_tool(...)
 math_tool = mathx.math
