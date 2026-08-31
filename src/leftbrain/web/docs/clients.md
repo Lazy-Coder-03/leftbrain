@@ -1,6 +1,6 @@
 # MCP clients
 
-leftbrain is a standard MCP server over Streamable HTTP. Point any client at `https://leftbrain.idlesync.in/mcp` with a bearer header. `/external/mcp` adds the network tools (weather, FX rates, geocoding, URL checks).
+leftbrain is a standard MCP server over Streamable HTTP. Point any client at `https://leftbrain.idlesync.in/mcp` with a bearer header - one endpoint, all 18 tools. The four that reach the internet (weather, FX rates, geocoding, URL checks) are marked as such on the [Keys page](/dashboard), where a key can be made without them in one click.
 
 A key limited to specific tools on the [Keys page](/dashboard) simply lists fewer tools in the client; a call outside its scope comes back as `{"ok": false, "error": "forbidden", …}` naming what the key may call, so an agent reads it and stops rather than retrying.
 

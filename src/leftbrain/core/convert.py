@@ -498,7 +498,7 @@ def _currency(p: dict[str, Any]) -> dict[str, Any]:
     else:
         return fail(
             "needs_rates",
-            "currency conversion needs live rates: fetch them with leftbrain-external fx_rate "
+            "currency conversion needs live rates: fetch them with the fx_rate tool "
             "(or pass rates={'USD':1,'INR':83.5,...} / rate=83.5)",
             needs={"field": "rates", "options": ["pass 'rate' (1 from = rate to)", "pass 'rates' table", "call fx_rate first"]},
         )

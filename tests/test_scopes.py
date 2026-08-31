@@ -184,6 +184,46 @@ def test_enforce_reads_the_context_and_returns_the_contract_error():
     assert calls == [("list", "IN"), ("check", "IN"), ("check", None)]
 
 
+def test_one_server_carries_every_tool_and_the_offline_build_leaves_the_four_out():
+    """One product, one connection (#100). Offline is a build of the same server, not another endpoint."""
+    from leftbrain.external.mcp_server import NETWORK_TOOLS as network_registry
+    from leftbrain.mcp_server import NETWORK_NOTE, build_server, server
+    from leftbrain.scopes import CATALOGUE
+
+    NETWORK_TOOLS = {name for name, _ in network_registry}
+
+    published = [t.name for t in server._tool_manager.list_tools()]
+    assert published == list(CATALOGUE)  # all 18, in catalogue order
+    assert NETWORK_NOTE in (server.instructions or "")
+    offline = build_server(network=False)
+    assert [t.name for t in offline._tool_manager.list_tools()] == [t for t in CATALOGUE if t not in NETWORK_TOOLS]
+    assert NETWORK_NOTE not in (offline.instructions or "")
+
+
+def test_the_retired_external_endpoint_says_where_the_tools_went(tmp_path):
+    with TestClient(keyed_app(tmp_path)) as c:
+        for path in ("/external/mcp", "/external/mcp/anything"):
+            r = c.post(path, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+            assert r.status_code == 410, path
+            body = r.json()
+            assert body["ok"] is False and body["error"] == "unsupported" and body["moved_to"] == "/mcp"
+            assert "/mcp" in body["message"] and "weather" in body["message"]
+        assert c.get("/external/mcp").status_code == 410  # any method, no key needed: the reason must reach an old client
+        assert "oauth-protected-resource/external/mcp" not in c.get("/", headers={"Accept": "application/json"}).text
+        root = c.get("/", headers={"Accept": "application/json"}).json()
+        assert root["endpoints"] == {"core": "/mcp"} and root["network_tools"] is True
+
+
+def test_the_offline_app_publishes_fourteen_and_says_so(tmp_path):
+    from leftbrain.web.config import WebConfig
+
+    cfg = WebConfig(client_id=None, client_secret=None, secret="test-secret-0123456789", base_url=None, open_signup=False)
+    with TestClient(build_app(include_external=False, keys_db=str(tmp_path / "k.sqlite3"), web_config=cfg)) as c:
+        key, _ = KeyStore(str(tmp_path / "k.sqlite3"), secret="test-secret-0123456789").create("a@b.co")
+        assert len(tool_names(rpc(c, "/mcp", key, "tools/list"))) == 14
+        assert c.get("/", headers={"Accept": "application/json"}).json()["network_tools"] is False
+
+
 def test_wrapping_left_the_published_schemas_and_docstrings_alone():
     from mcp.server.mcpserver.utilities.func_metadata import func_metadata
 
@@ -257,15 +297,13 @@ def test_scoped_key_over_http(tmp_path, json_response):
         open_key, _ = store.create("a@b.co")
 
         r = rpc(c, "/mcp", scoped, "tools/list")
-        assert r.status_code == 200 and tool_names(r) == ["holidays", "numbers"]
+        assert r.status_code == 200 and tool_names(r) == ["holidays", "numbers", "weather"]  # one endpoint carries the network tools too (#100)
         assert r.headers["content-type"].startswith("application/json" if json_response else "text/event-stream")
         if json_response:
             assert int(r.headers["content-length"]) == len(r.content)
         else:
             assert r.text.startswith("event: message\r\ndata: ") and r.text.endswith("\r\n\r\n")
-        assert tool_names(rpc(c, "/external/mcp", scoped, "tools/list")) == ["weather"]
-        assert len(tool_names(rpc(c, "/mcp", open_key, "tools/list"))) == 14
-        assert len(tool_names(rpc(c, "/external/mcp", open_key, "tools/list"))) == 4
+        assert len(tool_names(rpc(c, "/mcp", open_key, "tools/list"))) == 18
 
         ok = contract(rpc(c, "/mcp", scoped, "tools/call", name="numbers", arguments={"mode": "compare", "values": ["9.11", "9.9"]}))
         assert ok["isError"] is False and ok["structuredContent"]["ok"] and ok["structuredContent"]["result"]["max"]["input"] == "9.9"
@@ -283,7 +321,7 @@ def test_scoped_key_over_http(tmp_path, json_response):
         denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="holidays", arguments={"mode": "next", "region": "IN"}))
         assert denied["structuredContent"]["error"] == "forbidden" and "mode 'next'" in denied["structuredContent"]["message"]
         assert "allowed: list, check" in denied["structuredContent"]["message"]
-        denied = contract(rpc(c, "/external/mcp", scoped, "tools/call", name="fx_rate", arguments={"base": "USD", "to": "INR"}))
+        denied = contract(rpc(c, "/mcp", scoped, "tools/call", name="fx_rate", arguments={"base": "USD", "to": "INR"}))
         assert denied["structuredContent"]["error"] == "forbidden"
 
         assert contract(rpc(c, "/mcp", open_key, "tools/call", name="math", arguments={"expr": "1+1"}))["structuredContent"]["ok"]

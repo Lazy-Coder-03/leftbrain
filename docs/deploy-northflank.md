@@ -59,6 +59,8 @@ Project → **Services → Create service → Combined service** (build + deploy
 | Advanced → Health checks | | HTTP · port `8080` · path `/healthz` · initial delay 20 s |
 | Advanced → CMD override | | leave empty (Dockerfile runs `leftbrain-serve`) |
 
+`LEFTBRAIN_SERVE_EXTERNAL=1` keeps the four network tools (`weather`, `fx_rate`, `geo`, `url_check`) on `/mcp` with everything else; `0` leaves them out of the process. Per-key control over the same four is the scope grid, which marks them.
+
 `LEFTBRAIN_TRUSTED_PROXY_HOPS` tells the server how many proxies append to `X-Forwarded-For` in front of it, so per-IP limits (demo throttle, signup throttle) are keyed on the entry that hop wrote rather than on the leftmost, caller-supplied one. Northflank's router is **one** hop, so `1` (the default) is right here. Put Cloudflare’s proxy in front of it later and it becomes `2`. Set `0` only if the process is reachable directly with no proxy at all — then no forwarding header is believed and the socket address is used.
 
 `POST /feedback` and the `/report` form are **off** until two more are set: `LEFTBRAIN_FEEDBACK_REPO=Lazy-Coder-03/leftbrain` and `LEFTBRAIN_FEEDBACK_TOKEN=<a fine-grained PAT with *Issues: write* on that repository>`. Without them both answer that reporting is not configured and point at the tracker, so nothing is lost, but nothing is filed either.

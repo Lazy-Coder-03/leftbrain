@@ -635,7 +635,6 @@ def test_the_setup_prompt_is_self_contained_and_short():
     # what the agent needs without asking anyone
     for token in (
         "https://leftbrain.idlesync.in/mcp",
-        "https://leftbrain.idlesync.in/external/mcp",
         "MCP Streamable HTTP",
         "Authorization: Bearer",
         "$LB_KEY",
