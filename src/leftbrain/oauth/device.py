@@ -43,7 +43,12 @@ def device_routes(keys: Any, cfg: Any, provider: Any, oauth: Any) -> list[Route]
         form = await request.form()
         client_id = str(form.get("client_id") or "")
         if not client_id or await provider.get_client(client_id) is None:
-            return JSONResponse({"error": "invalid_client"}, status_code=400)
+            # RFC 6749 §5.2 allows a description, and an agent that followed the 401 straight
+            # here has not been told about /register yet - a bare code is a dead end (#104)
+            return JSONResponse({
+                "error": "invalid_client",
+                "error_description": f"unknown client_id: register first with POST {cfg.base_url}/register, then retry; see {cfg.base_url}/docs/agents/auth",
+            }, status_code=400)
         device_code, user_code = secrets.token_urlsafe(32), new_user_code()
         oauth.save_device(device_code, user_code=user_code, client_id=client_id,
                           scopes=str(form.get("scope") or "mcp").split(), ttl=DEVICE_TTL)
@@ -104,7 +109,7 @@ def device_routes(keys: Any, cfg: Any, provider: Any, oauth: Any) -> list[Route]
                 return page(request, user, code=code, status=400,
                             error=f"{e}. Nothing was connected.")
             name = connector_key_name(client.client_name if client else None, uris,
-                                      request.headers.get("user-agent"))
+                                      request.headers.get("user-agent"), grant="device")
             raw, made = keys.create_for_owner(user.email, name, scope=scope)
             if raw is None:
                 return page(request, user, code=code, status=409, error=str(made))

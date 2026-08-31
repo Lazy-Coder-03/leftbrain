@@ -66,6 +66,25 @@ def test_a_401_on_external_mcp_points_at_its_own_document(tmp_path):
             assert c.get(doc.removeprefix(BASE)).json()["resource"] == f"{BASE}{endpoint}"
 
 
+def test_the_401_message_never_names_a_closed_signup(tmp_path):
+    """0.4.1 said "get one at POST /keys/signup" whenever a key store existed; that route is
+    404 unless signup is open, so the hosted server sent every agent to a closed door (#104)."""
+    with TestClient(make_app(tmp_path, open_signup=False)) as c:
+        body = c.post("/mcp", json={}).json()
+        assert "/keys/signup" not in body["message"]
+        assert "/login" in body["message"]
+        assert c.post("/keys/signup", json={"email": "a@b.co"}).status_code == 404
+    with TestClient(make_app(tmp_path, open_signup=True)) as c:
+        assert "POST /keys/signup" in c.post("/mcp", json={}).json()["message"]
+
+
+def test_the_no_browser_route_names_registration_first(tmp_path):
+    with TestClient(make_app(tmp_path)) as c:
+        how = c.post("/mcp", json={}).json()["how_to_authorize"]
+        assert how["if_you_have_no_browser"].startswith(f"POST {BASE}/register")
+        assert how["if_you_have_no_browser"].endswith("/oauth/device_authorization")
+
+
 def test_a_401_off_the_mcp_paths_points_at_the_core_document(tmp_path):
     """/keys/me is protected too; it has no document of its own, so it names the core one."""
     with TestClient(make_app(tmp_path, external=True)) as c:

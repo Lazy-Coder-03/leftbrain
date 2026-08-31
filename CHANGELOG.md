@@ -17,6 +17,24 @@ All notable changes to leftbrain are recorded here. The format follows
   `how_to_authorize` point at the one for the endpoint that was requested. A protected path
   that is not an MCP endpoint (`/keys/me`) is pointed at the core document. Static-key auth
   never read the challenge and is unchanged. (#101)
+- **The 401 no longer sends an agent to a closed door.** Its message said "get one at
+  POST /keys/signup" whenever a key store existed; that route answers 404 unless
+  `LEFTBRAIN_OPEN_SIGNUP` is on, which it is not on the hosted server. The clause now names
+  signup only when it is open and says "sign in at /login to create one" otherwise. (#104)
+- **A headless agent is told to register before the device grant.** The 401's
+  `if_you_have_no_browser` named `/oauth/device_authorization` alone, and calling it without a
+  registered client answered a bare `invalid_client`. The 401 now names `POST /register` first,
+  and the device endpoint's `invalid_client` carries an `error_description` that says the
+  same and points at the agent guide. (#104)
+- **A key minted through the device grant reads `· device`, not the approver's OS.** The
+  device flow exists so the approval can happen on a different machine from the agent, so the
+  approving browser's operating system says nothing about where the agent runs - the same
+  reasoning that already names a cloud client `· web`. (#104)
+
+### Changed
+
+- **Docs.** The Claude Code client page says what "Disabled for this project" means and how
+  to clear it; the quickstart's paste-in prompt tells the agent the same. (#104)
 
 ## [0.4.1] - 2026-08-30
 

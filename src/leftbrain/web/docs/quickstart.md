@@ -29,6 +29,8 @@ Configure the client this project actually uses. ENDPOINT below is https://leftb
 
   Claude Code      claude mcp add --transport http leftbrain ENDPOINT \
                      --header "Authorization: Bearer $LB_KEY"        (+ --scope user|project)
+                   if `claude mcp list` then says "Disabled for this project", ask me to run /mcp
+                   and enable it there before you test the connection
   Copilot CLI      copilot mcp add --transport http leftbrain ENDPOINT \
                      --header "Authorization: Bearer $LB_KEY"
   Gemini CLI       gemini mcp add --transport http leftbrain ENDPOINT \
