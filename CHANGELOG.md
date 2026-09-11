@@ -6,21 +6,19 @@ All notable changes to leftbrain are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-11
+
 ### Fixed
 
-- **Connecting an account no longer fails with an internal error after the server has been
-  idle.** A hosted Postgres closes an idle connection, and nothing reports it until the next
-  statement. `_DB.run` reconnected once when that happened, but `one`, `all` and `scalar` did
-  not, so a read was always the statement that discovered the dead socket - and no read path
-  reopened it. The first person to arrive after a quiet spell met
-  `OperationalError: the connection is closed` as a 500, and so did everyone after them, until
-  the process was restarted. Sign-in was what broke first because connecting an account reads
-  before it writes: `load_client` on the authorize step, then the account's key list on the
-  consent page. All four methods now share one `_execute` that reconnects once, which covers
-  every read in the store rather than the handful the connect flow happens to touch. The
-  Postgres connection also asks for TCP keepalives, so an idle drop is noticed by the socket
-  instead of by whoever signs in next. SQLite is unchanged: it is a local file, so its errors
-  are real and still surface.
+- **Signing in and connecting an account no longer fail with an internal error.** The hosted
+  server holds one connection to its key database, and a managed Postgres closes a connection
+  that has sat idle. Writes reopened it; reads did not. Connecting an account reads before it
+  writes - it looks up the application, then lists the account's keys - so the first person to
+  arrive after a quiet spell met an internal error, and so did everyone after them, until the
+  server was restarted. Authorised tool calls failed the same way and for the same reason.
+  Every read now reopens a dropped connection the way writes always did, and the connection
+  asks for TCP keepalives so an idle drop is noticed before somebody runs into it. A
+  self-hosted server on SQLite was never affected.
 
 ## [0.5.0] - 2026-08-31
 
