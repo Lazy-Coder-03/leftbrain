@@ -285,6 +285,12 @@ class Verdict:
     retry_after: int | None = None
 
 
+#: TCP keepalives for the Postgres socket, so an idle drop is noticed and replaced by the
+#: next statement instead of being discovered by whoever signs in first. Without them a
+#: dead connection looks healthy until something tries to use it, which can be hours.
+PG_KEEPALIVE: dict[str, int] = {"keepalives": 1, "keepalives_idle": 30, "keepalives_interval": 10, "keepalives_count": 5}
+
+
 class _DB:
     """Tiny adapter so the store logic is written once for SQLite and Postgres."""
 
@@ -301,7 +307,7 @@ class _DB:
                 from psycopg.rows import dict_row
             except ImportError:  # pragma: no cover
                 raise SystemExit("Postgres key store needs psycopg: pip install 'leftbrain[postgres]'") from None
-            self._conn = psycopg.connect(self.dsn, autocommit=True, row_factory=dict_row)
+            self._conn = psycopg.connect(self.dsn, autocommit=True, row_factory=dict_row, **PG_KEEPALIVE)
         else:
             path = self.dsn[len("sqlite:///"):] if self.dsn.startswith("sqlite:///") else self.dsn
             self._conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -312,25 +318,37 @@ class _DB:
     def _sql(self, sql: str) -> str:
         return sql.replace("?", "%s") if self.pg else sql
 
-    def run(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+    def _execute(self, sql: str, params: tuple[Any, ...]) -> Any:
+        """One statement, reopening a dropped Postgres connection once.
+
+        A hosted Postgres closes an idle connection and nothing says so until the next
+        statement. Only `run` retried, so a read was the statement that found out: the
+        first request after a quiet spell raised `OperationalError: the connection is
+        closed`, and so did every request after it, because no read path reopened the
+        socket. Connecting an account reads before it writes, which is why sign-in was
+        what broke.
+        """
         try:
-            cur = self._conn.execute(self._sql(sql), params)
+            return self._conn.execute(self._sql(sql), params)
         except Exception:
             if not self.pg:
-                raise
-            self._connect()  # dropped connection: reconnect once
-            cur = self._conn.execute(self._sql(sql), params)
+                raise  # SQLite is a local file: its errors are real, not a lost socket
+            self._connect()  # dropped connection: reconnect once, then let the error stand
+            return self._conn.execute(self._sql(sql), params)
+
+    def run(self, sql: str, params: tuple[Any, ...] = ()) -> int:
+        cur = self._execute(sql, params)
         return cur.rowcount if cur.rowcount is not None else 0
 
     def one(self, sql: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None:
-        row = self._conn.execute(self._sql(sql), params).fetchone()
+        row = self._execute(sql, params).fetchone()
         return dict(row) if row is not None else None
 
     def all(self, sql: str, params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
-        return [dict(r) for r in self._conn.execute(self._sql(sql), params).fetchall()]
+        return [dict(r) for r in self._execute(sql, params).fetchall()]
 
     def scalar(self, sql: str, params: tuple[Any, ...] = ()) -> Any:
-        row = self._conn.execute(self._sql(sql), params).fetchone()
+        row = self._execute(sql, params).fetchone()
         if row is None:
             return None
         return list(dict(row).values())[0] if self.pg else row[0]

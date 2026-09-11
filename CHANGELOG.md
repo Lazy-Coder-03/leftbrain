@@ -4,6 +4,24 @@ All notable changes to leftbrain are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Connecting an account no longer fails with an internal error after the server has been
+  idle.** A hosted Postgres closes an idle connection, and nothing reports it until the next
+  statement. `_DB.run` reconnected once when that happened, but `one`, `all` and `scalar` did
+  not, so a read was always the statement that discovered the dead socket - and no read path
+  reopened it. The first person to arrive after a quiet spell met
+  `OperationalError: the connection is closed` as a 500, and so did everyone after them, until
+  the process was restarted. Sign-in was what broke first because connecting an account reads
+  before it writes: `load_client` on the authorize step, then the account's key list on the
+  consent page. All four methods now share one `_execute` that reconnects once, which covers
+  every read in the store rather than the handful the connect flow happens to touch. The
+  Postgres connection also asks for TCP keepalives, so an idle drop is noticed by the socket
+  instead of by whoever signs in next. SQLite is unchanged: it is a local file, so its errors
+  are real and still surface.
+
 ## [0.5.0] - 2026-08-31
 
 ### Upgrading to 0.5.0
