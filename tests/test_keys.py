@@ -396,3 +396,95 @@ def test_cli_create_expires_and_set(tmp_path, capsys):
     main(["--db", db, "list"])
     rows = [_json.loads(line) for line in capsys.readouterr().out.splitlines()]
     assert all(r["expires_at"] is None for r in rows)
+
+
+# -- dropped Postgres connections -------------------------------------------------------
+# A hosted Postgres closes an idle connection. `run` has always reconnected once; the read
+# methods did not, so the first person to arrive after a quiet spell met
+# `OperationalError: the connection is closed` as a 500, and so did everyone after them,
+# because nothing on a read path reopens it. Connecting an account reads before it writes
+# (`load_client`, then the key list), so sign-in was what broke first.
+
+
+class _Cur:
+    rowcount = 1
+
+    def fetchone(self):
+        return {"n": 1}
+
+    def fetchall(self):
+        return [{"n": 1}]
+
+
+class _Conn:
+    """A psycopg connection whose backend has gone away, as an idle drop leaves it."""
+
+    def __init__(self, alive):
+        self.alive = alive
+
+    def execute(self, sql, params=()):
+        if not self.alive:
+            raise RuntimeError("the connection is closed")
+        return _Cur()
+
+
+def _dropped(reconnect_helps=True):
+    """A Postgres-backed `_DB` whose connection is dead, ready to reconnect once."""
+    from leftbrain.keys import _DB
+
+    db = object.__new__(_DB)
+    db.dsn, db.pg, db._conn = "postgres://x", True, _Conn(alive=False)
+    db._connect = (lambda: setattr(db, "_conn", _Conn(alive=True))) if reconnect_helps else (lambda: None)
+    return db
+
+
+def test_dropped_postgres_connection_recovers_on_every_read():
+    assert _dropped().run("UPDATE keys SET disabled=0") == 1
+    assert _dropped().one("SELECT metadata FROM oauth_clients WHERE client_id=?", ("c",)) == {"n": 1}
+    assert _dropped().all("SELECT * FROM keys WHERE owner=?", ("a@b.co",)) == [{"n": 1}]
+    assert _dropped().scalar("SELECT COUNT(*) FROM keys WHERE owner=?", ("a@b.co",)) == 1
+
+
+def test_a_reconnect_that_does_not_help_still_raises():
+    """One retry, not a loop: a genuinely broken store must surface, not hang."""
+    import pytest
+
+    for call in (lambda d: d.one("SELECT 1"), lambda d: d.all("SELECT 1"), lambda d: d.scalar("SELECT 1")):
+        with pytest.raises(RuntimeError):
+            call(_dropped(reconnect_helps=False))
+
+
+def test_sqlite_reads_do_not_swallow_errors():
+    """SQLite has no dropped-connection story, so its errors are real and must surface."""
+    import pytest
+
+    from leftbrain.keys import _DB
+
+    db = object.__new__(_DB)
+    db.dsn, db.pg, db._conn = "k.sqlite3", False, _Conn(alive=False)
+    with pytest.raises(RuntimeError):
+        db.one("SELECT 1")
+
+
+def test_postgres_connect_asks_for_keepalives(monkeypatch):
+    """The socket should notice an idle drop, rather than a user's sign-in discovering it."""
+    import sys
+    import types
+
+    from leftbrain.keys import _DB
+
+    seen = {}
+
+    class _FakePsycopg:
+        @staticmethod
+        def connect(dsn, **kw):
+            seen.update(kw, dsn=dsn)
+            return _Conn(alive=True)
+
+    monkeypatch.setitem(sys.modules, "psycopg", _FakePsycopg)
+    monkeypatch.setitem(sys.modules, "psycopg.rows", types.SimpleNamespace(dict_row=object()))
+    db = object.__new__(_DB)
+    db.dsn, db.pg = "postgres://x", True
+    db._connect()
+    assert seen["autocommit"] is True
+    assert seen["keepalives"] == 1 and seen["keepalives_idle"] > 0
